@@ -1,0 +1,15 @@
+{
+  "name": "Darslik Studiyasi",
+  "short_name": "Darslik",
+  "description": "Video darslarni o'zbek tiliga tarjima qilib, ovozli video tayyorlash studiyasi.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f7f6f3",
+  "theme_color": "#b45a34",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

@@ -1,0 +1,2762 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Darslik Studiyasi — SRT, Matn va Dublyaj</title>
+
+<!-- PWA: planshet/telefon ekraniga "Bosh ekranga qo'shish" orqali ilova sifatida o'rnatish uchun -->
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#b45a34">
+<link rel="icon" href="/icons/icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Darslik Studiyasi">
+<style>
+  :root {
+    --bg: #f7f6f3; --card: #ffffff; --border: #ddd9d0; --text: #26241f;
+    --muted: #7a766c; --accent: #b45a34; --accent-dark: #8f4527;
+    --ok: #3b7a3b; --err: #b23b3b; --warn: #a3701f;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:-apple-system,"Segoe UI",Roboto,Arial,sans-serif; background:var(--bg); color:var(--text); }
+  .app-header { background:var(--card); border-bottom:1px solid var(--border); padding:14px 16px; position:sticky; top:0; z-index:10; }
+  .app-header h1 { font-size:17px; font-weight:700; margin:0 0 10px; }
+  .nav { display:flex; gap:8px; flex-wrap:wrap; }
+  .nav-btn { padding:9px 14px; border:1px solid var(--border); background:var(--bg); border-radius:20px; font-size:13px; font-weight:500; cursor:pointer; color:var(--muted); white-space:nowrap; }
+  .nav-btn.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .page { display:none; max-width:900px; margin:0 auto; padding:20px 16px 64px; }
+  .page.active { display:block; }
+  .subtitle { color:var(--muted); font-size:14px; margin:0 0 16px; line-height:1.5; }
+  .warn-box { background:#fbf1e0; border:1px solid #e6cb95; border-radius:10px; padding:12px 14px; font-size:13px; color:var(--warn); margin:0 0 20px; line-height:1.5; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:18px; margin-bottom:16px; }
+  .card h2 { font-size:15px; font-weight:600; margin:0 0 10px; }
+  textarea { width:100%; min-height:160px; border:1px solid var(--border); border-radius:8px; padding:10px 12px; font-size:13px; font-family:ui-monospace,"SF Mono",Menlo,monospace; resize:vertical; background:#fdfcfa; color:var(--text); }
+  input[type=text], input[type=password] { width:100%; border:1px solid var(--border); border-radius:8px; padding:9px 12px; font-size:13px; background:#fdfcfa; color:var(--text); }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  @media (max-width:520px) { .grid2 { grid-template-columns:1fr; } }
+  label.field { font-size:12.5px; color:var(--muted); display:block; margin-bottom:4px; }
+  select { width:100%; border:1px solid var(--border); border-radius:8px; padding:9px 12px; font-size:13px; background:#fdfcfa; color:var(--text); }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:12px; }
+  button.action { background:var(--accent); color:white; border:none; padding:10px 16px; border-radius:8px; font-size:13px; font-weight:500; cursor:pointer; }
+  button.action:hover { background:var(--accent-dark); }
+  button.action:disabled { opacity:.5; cursor:not-allowed; }
+  button.secondary { background:transparent; border:1px solid var(--border); color:var(--text); padding:10px 16px; border-radius:8px; font-size:13px; cursor:pointer; }
+  button.secondary:hover { border-color:var(--accent); }
+  .status { font-size:13px; color:var(--muted); margin-top:8px; line-height:1.5; }
+  .status.ok { color:var(--ok); } .status.err { color:var(--err); }
+  .hint { font-size:12.5px; color:var(--muted); line-height:1.5; margin:0 0 12px; }
+  .hint code { background:#efece5; padding:1px 5px; border-radius:4px; font-size:12px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; margin-top:12px; }
+  th, td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--border); vertical-align:top; }
+  th { color:var(--muted); font-weight:500; font-size:12px; }
+  .seg-text { max-width:220px; }
+  .badge { font-size:11px; padding:2px 8px; border-radius:20px; display:inline-block; }
+  .badge.wait { background:#efece5; color:var(--muted); }
+  .badge.ok { background:#e6f1e6; color:var(--ok); }
+  .badge.err { background:#fbe8e8; color:var(--err); }
+  .badge.run { background:#fbf1eb; color:var(--accent-dark); }
+  audio { height:32px; max-width:160px; }
+  .progress-wrap { background:#efece5; border-radius:20px; height:8px; overflow:hidden; margin-top:10px; }
+  .progress-bar { background:var(--accent); height:100%; width:0%; transition:width .2s; }
+  .save-hint { font-size:11.5px; color:var(--muted); margin-top:6px; }
+  .vid-table td, .vid-table th { font-size:12.5px; }
+  .vid-name { font-weight:600; max-width:180px; word-break:break-word; }
+  .chunk-grid { display:flex; flex-wrap:wrap; gap:4px; margin-top:10px; }
+  .chunk-dot { width:22px; height:22px; border-radius:5px; display:flex; align-items:center; justify-content:center; font-size:10px; color:#fff; }
+  .chunk-dot.pending { background:#c9c4b7; }
+  .chunk-dot.running { background:var(--accent-dark); }
+  .chunk-dot.completed { background:var(--ok); }
+  .chunk-dot.error { background:var(--err); cursor:pointer; }
+  .key-row { display:flex; align-items:center; gap:8px; padding:8px 0; border-bottom:1px solid var(--border); font-size:13px; flex-wrap:wrap; }
+  .key-row:last-child { border-bottom:none; }
+  .pill { font-size:11px; padding:2px 9px; border-radius:20px; background:#efece5; color:var(--muted); }
+  .pill.ok { background:#e6f1e6; color:var(--ok); } .pill.err { background:#fbe8e8; color:var(--err); }
+  .pill.off { background:#eee; color:#999; }
+  .small-btn { background:transparent; border:1px solid var(--border); color:var(--text); padding:4px 10px; border-radius:6px; font-size:12px; cursor:pointer; }
+  .small-btn:hover { border-color:var(--accent); }
+  .small-btn.danger:hover { border-color:var(--err); color:var(--err); }
+  .disk-bar-wrap { background:#efece5; border-radius:20px; height:10px; overflow:hidden; margin:8px 0; }
+  .disk-bar { background:var(--accent); height:100%; }
+  .drop-zone { border:2px dashed var(--border); border-radius:10px; padding:22px; text-align:center; color:var(--muted); font-size:13px; cursor:pointer; }
+  .drop-zone.drag { border-color:var(--accent); color:var(--accent); }
+  details.video-card { border:1px solid var(--border); border-radius:10px; padding:10px 14px; margin-bottom:10px; background:#fdfcfa; }
+  details.video-card summary { cursor:pointer; font-size:13.5px; font-weight:600; list-style:none; display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; }
+  details.video-card summary::-webkit-details-marker { display:none; }
+  .job-row { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:9px 0; border-bottom:1px solid var(--border); font-size:13px; flex-wrap:wrap; }
+  .job-row:last-child { border-bottom:none; }
+
+  /* ---- yangi arxitektura uchun qo'shimcha uslublar ---- */
+  .header-top { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+  .app-header h1 { margin:0; }
+  .header-actions { display:flex; align-items:center; gap:8px; }
+  .server-dot { font-size:13px; cursor:default; }
+  .tiny-btn { background:transparent; border:1px solid var(--border); color:var(--text); padding:6px 12px; border-radius:16px; font-size:12.5px; cursor:pointer; font-weight:500; }
+  .tiny-btn:hover { border-color:var(--accent); }
+
+  .modal-backdrop { display:none; position:fixed; inset:0; background:rgba(20,18,14,0.4); z-index:40; }
+  .modal-backdrop.open { display:block; }
+  .modal { display:none; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); z-index:41;
+    background:var(--card); border-radius:14px; padding:20px; width:min(480px, 92vw); max-height:85vh; overflow-y:auto;
+    box-shadow:0 10px 40px rgba(0,0,0,0.25); }
+  .modal.open { display:block; }
+  .modal-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+  .modal-head h2 { margin:0; font-size:16px; }
+
+  .vgrid { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:14px; }
+  .vcard { background:var(--card); border:1px solid var(--border); border-radius:12px; overflow:hidden; cursor:pointer; transition:border-color .15s; }
+  .vcard:hover { border-color:var(--accent); }
+  .vcard .thumb { width:100%; aspect-ratio:16/9; background:#e9e5db center/cover no-repeat; display:flex; align-items:center; justify-content:center; color:var(--muted); font-size:12px; }
+  .vcard .vbody { padding:10px 12px; }
+  .vcard .vname { font-weight:600; font-size:13.5px; margin:0 0 4px; word-break:break-word; }
+  .vcard .vmeta { font-size:11.5px; color:var(--muted); margin-bottom:8px; }
+  .pipeline-row { display:flex; gap:5px; flex-wrap:wrap; }
+  .pipe-dot { width:9px; height:9px; border-radius:50%; display:inline-block; }
+  .pipe-dot.done { background:var(--ok); } .pipe-dot.active { background:#3b6fa3; }
+  .pipe-dot.wait { background:#e0dcd0; } .pipe-dot.error { background:var(--err); }
+
+  .add-video-btn { display:inline-flex; align-items:center; gap:6px; background:var(--accent); color:#fff; border:none;
+    padding:11px 18px; border-radius:10px; font-size:14px; font-weight:600; cursor:pointer; margin-bottom:16px; }
+  .add-video-btn:hover { background:var(--accent-dark); }
+
+  .folder-bar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+  .folder-chip { display:inline-flex; align-items:center; gap:6px; background:var(--card); border:1px solid var(--border);
+    color:var(--text); padding:6px 12px; border-radius:16px; font-size:12.5px; cursor:pointer; font-weight:500; }
+  .folder-chip:hover { border-color:var(--accent); }
+  .folder-chip.active { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .folder-chip .fcount { opacity:0.7; }
+  .folder-chip .fdel { opacity:0.6; margin-left:2px; }
+  .folder-chip .fdel:hover { opacity:1; color:var(--err); }
+  .folder-chip-add { display:inline-flex; align-items:center; gap:4px; background:transparent; border:1px dashed var(--border);
+    color:var(--muted); padding:6px 12px; border-radius:16px; font-size:12.5px; cursor:pointer; }
+  .folder-chip-add:hover { border-color:var(--accent); color:var(--accent); }
+  .vcard-folder-select { position:relative; z-index:2; }
+  .vcard-folder-select select { width:100%; font-size:11.5px; padding:4px 6px; border-radius:6px; border:1px solid var(--border);
+    background:var(--card); color:var(--text); cursor:pointer; }
+
+  .back-link { background:var(--bg); border:1px solid var(--border); color:var(--accent); font-size:13px; cursor:pointer;
+    padding:8px 14px; border-radius:20px; font-weight:600; position:sticky; top:8px; z-index:20; display:inline-block; }
+  .back-link:hover { border-color:var(--accent); }
+
+  .stage { border:1px solid var(--border); border-radius:12px; padding:16px; margin-bottom:14px; background:var(--card); }
+  .stage.dim { opacity:0.55; }
+  .stage-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:4px; flex-wrap:wrap; gap:8px; }
+  .stage-head h3 { margin:0; font-size:14.5px; }
+  .stage-status { font-size:11.5px; padding:3px 10px; border-radius:20px; background:#efece5; color:var(--muted); }
+  .stage-status.done { background:#e6f1e6; color:var(--ok); }
+  .stage-status.active { background:#e2ecf5; color:#2c5c85; }
+  .stage-status.error { background:#fbe8e8; color:var(--err); }
+
+  .vid-list-row { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:12px 14px; border:1px solid var(--border);
+    border-radius:10px; margin-bottom:8px; cursor:pointer; background:var(--card); }
+  .vid-list-row:hover { border-color:var(--accent); }
+  .vid-list-row .vname { font-weight:600; font-size:13.5px; }
+  .vid-list-row .vmeta { font-size:11.5px; color:var(--muted); margin-top:2px; }
+
+  .chunk-detail-list { margin-top:10px; }
+  .chunk-row { border:1px solid var(--border); border-radius:8px; margin-bottom:6px; padding:8px 12px; background:var(--bg); }
+  .chunk-row summary { cursor:pointer; display:flex; justify-content:space-between; align-items:center; gap:8px; font-size:12.5px; flex-wrap:wrap; list-style:none; }
+  .chunk-row summary::-webkit-details-marker { display:none; }
+  .chunk-row-body { margin-top:8px; }
+  .issue-line { font-size:12px; color:#8a5a10; background:#fdf3e2; border-radius:6px; padding:6px 10px; margin-top:4px; }
+
+  .block-editor-row { display:grid; grid-template-columns:36px 1fr 1fr; gap:8px; padding:8px 0; border-bottom:1px solid var(--border); align-items:start; }
+  .block-editor-row .bidx { font-size:11px; color:var(--muted); padding-top:8px; }
+  .block-editor-row textarea { min-height:56px; font-size:12.5px; }
+  .block-editor-row .changed textarea { border-color:#d99a2b; background:#fffaf0; }
+
+  .player-wrap video { width:100%; border-radius:10px; background:#000; }
+  .player-controls { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:10px; }
+  .player-controls select { width:auto; padding:6px 10px; font-size:12.5px; }
+</style>
+</head>
+<body>
+
+<div class="app-header">
+  <div class="header-top">
+    <h1>Darslik Studiyasi</h1>
+    <div class="header-actions">
+      <span class="server-dot" id="serverDot" title="Server holati">🔴</span>
+      <button class="tiny-btn" onclick="openModal('apiModal')">API</button>
+      <button class="tiny-btn" onclick="openModal('ayshaModal')">Aysha</button>
+    </div>
+  </div>
+  <div class="nav">
+    <button class="nav-btn" data-page="page-split" onclick="switchPage('page-split')">Video bo'lish</button>
+    <button class="nav-btn active" data-page="page-videos" onclick="switchPage('page-videos')">Videolar</button>
+    <button class="nav-btn" data-page="page-transcribe" onclick="switchPage('page-transcribe')" style="display:none;">Video → Matn</button>
+    <button class="nav-btn" data-page="page-translate" onclick="switchPage('page-translate')">Tarjima</button>
+    <button class="nav-btn" data-page="page-audio" onclick="switchPage('page-audio')" style="display:none;">Audio</button>
+    <button class="nav-btn" data-page="page-jobs" onclick="switchPage('page-jobs')">Ishlar</button>
+    <button class="nav-btn" data-page="page-settings" onclick="switchPage('page-settings')">Sozlamalar</button>
+    <button class="nav-btn" data-page="page-merge" onclick="switchPage('page-merge')" style="display:none;">Birlashtirish</button>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!--   API / AYSHA MODALLAR                                        -->
+<!-- ============================================================ -->
+<div class="modal-backdrop" id="apiModal-backdrop" onclick="closeModal('apiModal')"></div>
+<div class="modal" id="apiModal">
+  <div class="modal-head">
+    <h2>API kalitlar</h2>
+    <button class="tiny-btn" onclick="closeModal('apiModal')">Yopish</button>
+  </div>
+  <p class="hint">Bir nechta kalit qo'shishingiz mumkin — biri limitga uchrasa, tizim avtomatik keyingisiga o'tadi. Kalitlar serverda shifrlangan holda saqlanadi, frontendga to'liq qaytarilmaydi.</p>
+
+  <h3 style="margin-bottom:6px;">OpenAI</h3>
+  <div id="keyList-openai"></div>
+  <div class="row">
+    <input type="text" id="newKeyLabel-openai" placeholder="Nom (ixtiyoriy)" style="max-width:140px;">
+    <input type="password" id="newKeyValue-openai" placeholder="sk-..." style="flex:1; min-width:160px;">
+    <button class="action" onclick="addApiKey('openai')">Qo'shish</button>
+  </div>
+  <div class="status" id="keyStatus-openai"></div>
+
+  <h3 style="margin:16px 0 6px;">Claude (Anthropic)</h3>
+  <p class="hint">Kalitni <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a> orqali olasiz (bu — claude.ai obunasidan alohida, o'zi to'lanadigan API).</p>
+  <div id="keyList-claude"></div>
+  <div class="row">
+    <input type="text" id="newKeyLabel-claude" placeholder="Nom (ixtiyoriy)" style="max-width:140px;">
+    <input type="password" id="newKeyValue-claude" placeholder="sk-ant-..." style="flex:1; min-width:160px;">
+    <button class="action" onclick="addApiKey('claude')">Qo'shish</button>
+  </div>
+  <div class="status" id="keyStatus-claude"></div>
+</div>
+
+<div class="modal-backdrop" id="folderModal-backdrop" onclick="closeModal('folderModal')"></div>
+<div class="modal" id="folderModal">
+  <div class="modal-head">
+    <h2>Yangi papka</h2>
+    <button class="tiny-btn" onclick="closeModal('folderModal')">Yopish</button>
+  </div>
+  <label class="field">Papka nomi</label>
+  <input type="text" id="newFolderName" placeholder="Masalan: Matematika" onkeydown="if(event.key==='Enter') submitNewFolder();">
+  <div class="row">
+    <button class="action" onclick="submitNewFolder()">Yaratish</button>
+  </div>
+  <div class="status" id="folderModalStatus"></div>
+</div>
+
+<div class="modal-backdrop" id="confirmModal-backdrop" onclick="closeModal('confirmModal')"></div>
+<div class="modal" id="confirmModal">
+  <div class="modal-head">
+    <h2>Tasdiqlash</h2>
+    <button class="tiny-btn" onclick="closeModal('confirmModal')">Yopish</button>
+  </div>
+  <p id="confirmModalText"></p>
+  <div class="row">
+    <button class="action" onclick="confirmModalYes()">Ha</button>
+    <button class="secondary" onclick="closeModal('confirmModal')">Yo'q</button>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="cloudPickerModal-backdrop" onclick="closeModal('cloudPickerModal')"></div>
+<div class="modal" id="cloudPickerModal">
+  <div class="modal-head">
+    <h2>Bulutdan tanlash</h2>
+    <button class="tiny-btn" onclick="closeModal('cloudPickerModal')">Yopish</button>
+  </div>
+  <div id="cloudPickerList"><p class="hint">Yuklanmoqda...</p></div>
+</div>
+
+<div class="modal-backdrop" id="emptySegModal-backdrop" onclick="closeModal('emptySegModal')"></div>
+<div class="modal" id="emptySegModal">
+  <div class="modal-head">
+    <h2>Bo'sh bo'laklar topildi</h2>
+    <button class="tiny-btn" onclick="closeModal('emptySegModal')">Yopish</button>
+  </div>
+  <p id="emptySegModalText"></p>
+  <div class="row" style="margin-top:0;">
+    <button class="action" onclick="emptySegFillAndRetry('openai')">OpenAI bilan avtomatik tarjima qil</button>
+    <button class="action" onclick="emptySegFillAndRetry('claude')">Claude bilan avtomatik tarjima qil</button>
+  </div>
+  <div class="row">
+    <button class="secondary" onclick="emptySegSkipAndRetry()">O'tkazib yuborib davom et</button>
+  </div>
+  <div class="status" id="emptySegModalStatus"></div>
+</div>
+
+<div class="modal-backdrop" id="ayshaModal-backdrop" onclick="closeModal('ayshaModal')"></div>
+<div class="modal" id="ayshaModal">
+  <div class="modal-head">
+    <h2>Aysha AI (TTS) sozlamalari</h2>
+    <button class="tiny-btn" onclick="closeModal('ayshaModal')">Yopish</button>
+  </div>
+  <p class="hint">Bu yerdagi sozlamalar standart qiymat sifatida ishlatiladi — har safar qayta kiritish shart emas. API kalitni <a href="https://space.aisha.group/api-keys" target="_blank" rel="noopener">space.aisha.group/api-keys</a> dan olasiz.</p>
+  <label class="field">Aysha API kalit (shu brauzerda saqlanadi)</label>
+  <input type="password" id="ayshaGlobalKey" placeholder="Aisha API kalitingiz">
+  <div class="grid2" style="margin-top:10px;">
+    <div>
+      <label class="field">Standart kayfiyat (mood)</label>
+      <select id="settingsAyshaMood">
+        <option value="Neutral">Neutral</option>
+        <option value="Cheerful">Cheerful</option>
+        <option value="Happy">Happy</option>
+        <option value="Sad">Sad</option>
+      </select>
+    </div>
+    <div>
+      <label class="field">Standart tezlik (0.5 - 2.0)</label>
+      <input type="text" id="settingsAyshaSpeed" value="1.0">
+    </div>
+  </div>
+  <div class="row">
+    <button class="action" onclick="saveAyshaSettings()">Saqlash</button>
+  </div>
+  <div class="status" id="ayshaSettingsStatus"></div>
+</div>
+
+<!-- ============================================================ -->
+<!--   PAGE: VIDEO -> MATN (server kutubxonasi, persistent job)   -->
+<!-- ============================================================ -->
+
+<!-- ============================================================ -->
+<!--   PAGE: VIDEO BO'LISH (tarjimasiz, faqat bo'lib botga yuborish) -->
+<!-- ============================================================ -->
+<div class="page" id="page-split">
+  <p class="subtitle">Bu yerga yuklangan videolar tarjima qilinmaydi - agar 1.9 GB'dan katta bo'lsa avtomatik qismlarga bo'linib, to'g'ridan-to'g'ri Telegram botga yuboriladi.</p>
+
+  <button class="add-video-btn" onclick="document.getElementById('splitUploadFile').click()">+ Video qo'shish (bo'lib yuborish)</button>
+  <button class="small-btn" onclick="openCloudPicker('video', useCloudVideoInSplit)">☁ Bulutdan olish</button>
+  <input type="file" id="splitUploadFile" accept="video/*" style="display:none;">
+  <div id="splitUploadProgressCard" style="display:none;" class="card">
+    <div class="progress-wrap"><div class="progress-bar" id="splitUploadProgressBar"></div></div>
+    <div class="status" id="splitUploadStatus"></div>
+  </div>
+
+  <div id="splitVideoList"><p class="hint">Yuklanmoqda...</p></div>
+</div>
+
+<!-- ============================================================ -->
+<!--   PAGE: SERVER VIDEOLARI (markaziy bo'lim)                    -->
+<!-- ============================================================ -->
+<div class="page active" id="page-videos">
+  <p class="subtitle">Har bir video — alohida loyiha. Video, segmentlar, matn, tarjima, audio va yakuniy video shu loyihaga bog'langan holda saqlanadi.</p>
+
+  <div id="videosGridView">
+    <div class="status" id="diskStatus" style="margin-bottom:10px;"></div>
+
+    <button class="add-video-btn" onclick="document.getElementById('uploadFile').click()">+ Video qo'shish</button>
+    <button class="small-btn" onclick="openCloudPicker('video', useCloudVideoInPipeline)">☁ Bulutdan olish</button>
+    <input type="file" id="uploadFile" accept="video/*,audio/*" style="display:none;">
+    <div id="uploadProgressCard" style="display:none;" class="card">
+      <div class="progress-wrap"><div class="progress-bar" id="uploadProgressBar"></div></div>
+      <div class="status" id="uploadStatus"></div>
+    </div>
+
+    <div id="folderBar" class="folder-bar"></div>
+
+    <div id="videoGrid" class="vgrid"><p class="hint">Yuklanmoqda...</p></div>
+  </div>
+
+  <div id="videoDetailView" style="display:none;">
+    <button class="back-link" onclick="closeVideoDetail()">← Videolarga qaytish</button>
+    <div id="videoDetailContent"></div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!--   PAGE: VIDEO -> MATN (video tanlash ro'yxati)                -->
+<!-- ============================================================ -->
+<div class="page" id="page-transcribe">
+  <p class="subtitle">Transkripsiya bosqichidagi videolar. Videoni tanlang — bo'laklarga bo'lish va transkripsiyani boshlash o'sha video sahifasida amalga oshiriladi.</p>
+  <div class="card">
+    <div class="row" style="margin-top:0;">
+      <button class="secondary" onclick="loadTranscribeList()">Yangilash</button>
+    </div>
+    <div id="transcribeList"><p class="hint">Yuklanmoqda...</p></div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!--   PAGE: MATN / TARJIMA                                        -->
+<!-- ============================================================ -->
+<div class="page" id="page-translate">
+  <p class="subtitle">Tarjima uchun video yuklang yoki bulutga tushgan, hali "Videolar" bazasiga qo'shilmagan videolarni ko'ring.</p>
+  <div class="nav" style="margin-bottom:16px;">
+    <button class="nav-btn active" data-subpage="tarjima-upload" onclick="switchTarjimaSubpage('tarjima-upload')">Video yuklash</button>
+    <button class="nav-btn" data-subpage="tarjima-inbox" onclick="switchTarjimaSubpage('tarjima-inbox')">Kelgan videolarni ko'rish</button>
+  </div>
+
+  <div id="tarjima-upload" class="tarjima-subpage active">
+    <button class="add-video-btn" onclick="document.getElementById('tarjimaUploadFile').click()">+ Video yuklash (bulutga)</button>
+    <input type="file" id="tarjimaUploadFile" accept="video/*" style="display:none;">
+    <div id="tarjimaUploadProgressCard" style="display:none;" class="card">
+      <div class="progress-wrap"><div class="progress-bar" id="tarjimaUploadProgressBar"></div></div>
+      <div class="status" id="tarjimaUploadStatus"></div>
+    </div>
+    <p class="hint">Bu yerga yuklangan video darhol tarjima qilinmaydi - u bulutga tushadi, keyin "Kelgan videolarni ko'rish"dan Videolar bazasiga qo'shasiz.</p>
+  </div>
+
+  <div id="tarjima-inbox" class="tarjima-subpage" style="display:none;">
+    <div class="row" style="margin-top:0;">
+      <button class="secondary" onclick="loadCloudInbox()">Yangilash</button>
+    </div>
+    <div id="cloudInboxList"><p class="hint">Yuklanmoqda...</p></div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!--   PAGE: AUDIO                                                 -->
+<!-- ============================================================ -->
+<div class="page" id="page-audio">
+  <p class="subtitle">O'zbekcha tarjimasi tayyor videolar. Videoni tanlab, dublyaj audiosini yarating.</p>
+  <div class="card">
+    <div class="row" style="margin-top:0;">
+      <button class="secondary" onclick="loadAudioList()">Yangilash</button>
+    </div>
+    <div id="audioList"><p class="hint">Yuklanmoqda...</p></div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!--   PAGE: ISHLAR                                                -->
+<!-- ============================================================ -->
+<div class="page" id="page-jobs">
+  <p class="subtitle">Serverda hozir bajarilayotgan yoki navbatda turgan barcha ishlar. Bu ro'yxat brauzer holatiga bog'liq emas.</p>
+  <div class="card">
+    <div class="row" style="margin-top:0;">
+      <button class="secondary" onclick="loadJobsPanel()">Yangilash</button>
+    </div>
+    <div id="jobsList"><p class="hint">Yuklanmoqda...</p></div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!--   PAGE: XARAJATLAR                                            -->
+<!-- ============================================================ -->
+<!-- ============================================================ -->
+<!--   PAGE: SOZLAMALAR (Xarajatlar ham shu yerda)                 -->
+<!-- ============================================================ -->
+<div class="page" id="page-settings">
+  <p class="subtitle">Umumiy standart qiymatlar. OpenAI kalitlar — yuqoridagi "API" tugmasida, Aysha sozlamalari — "Aysha" tugmasida.</p>
+
+  <div class="card">
+    <h2>Xarajatlar</h2>
+    <p class="hint">OpenAI (Whisper, tarjima, TTS) va Aysha xarajatlari hisoblab boriladi.</p>
+    <div class="grid2">
+      <div><label class="field">Bugun</label><div class="status ok" id="costToday">—</div></div>
+      <div><label class="field">Oxirgi 7 kun</label><div class="status ok" id="costWeek">—</div></div>
+      <div><label class="field">Oxirgi 30 kun</label><div class="status ok" id="costMonth">—</div></div>
+      <div><label class="field">Jami</label><div class="status ok" id="costAll">—</div></div>
+    </div>
+    <table id="costTable" style="margin-top:14px;">
+      <thead><tr><th>Video</th><th>Transkripsiya</th><th>Tarjima</th><th>Audio</th><th>Jami</th></tr></thead>
+      <tbody id="costTableBody"></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Tarjimon sozlamalari</h2>
+    <p class="hint">Har bir tarjima so'roviga (OpenAI yoki Claude, avtomatik tarjima qilinganda) avtomatik qo'shib yuboriladi.</p>
+    <label class="field">Instruksiya (doimiy ko'rsatma)</label>
+    <textarea id="settingsTranslationInstruction" placeholder="masalan: Rasmiy uslubda, qisqa jumlalar bilan yoz." style="min-height:70px;"></textarea>
+    <label class="field" style="margin-top:10px;">Kontekst (qo'shimcha ma'lumot)</label>
+    <textarea id="settingsTranslationContext" placeholder="masalan: Bu ma'ruzalar ortodontiya bo'yicha, talabalar uchun." style="min-height:70px;"></textarea>
+    <div class="row">
+      <button class="action" onclick="saveTranslationSettings()">Saqlash</button>
+    </div>
+    <div class="status" id="translationSettingsStatus"></div>
+  </div>
+
+  <div class="card">
+    <h2>Tarjimon xotirasi (Claude bilan chat)</h2>
+    <p class="hint">Claude bilan yozishib, tarjima qoidalarini o'rgating. Muhim javoblarni "Xotiraga qo'shish" bilan belgilang — shundan keyin ular barcha keyingi tarjimalarga avtomatik qo'shiladi.</p>
+    <div id="memoryChatMessages" style="max-height:320px; overflow-y:auto; border:1px solid var(--border); border-radius:8px; padding:10px; margin-bottom:10px; background:var(--bg);"></div>
+    <div class="row">
+      <input type="text" id="memoryChatInput" placeholder="masalan: 'implant' so'zini doim 'implant' deb yoz, o'zgartirma" style="flex:1;">
+      <button class="action" onclick="sendMemoryChatMessage()">Yuborish</button>
+    </div>
+    <div class="status" id="memoryChatStatus"></div>
+
+    <h3 style="margin-top:18px;">Saqlangan qoidalar (xotira)</h3>
+    <div id="memoryNotesList"><p class="hint">Hali qoida qo'shilmagan.</p></div>
+  </div>
+
+  <div class="card">
+    <h2>OpenAI TTS standart qiymatlari</h2>
+    <div class="grid2">
+      <div>
+        <label class="field">Standart ovoz</label>
+        <select id="settingsOpenaiVoice">
+          <option value="alloy">alloy</option>
+          <option value="echo">echo</option>
+          <option value="fable">fable</option>
+          <option value="onyx">onyx</option>
+          <option value="nova">nova</option>
+          <option value="shimmer">shimmer</option>
+          <option value="coral">coral</option>
+          <option value="sage">sage</option>
+          <option value="ash">ash</option>
+        </select>
+      </div>
+      <div>
+        <label class="field">Standart ko'rsatma</label>
+        <input type="text" id="settingsOpenaiInstructions" placeholder="masalan: Speak clearly">
+      </div>
+    </div>
+    <div class="row">
+      <label><input type="checkbox" id="settingsStretchDefault" checked> Audio yaratishda standart bo'yicha "kerak bo'lgandagina siqish" yoqilgan bo'lsin</label>
+    </div>
+    <div class="row">
+      <button class="action" onclick="saveGeneralSettings()">Saqlash</button>
+    </div>
+    <div class="status" id="generalSettingsStatus"></div>
+  </div>
+  <div class="card">
+    <h2>Server holati</h2>
+    <p class="hint">Bo'lak uzunligi, parallel ishlash sozlamalari va boshqa texnik parametrlar Railway'dagi environment variable'lar orqali boshqariladi (README.txt'ga qarang).</p>
+    <div id="configInfo" class="status"></div>
+  </div>
+</div>
+
+<div class="page" id="page-merge">
+  <p class="subtitle">Asl videoning ovozini o'chiradi, yangi dublyaj audioni qo'shadi, va tarjima qilingan matnni subtitr sifatida (oq harf, qora kontur) videoga "kuydiradi" — hammasi bitta yakuniy video faylga birlashadi.</p>
+
+  <div class="warn-box">
+    <strong>Eslatma:</strong> bu video kodlashning og'ir jarayoni — brauzerda ishlaganda uzun/katta videolar uchun bir necha
+    daqiqadan bir necha soatgacha vaqt olishi mumkin. Avval qisqa (1-2 daqiqalik) video bilan sinab ko'ring.
+  </div>
+
+  <div class="card">
+    <h2>1. Fayllarni tanlang</h2>
+    <label class="field">Asl video (ovozi olib tashlanadi)</label>
+    <input type="file" id="mergeVideoFile" accept="video/*">
+
+    <label class="field" style="margin-top:12px;">Yangi dublyaj audio (Matn → Audio bo'limidan)</label>
+    <div class="row" style="margin-top:4px;">
+      <input type="file" id="mergeAudioFile" accept="audio/*" style="flex:1;">
+      <button class="secondary" id="mergeUseLastAudioBtn">So'nggi yaratilgan audioni ishlatish</button>
+    </div>
+
+    <label class="field" style="margin-top:12px;">Tarjima qilingan SRT fayl (subtitr uchun)</label>
+    <input type="file" id="mergeSrtFile" accept=".srt,.txt">
+  </div>
+
+  <div class="card">
+    <h2>2. Subtitr ko'rinishi (ixtiyoriy)</h2>
+    <div class="grid2">
+      <div>
+        <label class="field">Shrift hajmi</label>
+        <input type="text" id="mergeFontSize" value="22">
+      </div>
+      <div>
+        <label class="field">Pastdan bo'shliq (margin)</label>
+        <input type="text" id="mergeMarginV" value="30">
+      </div>
+    </div>
+    <p class="hint">Standart: oq harf, qora kontur, pastda markazda — klassik subtitr ko'rinishi.</p>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <button class="action" id="mergeStartBtn">Birlashtirish</button>
+    </div>
+    <div class="progress-wrap"><div class="progress-bar" id="mergeProgressBar"></div></div>
+    <div class="status" id="mergeStatus"></div>
+  </div>
+
+  <div class="card" id="mergeResultCard" style="display:none;">
+    <h2>3. Natija</h2>
+    <video id="mergeResultVideo" controls style="width:100%; border-radius:8px;"></video>
+    <div class="row" style="margin-top:10px;">
+      <button class="action" id="mergeDownloadBtn">Video faylni yuklab olish</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Jarayon jurnali</h2>
+    <textarea id="mergeLog" readonly style="min-height:120px; font-family:ui-monospace,monospace; font-size:12px;"></textarea>
+  </div>
+</div>
+
+<script>
+function switchPage(pageId) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  const target = document.getElementById(pageId);
+  if (target) target.classList.add('active');
+  document.querySelectorAll('.app-header .nav-btn').forEach(b => b.classList.toggle('active', b.dataset.page === pageId));
+}
+
+function switchTab(group, tabId) {
+  const tabs = { matn: ['tab-s2t', 'tab-t2s'] }[group];
+  if (!tabs) return;
+  tabs.forEach(id => { const el = document.getElementById(id); if (el) el.style.display = (id === tabId ? 'block' : 'none'); });
+  document.querySelectorAll(`#page-${group} .nav-btn`).forEach(b => b.classList.toggle('active', b.dataset.tab === tabId));
+}
+
+function setStatus(id, msg, cls) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = msg;
+  el.className = 'status' + (cls ? ' ' + cls : '');
+}
+
+function copyBox(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.select();
+  navigator.clipboard.writeText(el.value).catch(() => { document.execCommand('copy'); });
+}
+
+function downloadText(id, filename) {
+  const content = document.getElementById(id).value;
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+
+/* ============================================================ */
+/*  UMUMIY YORDAMCHI FUNKSIYALAR                                 */
+/* ============================================================ */
+const API_BASE = '';
+
+function fmtMinSec(totalSec) {
+  totalSec = Math.round(totalSec || 0);
+  const h = Math.floor(totalSec / 3600), m = Math.floor((totalSec % 3600) / 60), s = totalSec % 60;
+  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function fmtBytes(n) {
+  if (!n) return '0 MB';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return `${n.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+function fmtUsd(n) {
+  n = n || 0;
+  return '$' + n.toFixed(n < 1 ? 4 : 2);
+}
+
+function parseTimeField(text) {
+  text = (text || '').trim();
+  if (!text) return null;
+  const parts = text.split(':').map(Number);
+  if (parts.some(isNaN)) throw new Error(`Vaqt formati noto'g'ri: "${text}"`);
+  if (parts.length === 1) return parts[0];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  throw new Error(`Vaqt formati noto'g'ri: "${text}"`);
+}
+
+function escapeHtml(s) {
+  return (s || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+async function apiFetch(path, opts) {
+  const resp = await fetch(API_BASE + path, opts);
+  if (!resp.ok) {
+    let msg = 'HTTP ' + resp.status;
+    try { const j = await resp.json(); if (j.detail) msg = j.detail; else if (j.error) msg = j.error; } catch (e) {}
+    throw new Error(msg);
+  }
+  return resp.status === 204 ? null : resp.json();
+}
+
+function openModal(id) {
+  document.getElementById(id).classList.add('open');
+  document.getElementById(id + '-backdrop').classList.add('open');
+  if (id === 'apiModal') loadApiKeys();
+  if (id === 'ayshaModal') loadAyshaModalSettings();
+}
+function closeModal(id) {
+  document.getElementById(id).classList.remove('open');
+  document.getElementById(id + '-backdrop').classList.remove('open');
+}
+
+/* ============================================================ */
+/*  ffmpeg.wasm YUKLOVCHI (faqat "Birlashtirish" sahifasi uchun) */
+/* ============================================================ */
+let oaiFfmpeg = null, oaiFfmpegLoading = null;
+async function oaiLoadFfmpeg() {
+  if (oaiFfmpeg) return oaiFfmpeg;
+  if (oaiFfmpegLoading) return oaiFfmpegLoading;
+  oaiFfmpegLoading = (async () => {
+    mergeLog("ffmpeg (brauzer versiyasi) yuklanmoqda, birinchi marta biroz vaqt oladi...");
+    const { FFmpeg } = await import('https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js');
+    const { toBlobURL } = await import('https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/esm/index.js');
+    const ffmpeg = new FFmpeg();
+    ffmpeg.on('log', () => {});
+    const baseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm';
+    await ffmpeg.load({
+      coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+      wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+    });
+    mergeLog("ffmpeg tayyor.");
+    oaiFfmpeg = ffmpeg;
+    return ffmpeg;
+  })();
+  return oaiFfmpegLoading;
+}
+let ttsLastMergedBlob = null; // Birlashtirish sahifasi "so'nggi audio" tugmasi uchun
+
+/* ============================================================ */
+/*  SERVER HOLATI                                                 */
+/* ============================================================ */
+async function pingServer() {
+  const dot = document.getElementById('serverDot');
+  try {
+    await apiFetch('/health');
+    dot.textContent = '🟢';
+    dot.title = 'Server ishlayapti';
+  } catch (e) {
+    dot.textContent = '🔴';
+    dot.title = 'Server bilan aloqa yo\'q';
+  }
+}
+
+async function loadStorage() {
+  try {
+    const s = await apiFetch('/api/storage');
+    const pct = Math.min(100, Math.round((s.app_usage / s.storage_limit) * 100));
+    document.getElementById('diskStatus').textContent =
+      `Disk: ${fmtBytes(s.app_usage)} / ${fmtBytes(s.storage_limit)} ishlatilgan (${pct}%)`;
+  } catch (e) {}
+}
+
+let appConfig = { chunk_seconds: 300 };
+async function loadConfig() {
+  try {
+    appConfig = await apiFetch('/api/config');
+    const el = document.getElementById('configInfo');
+    if (el) {
+      el.textContent = `Bo'lak uzunligi: ${appConfig.chunk_seconds}s · Parallel Whisper: ${appConfig.max_whisper_concurrency} · ` +
+        `Bir vaqtda faol video: ${appConfig.max_active_video_jobs} · Takrorlanish chegarasi: ${appConfig.repetition_threshold}`;
+    }
+  } catch (e) {}
+}
+
+let glossaryGroupsCache = [];
+async function loadGlossaryGroups() {
+  try {
+    const r = await apiFetch('/api/glossary/groups');
+    glossaryGroupsCache = r.groups || [];
+  } catch (e) {}
+}
+
+/* ============================================================ */
+/*  API KALITLAR (modal)                                         */
+/* ============================================================ */
+async function loadApiKeys() {
+  for (const provider of ['openai', 'claude']) {
+    try {
+      const keys = await apiFetch('/api/api-keys?provider=' + provider);
+      const body = document.getElementById('keyList-' + provider);
+      if (!body) continue;
+      if (keys.length === 0) {
+        body.innerHTML = '<p class="hint">Hali API kalit qo\'shilmagan.</p>';
+        continue;
+      }
+      body.innerHTML = keys.map(k => `
+        <div class="key-row">
+          <strong>${escapeHtml(k.label || 'kalit')}</strong>
+          <code>${escapeHtml(k.masked)}</code>
+          <span class="pill ${k.status === 'ok' ? 'ok' : k.status === 'error' ? 'err' : ''} ${k.active ? '' : 'off'}">${k.active ? (k.status === 'ok' ? 'ishlayapti' : k.status === 'error' ? 'xato' : 'tekshirilmagan') : 'o\'chirilgan'}</span>
+          <button class="small-btn" onclick="testApiKey('${k.id}', '${provider}')">Tekshirish</button>
+          <button class="small-btn" onclick="toggleApiKey('${k.id}', ${!k.active}, '${provider}')">${k.active ? "O'chirish" : "Yoqish"}</button>
+          <button class="small-btn danger" onclick="deleteApiKey('${k.id}', '${provider}')">O'chirish</button>
+        </div>`).join('');
+    } catch (e) {
+      const body = document.getElementById('keyList-' + provider);
+      if (body) body.innerHTML = `<p class="status err">Xato: ${escapeHtml(e.message)}</p>`;
+    }
+  }
+}
+
+async function addApiKey(provider) {
+  const label = document.getElementById('newKeyLabel-' + provider).value.trim();
+  const value = document.getElementById('newKeyValue-' + provider).value.trim();
+  if (!value) { setStatus('keyStatus-' + provider, 'Avval API kalitni kiriting.', 'err'); return; }
+  try {
+    const form = new FormData();
+    form.append('key', value); form.append('label', label); form.append('provider', provider);
+    await apiFetch('/api/api-keys', { method: 'POST', body: form });
+    document.getElementById('newKeyLabel-' + provider).value = '';
+    document.getElementById('newKeyValue-' + provider).value = '';
+    setStatus('keyStatus-' + provider, "Kalit qo'shildi.", 'ok');
+    await loadApiKeys();
+  } catch (e) {
+    setStatus('keyStatus-' + provider, 'Xato: ' + e.message, 'err');
+  }
+}
+
+async function toggleApiKey(id, active, provider) {
+  const form = new FormData(); form.append('active', String(active));
+  await apiFetch(`/api/api-keys/${id}/toggle`, { method: 'POST', body: form });
+  loadApiKeys();
+}
+
+async function deleteApiKey(id, provider) {
+  if (!confirm("Bu API kalitni o'chirmoqchimisiz?")) return;
+  await apiFetch(`/api/api-keys/${id}`, { method: 'DELETE' });
+  loadApiKeys();
+}
+
+async function testApiKey(id, provider) {
+  setStatus('keyStatus-' + provider, 'Tekshirilmoqda...');
+  try {
+    const r = await apiFetch(`/api/api-keys/${id}/test`, { method: 'POST' });
+    setStatus('keyStatus-' + provider, r.ok ? 'Kalit ishlayapti.' : ('Xato: ' + r.error), r.ok ? 'ok' : 'err');
+  } catch (e) {
+    setStatus('keyStatus-' + provider, 'Xato: ' + e.message, 'err');
+  }
+  loadApiKeys();
+}
+
+/* ============================================================ */
+/*  SOZLAMALAR (Aysha modal + umumiy)                             */
+/* ============================================================ */
+async function loadAyshaModalSettings() {
+  try {
+    const s = await apiFetch('/api/settings');
+    document.getElementById('settingsAyshaMood').value = s.aisha_default_mood || 'Neutral';
+    document.getElementById('settingsAyshaSpeed').value = s.aisha_default_speed || '1.0';
+    const savedKey = localStorage.getItem('aisha_api_key');
+    if (savedKey) document.getElementById('ayshaGlobalKey').value = savedKey;
+  } catch (e) {}
+}
+
+async function saveAyshaSettings() {
+  const key = document.getElementById('ayshaGlobalKey').value.trim();
+  if (key) localStorage.setItem('aisha_api_key', key);
+  try {
+    await apiFetch('/api/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        aisha_default_mood: document.getElementById('settingsAyshaMood').value,
+        aisha_default_speed: document.getElementById('settingsAyshaSpeed').value,
+      }),
+    });
+    setStatus('ayshaSettingsStatus', 'Saqlandi.', 'ok');
+  } catch (e) {
+    setStatus('ayshaSettingsStatus', 'Xato: ' + e.message, 'err');
+  }
+}
+
+async function loadGeneralSettings() {
+  try {
+    const s = await apiFetch('/api/settings');
+    document.getElementById('settingsOpenaiVoice').value = s.openai_default_voice || 'alloy';
+    document.getElementById('settingsOpenaiInstructions').value = s.openai_default_instructions || '';
+    document.getElementById('settingsStretchDefault').checked = (s.default_stretch_to_fit !== 'false');
+  } catch (e) {}
+}
+
+async function saveGeneralSettings() {
+  try {
+    await apiFetch('/api/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        openai_default_voice: document.getElementById('settingsOpenaiVoice').value,
+        openai_default_instructions: document.getElementById('settingsOpenaiInstructions').value,
+        default_stretch_to_fit: String(document.getElementById('settingsStretchDefault').checked),
+      }),
+    });
+    setStatus('generalSettingsStatus', 'Saqlandi.', 'ok');
+  } catch (e) {
+    setStatus('generalSettingsStatus', 'Xato: ' + e.message, 'err');
+  }
+}
+
+/* ============================================================ */
+/*  TARJIMON SOZLAMALARI (Instruksiya/Kontekst) VA XOTIRA-CHAT   */
+/* ============================================================ */
+async function loadTranslationSettings() {
+  try {
+    const s = await apiFetch('/api/settings');
+    document.getElementById('settingsTranslationInstruction').value = s.translation_instruction || '';
+    document.getElementById('settingsTranslationContext').value = s.translation_context || '';
+  } catch (e) {}
+}
+
+async function saveTranslationSettings() {
+  try {
+    await apiFetch('/api/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        translation_instruction: document.getElementById('settingsTranslationInstruction').value,
+        translation_context: document.getElementById('settingsTranslationContext').value,
+      }),
+    });
+    setStatus('translationSettingsStatus', 'Saqlandi.', 'ok');
+  } catch (e) {
+    setStatus('translationSettingsStatus', 'Xato: ' + e.message, 'err');
+  }
+}
+
+function renderChatMessage(m) {
+  const isUser = m.role === 'user';
+  const bubbleStyle = isUser
+    ? 'background:var(--accent); color:#fff; margin-left:40px;'
+    : 'background:var(--card); border:1px solid var(--border); margin-right:40px;';
+  const saveBtn = !isUser
+    ? `<button class="small-btn" style="margin-top:6px;" onclick="saveMessageToMemory('${m.id}', this)">Xotiraga qo'shish</button>`
+    : '';
+  return `
+    <div style="padding:8px 12px; border-radius:10px; margin-bottom:8px; font-size:13px; ${bubbleStyle}">
+      <div>${escapeHtml(m.content)}</div>
+      ${saveBtn}
+    </div>`;
+}
+
+let memoryChatCache = [];
+
+async function loadMemoryChat() {
+  try {
+    memoryChatCache = await apiFetch('/api/translation-memory/chat');
+    const el = document.getElementById('memoryChatMessages');
+    el.innerHTML = memoryChatCache.length
+      ? memoryChatCache.map(renderChatMessage).join('')
+      : '<p class="hint">Hali suhbat yo\'q. Pastdan yozing.</p>';
+    el.scrollTop = el.scrollHeight;
+  } catch (e) {}
+}
+
+async function sendMemoryChatMessage() {
+  const input = document.getElementById('memoryChatInput');
+  const message = input.value.trim();
+  if (!message) return;
+  input.value = '';
+  input.disabled = true;
+  setStatus('memoryChatStatus', 'Claude javob yozmoqda...', '');
+  try {
+    const form = new FormData();
+    form.append('message', message);
+    await apiFetch('/api/translation-memory/chat', { method: 'POST', body: form });
+    setStatus('memoryChatStatus', '', '');
+    await loadMemoryChat();
+  } catch (e) {
+    setStatus('memoryChatStatus', 'Xato: ' + e.message, 'err');
+  } finally {
+    input.disabled = false;
+    input.focus();
+  }
+}
+
+async function saveMessageToMemory(messageId, btnEl) {
+  const msg = memoryChatCache.find(m => m.id === messageId);
+  if (!msg) return;
+  try {
+    await apiFetch('/api/translation-memory/notes', {
+      method: 'POST',
+      body: (() => { const f = new FormData(); f.append('content', msg.content); f.append('source_message_id', messageId); return f; })(),
+    });
+    if (btnEl) { btnEl.textContent = "✅ Qo'shildi"; btnEl.disabled = true; }
+    loadMemoryNotes();
+  } catch (e) {
+    alert('Xato: ' + e.message);
+  }
+}
+
+async function loadMemoryNotes() {
+  try {
+    const notes = await apiFetch('/api/translation-memory/notes');
+    const el = document.getElementById('memoryNotesList');
+    el.innerHTML = notes.length
+      ? notes.map(n => `
+        <div class="key-row">
+          <span style="flex:1;">${escapeHtml(n.content)}</span>
+          <button class="small-btn danger" onclick="deleteMemoryNote('${n.id}')">O'chirish</button>
+        </div>`).join('')
+      : '<p class="hint">Hali qoida qo\'shilmagan.</p>';
+  } catch (e) {}
+}
+
+async function deleteMemoryNote(id) {
+  if (!confirm("Bu qoidani xotiradan o'chirmoqchimisiz?")) return;
+  try {
+    await apiFetch(`/api/translation-memory/notes/${id}`, { method: 'DELETE' });
+    loadMemoryNotes();
+  } catch (e) {
+    alert('Xato: ' + e.message);
+  }
+}
+
+/* ============================================================ */
+/*  RESUMABLE UPLOAD                                              */
+/* ============================================================ */
+const UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024;
+let uploadInProgress = false;
+
+function setupUploadInput() {
+  document.getElementById('uploadFile').addEventListener('change', (e) => {
+    if (e.target.files[0]) handleUploadFile(e.target.files[0], 'pipeline');
+  });
+  document.getElementById('splitUploadFile').addEventListener('change', (e) => {
+    if (e.target.files[0]) handleUploadFile(e.target.files[0], 'split_only');
+  });
+  document.getElementById('tarjimaUploadFile').addEventListener('change', (e) => {
+    if (e.target.files[0]) handleUploadFile(e.target.files[0], 'cloud');
+  });
+}
+
+function refreshAfterUpload(kind) {
+  if (kind === 'split_only') loadSplitVideos();
+  else if (kind === 'cloud') loadCloudInbox();
+  else loadVideos();
+}
+
+async function handleUploadFile(file, kind) {
+  const idsByKind = {
+    split_only: { card: 'splitUploadProgressCard', bar: 'splitUploadProgressBar', status: 'splitUploadStatus', input: 'splitUploadFile' },
+    cloud: { card: 'tarjimaUploadProgressCard', bar: 'tarjimaUploadProgressBar', status: 'tarjimaUploadStatus', input: 'tarjimaUploadFile' },
+    pipeline: { card: 'uploadProgressCard', bar: 'uploadProgressBar', status: 'uploadStatus', input: 'uploadFile' },
+  };
+  const ids = idsByKind[kind];
+  if (uploadInProgress) { alert("Boshqa fayl hozir yuklanmoqda. Kutib turing."); return; }
+  uploadInProgress = true;
+  const card = document.getElementById(ids.card);
+  const bar = document.getElementById(ids.bar);
+  card.style.display = 'block';
+  bar.style.width = '0%';
+  setStatus(ids.status, 'Boshlanmoqda...');
+  try {
+    const initForm = new FormData();
+    initForm.append('original_name', file.name);
+    initForm.append('total_size', String(file.size));
+    initForm.append('kind', kind);
+    if (kind === 'cloud') initForm.append('file_kind', 'video');
+    const initResp = await apiFetch('/api/videos/upload/init', { method: 'POST', body: initForm });
+    if (initResp.duplicate_of) {
+      setStatus(ids.status, `Bu video allaqachon serverda bor: "${initResp.duplicate_of.original_name}".`, 'ok');
+      uploadInProgress = false;
+      refreshAfterUpload(kind);
+      return;
+    }
+    const uploadId = initResp.upload_id;
+    let offset = initResp.received_size || 0;
+
+    while (offset < file.size) {
+      const slice = file.slice(offset, Math.min(offset + UPLOAD_CHUNK_SIZE, file.size));
+      const form = new FormData();
+      form.append('offset', String(offset));
+      form.append('chunk', slice, 'chunk.bin');
+      const resp = await fetch(`${API_BASE}/api/videos/upload/${uploadId}/chunk`, { method: 'POST', body: form });
+      if (resp.status === 409) {
+        const j = await resp.json();
+        offset = j.received_size;
+        continue;
+      }
+      if (!resp.ok) {
+        let msg = 'HTTP ' + resp.status;
+        try { const j = await resp.json(); if (j.detail) msg = j.detail; } catch (e) {}
+        throw new Error(msg);
+      }
+      const j = await resp.json();
+      offset = j.received_size;
+      const pct = Math.round((offset / file.size) * 100);
+      bar.style.width = pct + '%';
+      setStatus(ids.status, `Yuklanmoqda: ${fmtBytes(offset)} / ${fmtBytes(file.size)} (${pct}%)`);
+    }
+
+    setStatus(ids.status, "Yuklash tugadi, serverda tekshirilmoqda...");
+    await apiFetch(`/api/videos/upload/${uploadId}/complete`, { method: 'POST' });
+    bar.style.width = '100%';
+    const doneMsg = kind === 'split_only' ? "Video yuklandi, botga yuborilmoqda..."
+      : kind === 'cloud' ? "Video bulutga yuklandi."
+      : "Video serverga to'liq yuklandi.";
+    setStatus(ids.status, doneMsg, 'ok');
+    document.getElementById(ids.input).value = '';
+    refreshAfterUpload(kind);
+    loadStorage();
+    setTimeout(() => { card.style.display = 'none'; }, 4000);
+  } catch (e) {
+    setStatus(ids.status, 'Xato: ' + e.message + " — internet tiklangach xuddi shu faylni qayta tanlang, yuklash qoldiqdan davom etadi.", 'err');
+  } finally {
+    uploadInProgress = false;
+  }
+}
+
+/* ============================================================ */
+/*  SERVER VIDEO KUTUBXONASI (grid)                               */
+/* ============================================================ */
+const STATUS_LABELS = {
+  uploaded: "Yuklandi", segmenting: "Bo'laklanmoqda", segments_ready: "Bo'laklar tayyor",
+  transcribing: "Transkripsiya", transcription_ready: "Matn tayyor",
+  transcription_approved: "Matn tasdiqlangan", translation_ready: "Tarjima tayyor",
+  audio_processing: "Audio yaratilmoqda", audio_ready: "Audio tayyor",
+  video_rendering: "Video yig'ilmoqda", completed: "Tugallangan",
+  failed: "Xato", cancelled: "Bekor qilingan",
+};
+const BLOCKED_LABELS = {
+  paused: "To'xtatilgan", api_key: "API kalit kerak", repetition: "Takrorlanish aniqlandi",
+  chunk_errors: "Ba'zi bo'laklarda xato", error: "Xato",
+};
+
+let allVideosCache = [];
+let allFoldersCache = [];
+let currentFolderId = null; // null = "Barchasi"
+
+async function loadVideos() {
+  try {
+    allVideosCache = await apiFetch('/api/videos');
+    renderVideoGrid();
+  } catch (e) {
+    document.getElementById('videoGrid').innerHTML = `<p class="status err">Xato: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+/* ============================================================ */
+/*  VIDEO BO'LISH (tarjimasiz, faqat bo'lib botga yuborish)       */
+/* ============================================================ */
+async function loadSplitVideos() {
+  const list = document.getElementById('splitVideoList');
+  if (!list) return;
+  try {
+    const videos = await apiFetch('/api/split-videos');
+    renderSplitVideoList(videos);
+  } catch (e) {
+    list.innerHTML = `<p class="status err">Xato: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function renderSplitVideoList(videos) {
+  const list = document.getElementById('splitVideoList');
+  if (!list) return;
+  if (videos.length === 0) {
+    list.innerHTML = '<p class="hint">Hali video yuklanmagan.</p>';
+    return;
+  }
+  list.innerHTML = videos.map(v => {
+    const ideaFlowHtml = v.idea_flow_sent_at ? `<span class="pill ok">✓ Tarjima papkasiga yozildi</span> ` : '';
+    let statusHtml;
+    if (v.telegram_send_status === 'sending') {
+      const progress = v.split_total_parts > 1 ? ` (${v.split_parts_sent}/${v.split_total_parts} qism)` : '';
+      statusHtml = `<span class="pill">⏳ Botga yuborilmoqda...${progress}</span>`;
+    } else if (v.telegram_send_status === 'sent') {
+      const parts = v.split_total_parts > 1 ? ` (${v.split_total_parts} qismda)` : '';
+      statusHtml = `<span class="pill ok">✓ Botga yuborildi${parts}</span>`;
+    } else if (v.telegram_send_status === 'error') {
+      statusHtml = `<span class="pill err">✗ Xato: ${escapeHtml(v.telegram_send_error || '')}</span>
+        <button class="small-btn" onclick="retrySplitSend('${v.id}')">Qayta urinish</button>`;
+    } else {
+      statusHtml = `<span class="pill">Kutilmoqda</span>`;
+    }
+    return `
+    <div class="job-row">
+      <div>
+        <strong>${escapeHtml(v.original_name)}</strong>
+        <div class="hint">${fmtBytes(v.file_size)} ${v.duration ? '· ' + fmtMinSec(v.duration) : ''}</div>
+        <div style="margin-top:4px;">${ideaFlowHtml}${statusHtml}</div>
+      </div>
+      <button class="small-btn danger" onclick="deleteSplitVideo('${v.id}')">O'chirish</button>
+    </div>`;
+  }).join('');
+}
+
+async function retrySplitSend(videoId) {
+  try {
+    await apiFetch(`/api/split-videos/${videoId}/retry`, { method: 'POST' });
+    loadSplitVideos();
+  } catch (e) {
+    alert('Xato: ' + e.message);
+  }
+}
+
+async function deleteSplitVideo(videoId) {
+  showConfirm("Bu videoni o'chirmoqchimisiz?", async () => {
+    try {
+      await apiFetch(`/api/videos/${videoId}`, { method: 'DELETE' });
+      loadSplitVideos();
+    } catch (e) {
+      alert('Xato: ' + e.message);
+    }
+  });
+}
+
+async function useCloudVideoInPipeline(cloudId) {
+  try {
+    await apiFetch(`/api/cloud-files/${cloudId}/use-in-pipeline`, { method: 'POST' });
+    loadVideos();
+    loadStorage();
+  } catch (e) {
+    alert('Xato: ' + e.message);
+  }
+}
+
+async function useCloudVideoInSplit(cloudId) {
+  try {
+    await apiFetch(`/api/cloud-files/${cloudId}/use-in-split`, { method: 'POST' });
+    loadSplitVideos();
+    loadStorage();
+  } catch (e) {
+    alert('Xato: ' + e.message);
+  }
+}
+
+async function loadFolders() {
+  try {
+    allFoldersCache = await apiFetch('/api/folders');
+  } catch (e) {
+    allFoldersCache = [];
+  }
+  renderFolderBar();
+}
+
+function renderFolderBar() {
+  const bar = document.getElementById('folderBar');
+  if (!bar) return;
+  const chips = allFoldersCache.map(f => `
+    <span class="folder-chip ${currentFolderId === f.id ? 'active' : ''}" onclick="selectFolder('${f.id}')">
+      ${escapeHtml(f.name)} <span class="fcount">${f.video_count}</span>
+      <span class="fdel" title="Papkani o'chirish" onclick="event.stopPropagation(); deleteFolder('${f.id}', '${escapeHtml(f.name).replace(/'/g, "\\'")}')">×</span>
+    </span>`).join('');
+  bar.innerHTML = `
+    <span class="folder-chip ${currentFolderId === null ? 'active' : ''}" onclick="selectFolder(null)">Barchasi</span>
+    ${chips}
+    <button class="folder-chip-add" onclick="createFolder()">+ Yangi papka</button>
+  `;
+}
+
+function selectFolder(folderId) {
+  currentFolderId = folderId;
+  renderFolderBar();
+  renderVideoGrid();
+}
+
+function createFolder() {
+  document.getElementById('newFolderName').value = '';
+  setStatus('folderModalStatus', '', '');
+  openModal('folderModal');
+  setTimeout(() => document.getElementById('newFolderName').focus(), 50);
+}
+
+async function submitNewFolder() {
+  const name = document.getElementById('newFolderName').value.trim();
+  if (!name) {
+    setStatus('folderModalStatus', "Papka nomini kiriting.", 'err');
+    return;
+  }
+  try {
+    const form = new FormData();
+    form.append('name', name);
+    await apiFetch('/api/folders', { method: 'POST', body: form });
+    closeModal('folderModal');
+    await loadFolders();
+  } catch (e) {
+    setStatus('folderModalStatus', "Xato: " + e.message, 'err');
+  }
+}
+
+function deleteFolder(folderId, name) {
+  showConfirm(`"${name}" papkasini o'chirmoqchimisiz? Ichidagi videolar o'chmaydi, faqat papkadan chiqadi.`, async () => {
+    try {
+      await apiFetch(`/api/folders/${folderId}`, { method: 'DELETE' });
+      if (currentFolderId === folderId) currentFolderId = null;
+      await loadFolders();
+      await loadVideos();
+    } catch (e) {
+      alert("Xato: " + e.message);
+    }
+  });
+}
+
+let _confirmCallback = null;
+function showConfirm(message, onYes) {
+  document.getElementById('confirmModalText').textContent = message;
+  _confirmCallback = onYes;
+  openModal('confirmModal');
+}
+function confirmModalYes() {
+  const cb = _confirmCallback;
+  _confirmCallback = null;
+  closeModal('confirmModal');
+  if (cb) cb();
+}
+
+/* ============================================================ */
+/*  BULUT (umumiy fayl saqlash) - tanlov modali                  */
+/* ============================================================ */
+let _cloudPickerCallback = null;
+
+async function openCloudPicker(kind, onPick) {
+  _cloudPickerCallback = onPick;
+  openModal('cloudPickerModal');
+  const list = document.getElementById('cloudPickerList');
+  list.innerHTML = '<p class="hint">Yuklanmoqda...</p>';
+  try {
+    const files = await apiFetch(`/api/cloud-files?kind=${kind}`);
+    if (files.length === 0) {
+      list.innerHTML = '<p class="hint">Bulutda hali hech narsa yo\'q.</p>';
+      return;
+    }
+    list.innerHTML = files.map(f => `
+      <div class="job-row">
+        <div><strong>${escapeHtml(f.original_name)}</strong><div class="hint">${fmtBytes(f.file_size)}</div></div>
+        <button class="small-btn" onclick="pickCloudFile('${f.id}')">Tanlash</button>
+      </div>`).join('');
+  } catch (e) {
+    list.innerHTML = `<p class="status err">Xato: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function pickCloudFile(cloudId) {
+  const cb = _cloudPickerCallback;
+  _cloudPickerCallback = null;
+  closeModal('cloudPickerModal');
+  if (cb) cb(cloudId);
+}
+
+async function moveVideoToFolder(videoId, folderId) {
+  try {
+    const form = new FormData();
+    form.append('folder_id', folderId || '');
+    await apiFetch(`/api/videos/${videoId}/folder`, { method: 'POST', body: form });
+    await loadFolders();
+    await loadVideos();
+  } catch (e) {
+    alert("Xato: " + e.message);
+  }
+}
+
+function folderSelectHtml(v) {
+  const options = ['<option value="">— Papkasiz —</option>']
+    .concat(allFoldersCache.map(f => `<option value="${f.id}" ${v.folder_id === f.id ? 'selected' : ''}>${escapeHtml(f.name)}</option>`));
+  return `<div class="vcard-folder-select" onclick="event.stopPropagation()">
+    <select onchange="moveVideoToFolder('${v.id}', this.value)">${options.join('')}</select>
+  </div>`;
+}
+
+function renderVideoGrid() {
+  const grid = document.getElementById('videoGrid');
+  if (!grid) return;
+  const videos = currentFolderId === null ? allVideosCache : allVideosCache.filter(v => v.folder_id === currentFolderId);
+  if (videos.length === 0) {
+    grid.innerHTML = currentFolderId === null ? '<p class="hint">Hali video yuklanmagan.</p>' : '<p class="hint">Bu papkada video yo\'q.</p>';
+    return;
+  }
+  grid.innerHTML = videos.map(v => {
+    const label = v.blocked_reason ? BLOCKED_LABELS[v.blocked_reason] || v.status : (STATUS_LABELS[v.status] || v.status);
+    const pillCls = v.status === 'completed' ? 'ok' : (v.blocked_reason ? 'err' : '');
+    const thumb = v.has_thumbnail
+      ? `<div class="thumb" style="background-image:url('${API_BASE}/api/videos/${v.id}/thumbnail')"></div>`
+      : `<div class="thumb">Video</div>`;
+    return `
+    <div class="vcard" onclick="openVideoDetail('${v.id}')">
+      ${thumb}
+      <div class="vbody">
+        <p class="vname">${escapeHtml(v.original_name)}</p>
+        <p class="vmeta">${fmtBytes(v.file_size)} ${v.duration ? '· ' + fmtMinSec(v.duration) : ''}</p>
+        <p class="vmeta"><span class="pill ${pillCls}">${label}</span></p>
+        ${pipelineDotsHtml(v)}
+        ${folderSelectHtml(v)}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function pipelineDotsHtml(v) {
+  const order = ['uploaded', 'segmenting', 'segments_ready', 'transcribing', 'transcription_ready',
+    'transcription_approved', 'translation_ready', 'audio_processing', 'audio_ready', 'video_rendering', 'completed'];
+  const idx = order.indexOf(v.status);
+  const stageAt = { segments: 2, transcript: 5, translate: 6, audio: 8, render: 10 };
+  function dotClass(stageIdx) {
+    if (v.status === 'completed') return 'done';
+    if (idx > stageIdx) return 'done';
+    if (idx === stageIdx || (idx === stageIdx - 1 && v.blocked_reason)) return v.blocked_reason ? 'error' : 'active';
+    return 'wait';
+  }
+  return `<div class="pipeline-row">
+    <span class="pipe-dot ${dotClass(stageAt.segments)}" title="Segmentlar"></span>
+    <span class="pipe-dot ${dotClass(stageAt.transcript)}" title="Matn"></span>
+    <span class="pipe-dot ${dotClass(stageAt.translate)}" title="Tarjima"></span>
+    <span class="pipe-dot ${dotClass(stageAt.audio)}" title="Audio"></span>
+    <span class="pipe-dot ${dotClass(stageAt.render)}" title="Yakuniy video"></span>
+  </div>`;
+}
+
+/* ============================================================ */
+/*  VIDEO DETAIL VIEW (barcha bosqichlar shu yerda)               */
+/* ============================================================ */
+let currentDetailVideoId = null;
+let currentDetailVideoStatus = null;
+
+function openVideoDetail(id) {
+  switchPage('page-videos');
+  currentDetailVideoId = id;
+  currentDetailVideoStatus = null;
+  document.getElementById('videosGridView').style.display = 'none';
+  document.getElementById('videoDetailView').style.display = 'block';
+  loadVideoDetail(id);
+}
+
+function closeVideoDetail() {
+  currentDetailVideoId = null;
+  currentDetailVideoStatus = null;
+  document.getElementById('videoDetailView').style.display = 'none';
+  document.getElementById('videosGridView').style.display = 'block';
+  loadVideos();
+}
+
+async function loadVideoDetail(id) {
+  try {
+    const v = await apiFetch(`/api/videos/${id}`);
+    currentDetailVideoStatus = v.status;
+    document.getElementById('videoDetailContent').innerHTML = renderVideoDetail(v);
+    if (v.status === 'completed') initPlayer(id);
+  } catch (e) {
+    document.getElementById('videoDetailContent').innerHTML = `<p class="status err">Xato: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function stageStatusBadge(text, cls) {
+  return `<span class="stage-status ${cls}">${escapeHtml(text)}</span>`;
+}
+
+function renderVideoDetail(v) {
+  const thumb = v.has_thumbnail
+    ? `<img src="${API_BASE}/api/videos/${v.id}/thumbnail" style="width:100%; max-width:280px; border-radius:10px; margin-bottom:10px;">`
+    : '';
+  let html = `
+    <div class="card">
+      <div class="row" style="justify-content:space-between; margin-top:0;">
+        <h2 style="margin:0;">${escapeHtml(v.original_name)}</h2>
+        <button class="small-btn danger" onclick="deleteVideoFromDetail('${v.id}')">Videoni o'chirish</button>
+      </div>
+      ${thumb}
+      <div class="status">${fmtBytes(v.file_size)} ${v.duration ? '· ' + fmtMinSec(v.duration) : ''} · Xarajat: ${fmtUsd(v.cost_total)}</div>
+      ${v.message ? `<div class="status">${escapeHtml(v.message)}</div>` : ''}
+      ${v.blocked_reason ? `<div class="warn-box">${escapeHtml(BLOCKED_LABELS[v.blocked_reason] || v.blocked_reason)}${v.repetition_info ? ': ' + escapeHtml(v.repetition_info) : ''}</div>` : ''}
+    </div>`;
+
+  html += renderSegmentStage(v);
+  html += renderTranscriptStage(v);
+  html += renderTranslationStage(v);
+  html += renderAudioStage(v);
+  html += renderRenderStage(v);
+  html += renderFilesAndLog(v);
+
+  return html;
+}
+
+function renderSegmentStage(v) {
+  const reached = ['segmenting', 'segments_ready', 'transcribing', 'transcription_ready', 'transcription_approved',
+    'translation_ready', 'audio_processing', 'audio_ready', 'video_rendering', 'completed'].includes(v.status);
+  let body = '';
+  let badge = stageStatusBadge("Bo'linmagan", '');
+  if (v.status === 'uploaded') {
+    const estimate = appConfig.chunk_seconds ? Math.ceil((v.duration || 0) / appConfig.chunk_seconds) : '?';
+    body = `<p class="hint">Bu video taxminan ${estimate} ta bo'lakka bo'linadi (${appConfig.chunk_seconds}s har biri).</p>
+      <button class="action" onclick="segmentVideo('${v.id}')">Bo'laklarga bo'lish</button>`;
+  } else if (v.status === 'segmenting') {
+    if (v.blocked_reason === 'error') {
+      badge = stageStatusBadge('Xato', 'error');
+      body = `<button class="action" onclick="segmentVideo('${v.id}')">Qayta urinish</button>`;
+    } else {
+      badge = stageStatusBadge('Bo\'linmoqda...', 'active');
+      body = `<p class="hint">Server videoni bo'laklarga bo'lmoqda...</p>`;
+    }
+  } else if (reached) {
+    badge = stageStatusBadge(`${v.chunk_count} ta segment tayyor`, 'done');
+  }
+  return `<div class="stage"><div class="stage-head"><h3>1. Video segmentlari</h3>${badge}</div>${body}</div>`;
+}
+
+const ISSUE_LABELS = { repetition: 'Takrorlanish ehtimoli', no_speech: 'Nutq aniqlanmadi', low_confidence: 'Ishonchlilik past', wrong_language: 'Til chalkashgan' };
+
+function chunksZipButtonHtml(v) {
+  if (!v.chunk_count) return '';
+  return `<div class="row" style="margin-top:8px;">
+    <a class="small-btn" style="text-decoration:none; display:inline-block;"
+       href="${API_BASE}/api/videos/${v.id}/chunks/zip" download>📦 Barcha bo'laklar audiosini ZIP qilib yuklab olish</a>
+  </div>`;
+}
+
+function renderChunkDetailList(chunks) {
+  if (!chunks || !chunks.length) return '';
+  return '<div class="chunk-detail-list">' + chunks.map(c => {
+    const statusLabel = { pending: 'Navbatda', running: 'Ishlanmoqda', completed: 'Tayyor', error: 'Xato' }[c.status] || c.status;
+    const statusCls = c.status === 'completed' ? 'ok' : c.status === 'error' ? 'err' : '';
+    const runningBadge = c.status === 'running' && c.running_seconds != null
+      ? ` <span class="pill">${Math.floor(c.running_seconds)}s dan beri</span>` : '';
+    const issuesHtml = (c.issues || []).map(i =>
+      `<div class="issue-line">⚠️ ${escapeHtml(ISSUE_LABELS[i.kind] || i.kind)}: ${escapeHtml(i.detail)} (${fmtMinSec(i.start)}–${fmtMinSec(i.end)})</div>`
+    ).join('');
+    let retryBtn = '';
+    if (c.status === 'error') {
+      retryBtn = `<button class="small-btn" onclick="event.stopPropagation(); retryChunk(currentDetailVideoId, '${c.id}')">Qayta urinish</button>`;
+    } else if (c.status === 'completed') {
+      retryBtn = `<button class="small-btn" onclick="event.stopPropagation(); retryChunkConfirm(currentDetailVideoId, '${c.id}', ${c.chunk_index + 1})">🔁 Bo'lakni qayta yubor</button>`;
+    }
+    const cancelBtn = c.status === 'running' && c.running_seconds != null
+      ? `<button class="small-btn" onclick="event.stopPropagation(); cancelChunk(currentDetailVideoId, '${c.id}')">Bekor qilib qayta urinish</button>` : '';
+    const segmentRows = (c.segments && c.segments.length)
+      ? `<div style="margin-top:10px;">
+           <p class="hint" style="margin:4px 0;">Ichidagi jumlalar — har birini alohida tinglash, tahrirlash yoki Whisper'ga qayta yuborish mumkin:</p>
+           ${c.segments.map(seg => renderChunkSegmentRow(currentDetailVideoId, seg)).join('')}
+         </div>`
+      : '';
+    const uploadInputId = `chunk-upload-${currentDetailVideoId}-${c.id}`;
+    const chunkFileActions = `
+      <div style="margin-top:6px;">
+        <a class="small-btn" style="text-decoration:none; display:inline-block;"
+           href="${API_BASE}/api/videos/${currentDetailVideoId}/chunks/${c.id}/audio" download
+           onclick="event.stopPropagation();">⬇️ Audio yuklab olish</a>
+        <input type="file" id="${uploadInputId}" style="display:none;"
+          onchange="uploadChunkTranscript(currentDetailVideoId, '${c.id}', ${c.chunk_index + 1}, '${uploadInputId}')">
+        <label for="${uploadInputId}" class="small-btn" style="cursor:pointer;" onclick="event.stopPropagation();">⬆️ Tayyor matn yuklash</label>
+        <div class="hint" style="margin-top:4px;">Istalgan faylni tanlashingiz mumkin (kengaytmasi cheklanmagan) - format ichidagi mazmuniga qarab avtomatik aniqlanadi: SRT vaqt belgilari (00:00:01,000 --> ...) topilsa aniq vaqt bilan (tavsiya etiladi - to'liq nazorat sizda), aks holda oddiy matn gaplarga bo'linib vaqt oralig'iga taxminan taqsimlanadi. SRT'da 0:00 - shu bo'lakning (yuklab olgan audioning) boshlanishi.</div>
+      </div>`;
+    return `
+    <details class="chunk-row">
+      <summary>
+        <span><strong>Bo'lak ${c.chunk_index + 1}</strong> — ${fmtMinSec(c.start_time)} → ${fmtMinSec(c.end_time)} (${c.duration}s)</span>
+        <span><span class="pill ${statusCls}">${statusLabel}</span>${runningBadge}${c.issues && c.issues.length ? ` <span class="pill err">${c.issues.length} muammo</span>` : ''}</span>
+      </summary>
+      <div class="chunk-row-body">
+        <p class="hint" style="margin:6px 0;">${escapeHtml(c.text || '(matn yo\'q)')}</p>
+        ${issuesHtml}
+        ${c.error ? `<div class="issue-line">❌ ${escapeHtml(c.error)}</div>` : ''}
+        ${retryBtn}
+        ${cancelBtn}
+        ${chunkFileActions}
+        ${segmentRows}
+      </div>
+    </details>`;
+  }).join('') + '</div>';
+}
+
+function renderChunkSegmentRow(videoId, seg) {
+  return `
+    <div class="block-editor-row" style="grid-template-columns:52px 1fr 28px 28px; gap:5px; padding:5px 0;" id="c-seg-row-${videoId}-${seg.index}">
+      <div class="bidx" style="font-size:10.5px; padding-top:6px;">${fmtMinSec(seg.start)}</div>
+      <textarea id="c-seg-text-${videoId}-${seg.index}" style="min-height:38px; font-size:12px;"
+        onblur="saveChunkSegmentText('${videoId}', ${seg.index}, this)">${escapeHtml(seg.text)}</textarea>
+      <button class="small-btn" style="font-size:11px; padding:3px 5px; align-self:start; margin-top:6px;"
+        onclick="event.stopPropagation(); playSegmentAudio('${videoId}', ${seg.index}, this)" title="Tinglash">🔊</button>
+      <button class="small-btn" style="font-size:11px; padding:3px 5px; align-self:start; margin-top:6px;"
+        onclick="event.stopPropagation(); retranscribeSegment('${videoId}', ${seg.index}, this)" title="Whisper'ga qayta yuborish">🔁</button>
+    </div>`;
+}
+
+async function saveChunkSegmentText(videoId, index, taEl) {
+  const form = new FormData();
+  form.append('text', taEl.value);
+  try {
+    await apiFetch(`/api/videos/${videoId}/transcript/segments/${index}/text`, { method: 'POST', body: form });
+    taEl.style.borderColor = 'var(--ok)';
+    setTimeout(() => { taEl.style.borderColor = ''; }, 1000);
+  } catch (e) {
+    alert('Xato: ' + e.message);
+  }
+}
+
+function renderFlaggedIssuesSummary(v) {
+  if (!v.flagged_issues || !v.flagged_issues.length) return '';
+  return `<details class="warn-box" style="margin-top:10px;">
+    <summary style="cursor:pointer;">⚠️ ${v.flagged_issues.length} ta shubhali joy aniqlandi (bosib ko'ring)</summary>
+    ${v.flagged_issues.map(i => `<div class="issue-line">Bo'lak ${i.chunk_index + 1}, ${fmtMinSec(i.start)}–${fmtMinSec(i.end)}: ${escapeHtml(ISSUE_LABELS[i.kind] || i.kind)} — ${escapeHtml(i.detail)}</div>`).join('')}
+  </details>`;
+}
+
+function renderTranscriptStage(v) {
+  const before = ['uploaded', 'segmenting'].includes(v.status);
+  const ready = v.status === 'transcription_ready';
+  const approved = !['uploaded', 'segmenting', 'segments_ready', 'transcribing', 'transcription_ready'].includes(v.status);
+
+  let badge = stageStatusBadge('Olinmagan', '');
+  let body = '';
+
+  if (before) {
+    badge = stageStatusBadge('Kutilmoqda', '');
+    body = `<p class="hint">Avval videoni bo'laklarga bo'ling.</p>`;
+  } else if (v.status === 'segments_ready') {
+    badge = stageStatusBadge('Boshlanmagan', '');
+    body = `
+      <div class="grid2" style="margin:10px 0;">
+        <div>
+          <label class="field">Til</label>
+          <select id="lang-${v.id}">
+            <option value="">Avtomatik aniqlash</option>
+            <option value="ru">Ruscha</option>
+            <option value="en">Inglizcha</option>
+          </select>
+        </div>
+        <div>
+          <label class="field">Yo'nalish (lug'at uchun)</label>
+          <select id="topicGroup-${v.id}">
+            <option value="">Umumiy (barcha yo'nalishlar aralash)</option>
+            ${glossaryGroupsCache.map(g => `<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <label class="field">Qo'shimcha ko'rsatma (ixtiyoriy)</label>
+      <input type="text" id="instr-${v.id}" placeholder="masalan: Bu darsda maxsus atamalar bor">
+      <button class="action" onclick="startTranscribe('${v.id}')" style="margin-top:10px;">Transkripsiyani boshlash</button>`;
+  } else if (v.status === 'transcribing') {
+    badge = v.blocked_reason ? stageStatusBadge(BLOCKED_LABELS[v.blocked_reason], 'error') : stageStatusBadge('Ishlanmoqda...', 'active');
+    body = `<div class="progress-wrap"><div class="progress-bar" style="width:${v.progress || 0}%;"></div></div>`;
+    body += renderChunkDetailList(v.chunks);
+    body += `<div class="row">`;
+    if (v.blocked_reason) body += `<button class="action" onclick="jobAction('${v.id}','resume')">Davom ettirish</button>`;
+    else body += `<button class="small-btn" onclick="jobAction('${v.id}','pause')">To'xtatish</button><button class="small-btn" onclick="jobAction('${v.id}','cancel')">Bekor qilish</button>`;
+    body += `</div>
+      <div class="row">
+        <input type="text" id="rangeStart-${v.id}" placeholder="boshlanish, mm:ss" style="width:120px;">
+        <span>dan</span>
+        <input type="text" id="rangeEnd-${v.id}" placeholder="tugash, mm:ss" style="width:120px;">
+        <button class="secondary" onclick="retryRange('${v.id}')">Shu vaqt oralig'ini qayta ishlash</button>
+      </div>`;
+  } else if (ready) {
+    badge = stageStatusBadge('Tekshirishni kutmoqda', 'active');
+    body = renderFlaggedIssuesSummary(v);
+    body += `<textarea readonly style="min-height:160px;">${escapeHtml(v.transcript_text || '')}</textarea>
+      ${chunksZipButtonHtml(v)}
+      <details style="margin-top:8px;"><summary style="cursor:pointer; font-size:12.5px; color:var(--muted);">Bo'laklar bo'yicha batafsil</summary>${renderChunkDetailList(v.chunks)}</details>
+      <div class="row">
+        <button class="action" onclick="approveTranscript('${v.id}')">Tasdiqlash</button>
+        <button class="secondary" onclick="openTranscriptBlockEditor('${v.id}')">Bo'laklarni tahrirlash</button>
+      </div>
+      <div id="transcript-block-editor-${v.id}"></div>`;
+  } else if (approved) {
+    const langLabel = v.detected_language ? ({ ru: 'Ruscha', en: 'Inglizcha' }[v.detected_language] || v.detected_language) : '';
+    badge = stageStatusBadge(`✅ Tasdiqlangan ${langLabel ? '(' + langLabel + ')' : ''}`, 'done');
+    body = renderFlaggedIssuesSummary(v);
+    body += `<details><summary style="cursor:pointer; font-size:12.5px; color:var(--muted);">Matnni ko'rish</summary>
+      <textarea readonly style="min-height:140px; margin-top:8px;">${escapeHtml(v.transcript_text || '')}</textarea></details>
+      ${chunksZipButtonHtml(v)}
+      <details style="margin-top:8px;"><summary style="cursor:pointer; font-size:12.5px; color:var(--muted);">Bo'laklar bo'yicha batafsil (5 daqiqalik qismlar)</summary>${renderChunkDetailList(v.chunks)}</details>
+      <div class="row"><button class="secondary" onclick="openTranscriptBlockEditor('${v.id}')">Bo'laklarni tahrirlash</button></div>
+      <div id="transcript-block-editor-${v.id}"></div>`;
+  }
+  return `<div class="stage ${before ? 'dim' : ''}"><div class="stage-head"><h3>2. Original matn</h3>${badge}</div>${body}</div>`;
+}
+
+function renderTranslationStage(v) {
+  const before = !v.transcript_approved;
+  let badge = stageStatusBadge('Yo\'q', '');
+  let body = '';
+
+  if (before) {
+    body = `<p class="hint">Avval original matnni tasdiqlang.</p>`;
+  } else if (v.translation_status === 'generating') {
+    badge = stageStatusBadge('Tarjima qilinmoqda...', 'active');
+    body = `<p class="hint">Server avtomatik tarjima qilmoqda...</p>`;
+  } else if (['ready', 'uploaded', 'pasted'].includes(v.translation_status)) {
+    badge = stageStatusBadge('✅ Tayyor', 'done');
+    body = `<details><summary style="cursor:pointer; font-size:12.5px; color:var(--muted);">Tarjimani ko'rish</summary>
+      <textarea readonly style="min-height:140px; margin-top:8px;">${escapeHtml(v.translation_text || '')}</textarea></details>
+      <div class="row">
+        <button class="action" onclick="openBlockEditor('${v.id}')">Tahrirlash va audio</button>
+        <button class="secondary" onclick="showTranslateForm('${v.id}')">Tayyor matn bilan almashtirish</button>
+      </div>
+      <div id="translate-form-${v.id}"></div>
+      <div id="block-editor-${v.id}"></div>`;
+  } else {
+    if (v.translation_status === 'failed') badge = stageStatusBadge('Xato', 'error');
+    body = `
+      <div class="row" style="margin-top:0;">
+        <button class="action" onclick="autoTranslate('${v.id}', 'openai')">OpenAI orqali tarjima qilish</button>
+        <button class="action" onclick="autoTranslate('${v.id}', 'claude')">Claude orqali tarjima qilish</button>
+        <button class="secondary" onclick="showTranslateForm('${v.id}')">Tayyor matn kiritish</button>
+      </div>
+      <div id="translate-form-${v.id}"></div>`;
+  }
+  return `<div class="stage ${before ? 'dim' : ''}"><div class="stage-head"><h3>3. O'zbekcha tarjima</h3>${badge}</div>${body}</div>`;
+}
+
+function showTranslateForm(id) {
+  const el = document.getElementById('translate-form-' + id);
+  if (!el) return;
+  if (el.innerHTML) { el.innerHTML = ''; return; }
+  el.innerHTML = `
+    <div class="card" style="margin-top:10px; background:#fdfcfa;">
+      <h3 style="margin-top:0;">O'zbekcha SRT faylni yuklash</h3>
+      <p class="hint">Tayyorlagan o'zbekcha SRT faylingizni tanlang (kompyuter, telefon yoki iPad'dan) — o'z vaqt belgilari bilan to'g'ridan-to'g'ri ishlatiladi.</p>
+      <div class="row">
+        <input type="file" id="translateSrtDirect-${id}" accept=".srt">
+        <button class="action" onclick="submitDirectSrt('${id}')">SRT'ni yuklash</button>
+        <button class="small-btn" onclick="openCloudPicker('file', (cloudId) => useCloudSrt('${id}', cloudId))">☁ Bulutdan olish</button>
+      </div>
+      <div class="status" id="translateSrtDirectStatus-${id}"></div>
+    </div>
+    <p class="hint" style="margin-top:14px;">Yoki: har bir original segment uchun bitta bo'lak, bo'sh qator bilan ajratilgan holda matn kiriting (yoki original bilan bir xil sondagi SRT).</p>
+    <textarea id="translateText-${id}" placeholder="Birinchi segment tarjimasi
+
+Ikkinchi segment tarjimasi
+
+..."></textarea>
+    <div class="row">
+      <input type="file" id="translateFile-${id}" accept=".txt,.docx,.srt">
+      <button class="secondary" onclick="submitTranslateFile('${id}')">Fayldan yuklash</button>
+      <button class="action" onclick="submitTranslateText('${id}')">Matnni saqlash</button>
+    </div>
+    <div class="status" id="translateFormStatus-${id}"></div>`;
+}
+
+async function submitDirectSrt(id) {
+  const fileInput = document.getElementById('translateSrtDirect-' + id);
+  if (!fileInput.files[0]) { setStatus('translateSrtDirectStatus-' + id, 'SRT fayl tanlanmagan.', 'err'); return; }
+  try {
+    const form = new FormData();
+    form.append('file', fileInput.files[0]);
+    const r = await apiFetch(`/api/videos/${id}/translate/srt-direct`, { method: 'POST', body: form });
+    setStatus('translateSrtDirectStatus-' + id, `SRT yuklandi: ${r.segment_count} ta bo'lak.`, 'ok');
+    loadVideoDetail(id);
+  } catch (e) {
+    setStatus('translateSrtDirectStatus-' + id, 'Xato: ' + e.message, 'err');
+  }
+}
+
+async function useCloudSrt(id, cloudId) {
+  try {
+    const form = new FormData();
+    form.append('cloud_file_id', cloudId);
+    const r = await apiFetch(`/api/videos/${id}/translate/srt-direct-from-cloud`, { method: 'POST', body: form });
+    setStatus('translateSrtDirectStatus-' + id, `SRT bulutdan yuklandi: ${r.segment_count} ta bo'lak.`, 'ok');
+    loadVideoDetail(id);
+  } catch (e) {
+    setStatus('translateSrtDirectStatus-' + id, 'Xato: ' + e.message, 'err');
+  }
+}
+
+/* ---- Tahrirlash va audio: bo'lak-darajasidagi tarjima tahriri (§10-13) ---- */
+let blockEditorData = [];
+
+async function openBlockEditor(id) {
+  const el = document.getElementById('block-editor-' + id);
+  if (!el) return;
+  if (el.innerHTML) { el.innerHTML = ''; return; }
+  try {
+    blockEditorData = await apiFetch(`/api/videos/${id}/translation/blocks`);
+  } catch (e) {
+    el.innerHTML = `<p class="status err">Xato: ${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  el.innerHTML = `
+    <div class="card" style="margin-top:10px; background:#fdfcfa;">
+      <h3 style="margin-top:0;">Xatoni to'g'irlash (vaqt belgisi orqali)</h3>
+      <p class="hint">Qaysi segment(lar)da xato ekanini raqam bilan ko'rsating, so'ng tuzatilgan SRT faylni yuklang.
+        Tizim faqat vaqt belgisi mos kelgan segmentlarni yangilaydi — mos kelmasa hech narsa o'zgartirilmaydi.</p>
+      <div class="row">
+        <input type="text" id="fixIndices-${id}" placeholder="masalan: 3, 15, 42" style="max-width:200px;">
+        <input type="file" id="fixSrtFile-${id}" accept=".srt">
+        <button class="action" onclick="fixSegmentsByTimestamp('${id}')">Tekshirish va qo'llash</button>
+      </div>
+      <div class="status" id="fixSegmentsStatus-${id}"></div>
+    </div>
+
+    <div class="card" style="margin-top:10px;">
+      <h3 style="margin-top:0;">Tahrirlash va audio (${blockEditorData.length} ta bo'lak)</h3>
+      <p class="hint">Faqat o'zgartirgan bo'laklaringizning audiosi qayta yaratiladi — qolganlari tegilmaydi.</p>
+      <div class="row">
+        <input type="file" id="blockReplaceFile-${id}" accept=".txt,.docx,.srt">
+        <button class="secondary" onclick="previewBlockFile('${id}')">Fayldan ko'rish</button>
+      </div>
+      <div class="status" id="blockFilePreviewStatus-${id}"></div>
+      <div id="blockEditorRows-${id}" style="margin-top:10px; max-height:420px; overflow-y:auto;">
+        ${blockEditorData.map((b, i) => renderBlockRow(id, b, i)).join('')}
+      </div>
+      <div class="row">
+        <button class="action" onclick="saveBlockEdits('${id}')">Saqlash / Tugadi</button>
+        <button class="secondary" onclick="document.getElementById('block-editor-${id}').innerHTML=''">Yopish</button>
+      </div>
+      <div class="status" id="blockEditorStatus-${id}"></div>
+    </div>`;
+}
+
+async function fixSegmentsByTimestamp(id) {
+  const indices = document.getElementById('fixIndices-' + id).value.trim();
+  const fileInput = document.getElementById('fixSrtFile-' + id);
+  if (!indices) { setStatus('fixSegmentsStatus-' + id, "Segment raqamlarini kiriting (masalan: 3, 15, 42).", 'err'); return; }
+  if (!fileInput.files[0]) { setStatus('fixSegmentsStatus-' + id, "Tuzatilgan SRT faylni tanlang.", 'err'); return; }
+
+  setStatus('fixSegmentsStatus-' + id, 'Tekshirilmoqda...', '');
+  try {
+    const form = new FormData();
+    form.append('indices', indices);
+    form.append('file', fileInput.files[0]);
+    const resp = await fetch(`${API_BASE}/api/videos/${id}/translation/fix-segments`, { method: 'POST', body: form });
+    const data = await resp.json();
+    if (!resp.ok) {
+      const detail = data.detail || {};
+      const errList = (detail.errors || []).map(e => `<div class="issue-line">❌ ${escapeHtml(e.reason)}</div>`).join('');
+      document.getElementById('fixSegmentsStatus-' + id).innerHTML =
+        `<div class="status err">${escapeHtml(detail.message || 'Xato yuz berdi.')}</div>${errList}`;
+      return;
+    }
+    setStatus('fixSegmentsStatus-' + id,
+      `✅ ${data.fixed_indices.join(', ')} - segmentlar yangilandi. Audio shu segmentlar uchun qayta yaratilmoqda.`, 'ok');
+    document.getElementById('fixIndices-' + id).value = '';
+    fileInput.value = '';
+    loadVideoDetail(id);
+  } catch (e) {
+    setStatus('fixSegmentsStatus-' + id, 'Xato: ' + e.message, 'err');
+  }
+}
+
+function renderBlockRow(videoId, b, i) {
+  const audioLabel = b.audio ? ({ completed: '✅', pending: '⏳', running: '⏳', error: '❌' }[b.audio.status] || '') : '';
+  return `
+    <div class="block-editor-row" id="block-row-${videoId}-${i}">
+      <div class="bidx">${i + 1} ${audioLabel}<br>
+        <button class="small-btn" style="margin-top:4px; font-size:10.5px; padding:2px 6px;" onclick="playSegmentAudio('${videoId}', ${i}, this)" title="Bu bo'lakni tinglash">🔊</button>
+        <button class="small-btn" style="margin-top:2px; font-size:10.5px; padding:2px 6px;" onclick="retranscribeSegment('${videoId}', ${i}, this)" title="Original matnni Whisper'ga qayta yuborib yangilaydi, tarjimasi tozalanadi">🔁</button>
+      </div>
+      <textarea readonly id="block-orig-${videoId}-${i}">${escapeHtml(b.original_text)}</textarea>
+      <textarea id="block-text-${videoId}-${i}" oninput="markBlockChanged('${videoId}', ${i})">${escapeHtml(b.translation_text)}</textarea>
+    </div>`;
+}
+
+function markBlockChanged(videoId, i) {
+  const row = document.getElementById(`block-row-${videoId}-${i}`);
+  const textarea = document.getElementById(`block-text-${videoId}-${i}`);
+  if (row && textarea) {
+    row.classList.toggle('changed', textarea.value !== blockEditorData[i].translation_text);
+  }
+}
+
+async function previewBlockFile(id) {
+  const fileInput = document.getElementById('blockReplaceFile-' + id);
+  if (!fileInput.files[0]) { setStatus('blockFilePreviewStatus-' + id, 'Fayl tanlanmagan.', 'err'); return; }
+  try {
+    const form = new FormData();
+    form.append('file', fileInput.files[0]);
+    const r = await apiFetch(`/api/videos/${id}/translation/preview-file`, { method: 'POST', body: form });
+    if (r.texts.length !== blockEditorData.length) {
+      setStatus('blockFilePreviewStatus-' + id, `Fayldagi bo'laklar soni (${r.texts.length}) mos kelmadi (kerak: ${blockEditorData.length}).`, 'err');
+      return;
+    }
+    setStatus('blockFilePreviewStatus-' + id, "Fayl yuklandi. Endi qaysi bo'laklarni almashtirishni tanlab, matnini tahrirlang (pastdagi maydonlarga fayldan nusxa ko'chirilmoqda, kerakli joyларini o'zgartiring).", 'ok');
+    r.texts.forEach((t, i) => {
+      const ta = document.getElementById(`block-text-${id}-${i}`);
+      if (ta && t !== blockEditorData[i].translation_text) {
+        ta.value = t;
+        markBlockChanged(id, i);
+      }
+    });
+  } catch (e) {
+    setStatus('blockFilePreviewStatus-' + id, 'Xato: ' + e.message, 'err');
+  }
+}
+
+async function saveBlockEdits(id) {
+  const texts = blockEditorData.map((b, i) => document.getElementById(`block-text-${id}-${i}`).value);
+  try {
+    const r = await apiFetch(`/api/videos/${id}/translation/save-blocks`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ texts }),
+    });
+    setStatus('blockEditorStatus-' + id, r.changed_count > 0
+      ? `${r.changed_count} ta bo'lak saqlandi${r.audio_requeued ? ', audio qayta yaratilmoqda...' : '.'}`
+      : "O'zgarish topilmadi.", 'ok');
+    document.getElementById('block-editor-' + id).innerHTML = '';
+    loadVideoDetail(id);
+  } catch (e) {
+    setStatus('blockEditorStatus-' + id, 'Xato: ' + e.message, 'err');
+  }
+}
+
+/* ---- Original matnni (Video -> Matn) bo'lak-darajasida tahrirlash ---- */
+let transcriptBlockEditorData = [];
+
+async function openTranscriptBlockEditor(id) {
+  const el = document.getElementById('transcript-block-editor-' + id);
+  if (!el) return;
+  if (el.innerHTML) { el.innerHTML = ''; return; }
+  try {
+    transcriptBlockEditorData = await apiFetch(`/api/videos/${id}/transcript/blocks`);
+  } catch (e) {
+    el.innerHTML = `<p class="status err">Xato: ${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  el.innerHTML = `
+    <div class="card" style="margin-top:10px; background:#fdfcfa;">
+      <h3 style="margin-top:0;">Original matnni tahrirlash (${transcriptBlockEditorData.length} ta bo'lak)</h3>
+      <p class="hint">Whisper xato yozgan joyni shu yerda to'g'ridan-to'g'ri tuzating - qayta Whisper'ga yuborilmaydi.</p>
+      <div id="transcriptBlockRows-${id}" style="max-height:420px; overflow-y:auto;">
+        ${transcriptBlockEditorData.map((b, i) => renderTranscriptBlockRow(id, b, i)).join('')}
+      </div>
+      <div class="row">
+        <button class="action" onclick="saveTranscriptBlockEdits('${id}')">Saqlash</button>
+        <button class="secondary" onclick="document.getElementById('transcript-block-editor-${id}').innerHTML=''">Yopish</button>
+      </div>
+      <div class="status" id="transcriptBlockEditorStatus-${id}"></div>
+    </div>`;
+}
+
+function renderTranscriptBlockRow(videoId, b, i) {
+  return `
+    <div class="block-editor-row" style="grid-template-columns:60px 1fr 46px;" id="t-block-row-${videoId}-${i}">
+      <div class="bidx">${i + 1}<br>${fmtMinSec(b.start)}<br>
+        <button class="small-btn" style="margin-top:4px; font-size:10.5px; padding:2px 6px;" onclick="playSegmentAudio('${videoId}', ${i}, this)" title="Bu bo'lakni tinglash">🔊</button>
+      </div>
+      <textarea id="t-block-text-${videoId}-${i}" oninput="markTranscriptBlockChanged('${videoId}', ${i})">${escapeHtml(b.text)}</textarea>
+      <button class="small-btn" style="align-self:start; margin-top:8px;" onclick="retranscribeSegment('${videoId}', ${i}, this)" title="Bu bo'lakni original videodan Whisper'ga qayta yuborib, matnini yangilaydi">🔁</button>
+    </div>`;
+}
+
+function playSegmentAudio(videoId, index, btnEl) {
+  const url = `${API_BASE}/api/videos/${videoId}/transcript/segments/${index}/audio`;
+  const original = btnEl.textContent;
+  btnEl.textContent = '…';
+  btnEl.disabled = true;
+  const audio = new Audio(url);
+  const reset = () => { btnEl.textContent = original; btnEl.disabled = false; };
+  audio.addEventListener('playing', () => { btnEl.textContent = '⏸'; });
+  audio.addEventListener('ended', reset);
+  audio.addEventListener('error', () => { reset(); alert("Audio yuklab bo'lmadi."); });
+  audio.play().catch(e => { reset(); alert('Xato: ' + e.message); });
+}
+
+let _retranscribeInFlight = false;
+
+async function retranscribeSegment(videoId, index, btnEl) {
+  if (_retranscribeInFlight) return;
+  if (!confirm(`${index + 1}-bo'lakni Whisper orqali qayta olishni xohlaysizmi? (kichik OpenAI xarajati bo'ladi)`)) return;
+  _retranscribeInFlight = true;
+  const originalLabel = btnEl.textContent;
+  btnEl.disabled = true; btnEl.textContent = '…';
+  try {
+    const r = await apiFetch(`/api/videos/${videoId}/transcript/segments/${index}/retranscribe`, { method: 'POST' });
+
+    if (transcriptBlockEditorData[index]) {
+      transcriptBlockEditorData[index].text = r.text;
+      const ta = document.getElementById(`t-block-text-${videoId}-${index}`);
+      if (ta) { ta.value = r.text; markTranscriptBlockChanged(videoId, index); }
+    }
+    if (blockEditorData[index]) {
+      blockEditorData[index].original_text = r.text;
+      const origTa = document.getElementById(`block-orig-${videoId}-${index}`);
+      if (origTa) origTa.value = r.text;
+      if (r.translation_cleared) {
+        blockEditorData[index].translation_text = '';
+        const trTa = document.getElementById(`block-text-${videoId}-${index}`);
+        if (trTa) { trTa.value = ''; markBlockChanged(videoId, index); }
+      }
+    }
+    const chunkSegTa = document.getElementById(`c-seg-text-${videoId}-${index}`);
+    if (chunkSegTa) chunkSegTa.value = r.text;
+    btnEl.textContent = '✅';
+    setTimeout(() => { btnEl.textContent = originalLabel; }, 1500);
+  } catch (e) {
+    alert('Xato: ' + e.message);
+    btnEl.textContent = originalLabel;
+  } finally {
+    btnEl.disabled = false;
+    _retranscribeInFlight = false;
+  }
+}
+
+function markTranscriptBlockChanged(videoId, i) {
+  const row = document.getElementById(`t-block-row-${videoId}-${i}`);
+  const textarea = document.getElementById(`t-block-text-${videoId}-${i}`);
+  if (row && textarea) {
+    row.classList.toggle('changed', textarea.value !== transcriptBlockEditorData[i].text);
+  }
+}
+
+async function saveTranscriptBlockEdits(id) {
+  const texts = transcriptBlockEditorData.map((b, i) => document.getElementById(`t-block-text-${id}-${i}`).value);
+  try {
+    const r = await apiFetch(`/api/videos/${id}/transcript/save-blocks`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ texts }),
+    });
+    setStatus('transcriptBlockEditorStatus-' + id, r.changed_count > 0
+      ? `${r.changed_count} ta bo'lak saqlandi.` : "O'zgarish topilmadi.", 'ok');
+    document.getElementById('transcript-block-editor-' + id).innerHTML = '';
+    loadVideoDetail(id);
+  } catch (e) {
+    setStatus('transcriptBlockEditorStatus-' + id, 'Xato: ' + e.message, 'err');
+  }
+}
+
+function renderAudioStage(v) {
+  const before = !['translation_ready', 'audio_processing', 'audio_ready', 'video_rendering', 'completed'].includes(v.status);
+  let badge = stageStatusBadge('Yaratilmagan', '');
+  let body = '';
+
+  if (before) {
+    body = `<p class="hint">Avval o'zbekcha tarjimani tayyorlang.</p>`;
+  } else if (v.status === 'audio_processing' && !v.blocked_reason) {
+    badge = stageStatusBadge('Yaratilmoqda...', 'active');
+    const tj = v.tts_job;
+    body = tj ? `<div class="progress-wrap"><div class="progress-bar" style="width:${tj.total_segments ? Math.round(tj.completed_segments / tj.total_segments * 100) : 0}%;"></div></div>
+      <p class="hint">${tj.completed_segments}/${tj.total_segments} segment tayyor.</p>` : '<p class="hint">Boshlanmoqda...</p>';
+  } else if (v.audio_status === 'ready') {
+    badge = stageStatusBadge('✅ Tayyor', 'done');
+    body = `<audio controls src="${API_BASE}/api/tts/jobs/${v.tts_job_id}/download"></audio>
+      <div class="row"><a class="small-btn" style="text-decoration:none; display:inline-block;" href="${API_BASE}/api/tts/jobs/${v.tts_job_id}/download">Yuklab olish</a>
+      <button class="secondary" onclick="showAudioForm('${v.id}')">Qayta yaratish</button></div>
+      <div id="audio-form-${v.id}"></div>`;
+  } else {
+    if (v.audio_status === 'error' || v.blocked_reason === 'api_key') {
+      badge = stageStatusBadge(v.blocked_reason === 'api_key' ? 'API kalit kerak' : 'Xato', 'error');
+      body = `<div class="row" style="margin-top:0;">
+        ${v.tts_job_id ? `<button class="action" onclick="resumeAudioJob('${v.tts_job_id}')">Davom ettirish</button>` : ''}
+      </div>`;
+    }
+    body += `<div id="audio-form-${v.id}"></div>
+      <div class="row"><button class="secondary" onclick="showAudioForm('${v.id}')">${v.tts_job_id ? "Sozlamalarni ko'rish" : 'Audio sozlamalari'}</button></div>`;
+  }
+  return `<div class="stage ${before ? 'dim' : ''}"><div class="stage-head"><h3>4. Audio</h3>${badge}</div>${body}</div>`;
+}
+
+async function showAudioForm(id) {
+  const el = document.getElementById('audio-form-' + id);
+  if (!el) return;
+  if (el.innerHTML) { el.innerHTML = ''; return; }
+  let settings = {};
+  try { settings = await apiFetch('/api/settings'); } catch (e) {}
+  const savedAishaKey = localStorage.getItem('aisha_api_key') || '';
+  el.innerHTML = `
+    <div class="row" style="margin-top:10px;">
+      <select id="audioProvider-${id}" onchange="toggleAudioProviderUI('${id}')">
+        <option value="aisha">Aisha AI</option>
+        <option value="openai">OpenAI</option>
+      </select>
+    </div>
+    <div id="audioAishaFields-${id}">
+      <input type="password" id="audioAishaKey-${id}" placeholder="Aisha API kalit" value="${escapeHtml(savedAishaKey)}">
+      <div class="grid2" style="margin-top:8px;">
+        <div><label class="field">Kayfiyat</label><select id="audioMood-${id}">
+          <option value="Neutral">Neutral</option><option value="Cheerful">Cheerful</option>
+          <option value="Happy">Happy</option><option value="Sad">Sad</option>
+        </select></div>
+        <div><label class="field">Tezlik</label><input type="text" id="audioSpeed-${id}" value="${escapeHtml(settings.aisha_default_speed || '1.0')}"></div>
+      </div>
+    </div>
+    <div id="audioOpenaiFields-${id}" style="display:none;">
+      <label class="field">Ovoz</label>
+      <select id="audioVoice-${id}">
+        <option value="alloy">alloy</option><option value="echo">echo</option><option value="fable">fable</option>
+        <option value="onyx">onyx</option><option value="nova">nova</option><option value="shimmer">shimmer</option>
+      </select>
+    </div>
+    <div class="save-hint"><label><input type="checkbox" id="audioStretch-${id}" ${settings.default_stretch_to_fit !== 'false' ? 'checked' : ''}> Kerak bo'lgandagina siqish</label></div>
+    <div class="row"><button class="action" onclick="submitAudioJob('${id}')">Audio yaratish</button></div>
+    <div class="status" id="audioFormStatus-${id}"></div>`;
+  document.getElementById('audioMood-' + id).value = settings.aisha_default_mood || 'Neutral';
+}
+
+function toggleAudioProviderUI(id) {
+  const provider = document.getElementById('audioProvider-' + id).value;
+  document.getElementById('audioAishaFields-' + id).style.display = provider === 'aisha' ? 'block' : 'none';
+  document.getElementById('audioOpenaiFields-' + id).style.display = provider === 'openai' ? 'block' : 'none';
+}
+
+let _pendingAudioSubmit = null; // { id, form } - "bo'sh bo'lak" tanlovi kutilayotganda
+
+async function submitAudioJob(id) {
+  const provider = document.getElementById('audioProvider-' + id).value;
+  const stretch = document.getElementById('audioStretch-' + id).checked;
+  const form = new FormData();
+  form.append('provider', provider);
+  form.append('stretch_to_fit', String(stretch));
+  if (provider === 'aisha') {
+    const key = document.getElementById('audioAishaKey-' + id).value.trim();
+    if (!key) { setStatus('audioFormStatus-' + id, 'Aisha API kalitni kiriting.', 'err'); return; }
+    localStorage.setItem('aisha_api_key', key);
+    form.append('aisha_key', key);
+    form.append('mood', document.getElementById('audioMood-' + id).value);
+    form.append('speed', document.getElementById('audioSpeed-' + id).value || '1.0');
+  } else {
+    form.append('voice', document.getElementById('audioVoice-' + id).value);
+  }
+  await startAudioJob(id, form);
+}
+
+async function startAudioJob(id, form) {
+  try {
+    const resp = await fetch(`${API_BASE}/api/videos/${id}/audio`, { method: 'POST', body: form });
+    if (resp.status === 409) {
+      const body = await resp.json().catch(() => ({}));
+      const detail = body.detail || {};
+      if (detail.kind === 'empty_segments') {
+        _pendingAudioSubmit = { id, form };
+        document.getElementById('emptySegModalText').textContent =
+          `${detail.count} ta bo'lakda tarjima matni yo'q (masalan, bo'lak: ${(detail.indices || []).join(', ')}${detail.count > (detail.indices || []).length ? '...' : ''}). Nima qilamiz?`;
+        setStatus('emptySegModalStatus', '', '');
+        openModal('emptySegModal');
+        return;
+      }
+    }
+    if (!resp.ok) {
+      let msg = 'HTTP ' + resp.status;
+      try { const j = await resp.json(); if (j.detail) msg = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail); } catch (e) {}
+      throw new Error(msg);
+    }
+    setStatus('audioFormStatus-' + id, 'Audio yaratish boshlandi.', 'ok');
+    loadVideoDetail(id);
+  } catch (e) {
+    setStatus('audioFormStatus-' + id, 'Xato: ' + e.message, 'err');
+  }
+}
+
+async function emptySegSkipAndRetry() {
+  if (!_pendingAudioSubmit) return;
+  const { id, form } = _pendingAudioSubmit;
+  _pendingAudioSubmit = null;
+  form.append('skip_empty', 'true');
+  closeModal('emptySegModal');
+  await startAudioJob(id, form);
+}
+
+async function emptySegFillAndRetry(provider) {
+  if (!_pendingAudioSubmit) return;
+  const { id } = _pendingAudioSubmit;
+  _pendingAudioSubmit = null;
+  setStatus('emptySegModalStatus', 'Tarjima qilinmoqda...', '');
+  try {
+    const fillForm = new FormData();
+    fillForm.append('provider', provider);
+    await apiFetch(`/api/videos/${id}/translate/fill-empty`, { method: 'POST', body: fillForm });
+    closeModal('emptySegModal');
+    setStatus('audioFormStatus-' + id,
+      "Bo'sh bo'laklar avtomatik tarjima qilinmoqda, tugagach \"Audio yaratish\"ni qayta bosing.", 'ok');
+    loadVideoDetail(id);
+  } catch (e) {
+    setStatus('emptySegModalStatus', 'Xato: ' + e.message, 'err');
+  }
+}
+
+async function resumeAudioJob(ttsJobId) {
+  try {
+    await apiFetch(`/api/tts/jobs/${ttsJobId}/resume`, { method: 'POST' });
+    if (currentDetailVideoId) loadVideoDetail(currentDetailVideoId);
+  } catch (e) { alert('Xato: ' + e.message); }
+}
+
+function renderRenderStage(v) {
+  const before = !['audio_ready', 'video_rendering', 'completed'].includes(v.status);
+  let badge = stageStatusBadge('Tayyor emas', '');
+  let body = '';
+
+  if (before) {
+    body = `<p class="hint">Avval audio tayyor bo'lishi kerak.</p>`;
+  } else if (v.status === 'audio_ready') {
+    body = `<button class="action" onclick="renderVideo('${v.id}')">Videoga audio qo'shish</button>`;
+  } else if (v.status === 'video_rendering' && !v.blocked_reason) {
+    badge = stageStatusBadge('Yig\'ilmoqda...', 'active');
+    body = `<p class="hint">Server original video va audioni birlashtirmoqda...</p>`;
+  } else if (v.status === 'video_rendering' && v.blocked_reason) {
+    badge = stageStatusBadge('Xato', 'error');
+    body = `<button class="action" onclick="renderVideo('${v.id}')">Qayta urinish</button>`;
+  } else if (v.status === 'completed') {
+    badge = stageStatusBadge('✅ Tayyor', 'done');
+    const uzUrl = `${API_BASE}/api/videos/${v.id}/final-download`;
+    const origUrl = `${API_BASE}/api/videos/${v.id}/original-stream`;
+    const subOrigUrl = `${API_BASE}/api/videos/${v.id}/subtitles/original.vtt`;
+    const subUzUrl = `${API_BASE}/api/videos/${v.id}/subtitles/uz.vtt`;
+    body = `
+      <div class="player-wrap">
+        <video id="player-${v.id}" controls>
+          <track id="track-original-${v.id}" kind="subtitles" src="${subOrigUrl}" srclang="orig" label="Original subtitr">
+          <track id="track-uz-${v.id}" kind="subtitles" src="${subUzUrl}" srclang="uz" label="O'zbekcha subtitr">
+        </video>
+        <div class="player-controls">
+          <button class="small-btn" onclick="seekPlayer('${v.id}', -10)">⏪ 10s</button>
+          <button class="small-btn" onclick="seekPlayer('${v.id}', 10)">10s ⏩</button>
+          <label>Audio:
+            <select id="audioTrackSel-${v.id}" onchange="switchAudioTrack('${v.id}')">
+              <option value="original">Original</option>
+              <option value="uz" selected>O'zbekcha</option>
+            </select>
+          </label>
+          <label>Subtitr:
+            <select id="subTrackSel-${v.id}" onchange="switchSubtitleTrack('${v.id}')">
+              <option value="off">O'chirilgan</option>
+              <option value="original">Original</option>
+              <option value="uz" selected>O'zbekcha</option>
+            </select>
+          </label>
+          <label>Tezlik:
+            <select id="speedSel-${v.id}" onchange="switchPlaybackSpeed('${v.id}')">
+              <option value="0.5">0.5x</option><option value="0.75">0.75x</option>
+              <option value="1" selected>1x</option><option value="1.25">1.25x</option>
+              <option value="1.5">1.5x</option><option value="2">2x</option>
+            </select>
+          </label>
+        </div>
+        <div class="row">
+          <a class="small-btn" style="text-decoration:none; display:inline-block;" href="${uzUrl}">O'zbekcha videoni yuklab olish</a>
+          <a class="small-btn" style="text-decoration:none; display:inline-block;" href="${origUrl}">Original videoni yuklab olish</a>
+        </div>
+        <div class="row" id="telegramRow-${v.id}">
+          ${telegramButtonHtml(v)}
+        </div>
+        <div class="status" id="telegramStatus-${v.id}"></div>
+      </div>`;
+  }
+  return `<div class="stage ${before ? 'dim' : ''}"><div class="stage-head"><h3>5. Yakuniy video</h3>${badge}</div>${body}</div>`;
+}
+
+function telegramButtonHtml(v) {
+  const parts = [];
+  if (v.idea_flow_sent_at) parts.push(`<span class="pill ok">✓ Tarjima papkasiga yozildi</span>`);
+  if (v.telegram_send_status === 'sending') {
+    parts.push(`<span class="pill">⏳ Telegram'ga video yuborilmoqda...</span>`);
+  } else if (v.telegram_send_status === 'sent') {
+    parts.push(`<span class="pill ok">✓ Telegram'ga video yuborildi</span>`);
+  } else if (v.telegram_send_status === 'error') {
+    parts.push(`<span class="pill err">✗ Telegram xato: ${escapeHtml(v.telegram_send_error || '')}</span>`);
+  }
+  const label = (v.idea_flow_sent_at || v.telegram_send_status === 'sent') ? 'Qayta yuborish' : 'Botga yuborish';
+  const disabled = v.telegram_send_status === 'sending' ? 'disabled' : '';
+  parts.push(`<button class="small-btn" id="telegramBtn-${v.id}" ${disabled} onclick="sendToBot('${v.id}')">${label}</button>`);
+  return parts.join(' ');
+}
+
+async function sendToBot(videoId) {
+  const btn = document.getElementById('telegramBtn-' + videoId);
+  setStatus('telegramStatus-' + videoId, '', '');
+  if (btn) { btn.disabled = true; btn.textContent = 'Yuborilmoqda...'; }
+  try {
+    await apiFetch(`/api/videos/${videoId}/send-to-bot`, { method: 'POST' });
+    if (currentDetailVideoId === videoId) loadVideoDetail(videoId);
+  } catch (e) {
+    setStatus('telegramStatus-' + videoId, 'Xato: ' + e.message, 'err');
+    if (btn) { btn.disabled = false; btn.textContent = 'Botga yuborish'; }
+  }
+}
+
+function initPlayer(videoId) {
+  const player = document.getElementById('player-' + videoId);
+  if (!player) return;
+  player.dataset.origUrl = `${API_BASE}/api/videos/${videoId}/original-stream`;
+  player.dataset.uzUrl = `${API_BASE}/api/videos/${videoId}/final-download`;
+  player.src = player.dataset.uzUrl;
+  player.addEventListener('loadedmetadata', () => applySubtitleSelection(videoId));
+}
+
+function switchAudioTrack(videoId) {
+  const player = document.getElementById('player-' + videoId);
+  const sel = document.getElementById('audioTrackSel-' + videoId);
+  if (!player) return;
+  const wasPlaying = !player.paused;
+  const savedTime = player.currentTime;
+  const targetUrl = sel.value === 'original' ? player.dataset.origUrl : player.dataset.uzUrl;
+  const onReady = () => {
+    player.currentTime = savedTime;
+    if (wasPlaying) player.play();
+    applySubtitleSelection(videoId);
+    player.removeEventListener('loadedmetadata', onReady);
+  };
+  player.addEventListener('loadedmetadata', onReady);
+  player.src = targetUrl;
+}
+
+function applySubtitleSelection(videoId) {
+  const player = document.getElementById('player-' + videoId);
+  const sel = document.getElementById('subTrackSel-' + videoId);
+  if (!player || !sel || !player.textTracks) return;
+  for (const track of player.textTracks) {
+    if (sel.value === 'off') track.mode = 'hidden';
+    else if (sel.value === 'original') track.mode = track.language === 'orig' ? 'showing' : 'hidden';
+    else track.mode = track.language === 'uz' ? 'showing' : 'hidden';
+  }
+}
+
+function switchSubtitleTrack(videoId) {
+  applySubtitleSelection(videoId);
+}
+
+function switchPlaybackSpeed(videoId) {
+  const player = document.getElementById('player-' + videoId);
+  const sel = document.getElementById('speedSel-' + videoId);
+  if (player && sel) player.playbackRate = parseFloat(sel.value);
+}
+
+function seekPlayer(videoId, deltaSeconds) {
+  const player = document.getElementById('player-' + videoId);
+  if (!player) return;
+  const target = Math.max(0, Math.min(player.duration || Infinity, player.currentTime + deltaSeconds));
+  player.currentTime = target;
+}
+
+function renderFilesAndLog(v) {
+  let files = '';
+  if (v.results && v.results.length) {
+    files += v.results.map(r => `
+      <div class="row" style="justify-content:space-between; margin-top:6px;">
+        <span>${escapeHtml(r.filename)}</span>
+        <a class="small-btn" style="text-decoration:none; display:inline-block;" href="${API_BASE}/api/results/${r.id}/download">Yuklab olish</a>
+      </div>`).join('');
+  }
+  const logs = (v.logs || []).map(l => `${l.ts}  ${l.message}`).join('\n');
+  return `<div class="stage">
+    <div class="stage-head"><h3>Fayllar va jurnal</h3></div>
+    ${files || '<p class="hint">Hali natija fayllari yo\'q.</p>'}
+    <textarea readonly style="min-height:100px; font-family:ui-monospace,monospace; font-size:11.5px; margin-top:12px;">${escapeHtml(logs)}</textarea>
+  </div>`;
+}
+
+/* ---- video detail bosqich harakatlari ---- */
+async function segmentVideo(id) {
+  try { await apiFetch(`/api/videos/${id}/segment`, { method: 'POST' }); loadVideoDetail(id); }
+  catch (e) { alert('Xato: ' + e.message); }
+}
+
+async function startTranscribe(id) {
+  const language = document.getElementById('lang-' + id).value;
+  const instruction = document.getElementById('instr-' + id).value.trim();
+  const topicGroup = document.getElementById('topicGroup-' + id).value;
+  try {
+    const form = new FormData();
+    form.append('language', language); form.append('instruction', instruction);
+    form.append('topic_group', topicGroup);
+    await apiFetch(`/api/videos/${id}/transcribe`, { method: 'POST', body: form });
+    loadVideoDetail(id);
+  } catch (e) { alert('Xato: ' + e.message); }
+}
+
+async function jobAction(id, action) {
+  try { await apiFetch(`/api/jobs/${id}/${action}`, { method: 'POST' }); loadVideoDetail(id); }
+  catch (e) { alert('Xato: ' + e.message); }
+}
+
+async function retryChunk(videoId, chunkId) {
+  try { await apiFetch(`/api/jobs/${videoId}/retry-chunk/${chunkId}`, { method: 'POST' }); loadVideoDetail(videoId); }
+  catch (e) { alert('Xato: ' + e.message); }
+}
+
+function retryChunkConfirm(videoId, chunkId, chunkNumber) {
+  if (!confirm(`${chunkNumber}-bo'lakni (butun audio qismi, bir necha daqiqa) qayta Whisper'ga yuborishni xohlaysizmi? ` +
+    `Bu bo'lakning barcha matni yangilanadi, tekshirib tasdiqlaganingizdan keyin SRT/TXT hammasi qaytadan jamlanadi. OpenAI xarajati bo'ladi.`)) return;
+  retryChunk(videoId, chunkId);
+}
+
+async function uploadChunkTranscript(videoId, chunkId, chunkNumber, fileInputId) {
+  const input = document.getElementById(fileInputId);
+  if (!input.files[0]) return;
+  if (!confirm(`${chunkNumber}-bo'lakning butun matnini yuklagan faylingiz bilan almashtirmoqchimisiz? ` +
+    `Bu bo'lakdagi hozirgi matn butunlay o'chib, o'rniga faylingizdagi matn yoziladi. Saqlangach, matnni qaytadan tekshirib tasdiqlashingiz kerak bo'ladi.`)) {
+    input.value = '';
+    return;
+  }
+  const form = new FormData();
+  form.append('file', input.files[0]);
+  try {
+    const r = await apiFetch(`/api/videos/${videoId}/chunks/${chunkId}/replace-transcript`, { method: 'POST', body: form });
+    alert(`${chunkNumber}-bo'lak matni yangilandi (${r.segment_count} ta qism). Endi matnni qaytadan tekshirib tasdiqlang.`);
+    loadVideoDetail(videoId);
+  } catch (e) {
+    alert('Xato: ' + e.message);
+  } finally {
+    input.value = '';
+  }
+}
+
+async function cancelChunk(videoId, chunkId) {
+  try { await apiFetch(`/api/jobs/${videoId}/cancel-chunk/${chunkId}`, { method: 'POST' }); loadVideoDetail(videoId); }
+  catch (e) { alert('Xato: ' + e.message); }
+}
+
+async function retryRange(id) {
+  try {
+    const s = parseTimeField(document.getElementById('rangeStart-' + id).value);
+    const e = parseTimeField(document.getElementById('rangeEnd-' + id).value);
+    if (s === null || e === null) { alert("Boshlanish va tugash vaqtini kiriting (mm:ss)."); return; }
+    const form = new FormData();
+    form.append('start_time', String(s)); form.append('end_time', String(e));
+    const r = await apiFetch(`/api/jobs/${id}/retry-range`, { method: 'POST', body: form });
+    alert(`${r.chunks_queued} ta bo'lak qayta ishlash uchun navbatga qo'yildi.`);
+    loadVideoDetail(id);
+  } catch (err) { alert('Xato: ' + err.message); }
+}
+
+async function approveTranscript(id) {
+  try { await apiFetch(`/api/videos/${id}/approve`, { method: 'POST' }); loadVideoDetail(id); }
+  catch (e) { alert('Xato: ' + e.message); }
+}
+
+async function autoTranslate(id, provider) {
+  try {
+    const form = new FormData();
+    form.append('provider', provider);
+    await apiFetch(`/api/videos/${id}/translate`, { method: 'POST', body: form });
+    loadVideoDetail(id);
+  } catch (e) { alert('Xato: ' + e.message); }
+}
+
+async function submitTranslateText(id) {
+  const text = document.getElementById('translateText-' + id).value;
+  if (!text.trim()) { setStatus('translateFormStatus-' + id, 'Matn kiritilmagan.', 'err'); return; }
+  try {
+    const form = new FormData();
+    form.append('text', text);
+    await apiFetch(`/api/videos/${id}/translate/text`, { method: 'POST', body: form });
+    loadVideoDetail(id);
+  } catch (e) {
+    setStatus('translateFormStatus-' + id, 'Xato: ' + e.message, 'err');
+  }
+}
+
+async function submitTranslateFile(id) {
+  const fileInput = document.getElementById('translateFile-' + id);
+  if (!fileInput.files[0]) { setStatus('translateFormStatus-' + id, 'Fayl tanlanmagan.', 'err'); return; }
+  try {
+    const form = new FormData();
+    form.append('file', fileInput.files[0]);
+    await apiFetch(`/api/videos/${id}/translate/file`, { method: 'POST', body: form });
+    loadVideoDetail(id);
+  } catch (e) {
+    setStatus('translateFormStatus-' + id, 'Xato: ' + e.message, 'err');
+  }
+}
+
+async function renderVideo(id) {
+  try { await apiFetch(`/api/videos/${id}/render`, { method: 'POST' }); loadVideoDetail(id); }
+  catch (e) { alert('Xato: ' + e.message); }
+}
+
+async function deleteVideoFromDetail(id) {
+  if (!confirm("Bu videoni butunlay o'chirmoqchimisiz? Video, bo'laklar, matn, tarjima, audio va yakuniy video butunlay o'chadi.")) return;
+  try {
+    await apiFetch(`/api/videos/${id}?mode=full`, { method: 'DELETE' });
+    closeVideoDetail();
+    loadStorage();
+  } catch (e) { alert('Xato: ' + e.message); }
+}
+
+/* ============================================================ */
+/*  FILTRLANGAN RO'YXATLAR (Video->Matn / Tarjima / Audio)        */
+/* ============================================================ */
+function renderVidRow(v, extra) {
+  const label = v.blocked_reason ? BLOCKED_LABELS[v.blocked_reason] || v.status : (STATUS_LABELS[v.status] || v.status);
+  return `<div class="vid-list-row" onclick="openVideoDetail('${v.id}')">
+    <div><div class="vname">${escapeHtml(v.original_name)}</div><div class="vmeta">${extra || ''}</div></div>
+    <span class="pill ${v.status === 'completed' ? 'ok' : v.blocked_reason ? 'err' : ''}">${label}</span>
+  </div>`;
+}
+
+async function loadTranscribeList() {
+  try {
+    const videos = await apiFetch('/api/videos');
+    const filtered = videos.filter(v => ['uploaded', 'segmenting', 'segments_ready', 'transcribing', 'transcription_ready'].includes(v.status));
+    const el = document.getElementById('transcribeList');
+    el.innerHTML = filtered.length ? filtered.map(v => renderVidRow(v, v.chunk_count ? `${v.chunk_count} ta segment` : '')).join('')
+      : '<p class="hint">Hozircha bu bosqichda video yo\'q.</p>';
+  } catch (e) {
+    document.getElementById('transcribeList').innerHTML = `<p class="status err">Xato: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function switchTarjimaSubpage(id) {
+  document.querySelectorAll('.tarjima-subpage').forEach(p => { p.style.display = 'none'; p.classList.remove('active'); });
+  document.getElementById(id).style.display = 'block';
+  document.getElementById(id).classList.add('active');
+  document.querySelectorAll('#page-translate .nav-btn').forEach(b => b.classList.remove('active'));
+  document.querySelector(`#page-translate .nav-btn[data-subpage="${id}"]`).classList.add('active');
+  if (id === 'tarjima-inbox') loadCloudInbox();
+}
+
+async function loadCloudInbox() {
+  const list = document.getElementById('cloudInboxList');
+  if (!list) return;
+  try {
+    const files = await apiFetch('/api/cloud-files?kind=video');
+    if (files.length === 0) {
+      list.innerHTML = '<p class="hint">Bulutda hali video yo\'q.</p>';
+      return;
+    }
+    list.innerHTML = files.map(f => `
+      <div class="job-row">
+        <div>
+          <strong>${escapeHtml(f.original_name)}</strong>
+          <div class="hint">${fmtBytes(f.file_size)}</div>
+        </div>
+        <div class="row" style="margin:0;">
+          <button class="action" onclick="addCloudToBaza('${f.id}')">Videolar bazasiga qo'shish</button>
+          <button class="small-btn danger" onclick="deleteCloudFile('${f.id}')">O'chirish</button>
+        </div>
+      </div>`).join('');
+  } catch (e) {
+    list.innerHTML = `<p class="status err">Xato: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function addCloudToBaza(cloudId) {
+  try {
+    await apiFetch(`/api/cloud-files/${cloudId}/use-in-pipeline`, { method: 'POST' });
+    loadCloudInbox();
+    loadVideos();
+    loadStorage();
+  } catch (e) {
+    alert('Xato: ' + e.message);
+  }
+}
+
+async function deleteCloudFile(cloudId) {
+  showConfirm("Bu faylni bulutdan o'chirmoqchimisiz?", async () => {
+    try {
+      await apiFetch(`/api/cloud-files/${cloudId}`, { method: 'DELETE' });
+      loadCloudInbox();
+      loadStorage();
+    } catch (e) {
+      alert('Xato: ' + e.message);
+    }
+  });
+}
+
+async function loadAudioList() {
+  try {
+    const videos = await apiFetch('/api/videos');
+    const filtered = videos.filter(v => ['translation_ready', 'audio_processing', 'audio_ready', 'video_rendering', 'completed'].includes(v.status));
+    const el = document.getElementById('audioList');
+    el.innerHTML = filtered.length ? filtered.map(v => renderVidRow(v, v.audio_status)).join('')
+      : '<p class="hint">Hozircha tarjimasi tayyor video yo\'q.</p>';
+  } catch (e) {
+    document.getElementById('audioList').innerHTML = `<p class="status err">Xato: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+/* ============================================================ */
+/*  ISHLAR PANELI                                                 */
+/* ============================================================ */
+async function loadJobsPanel() {
+  try {
+    const data = await apiFetch('/api/jobs');
+    const el = document.getElementById('jobsList');
+    if (data.video_jobs.length === 0 && data.tts_jobs.length === 0) {
+      el.innerHTML = '<p class="hint">Hozircha faol ish yo\'q.</p>';
+      return;
+    }
+    el.innerHTML = data.video_jobs.map(j => `
+      <div class="job-row">
+        <div>
+          <strong>${escapeHtml(j.title)}</strong> <span class="hint">(${escapeHtml(j.phase)})</span>
+          <div class="hint" style="margin:2px 0 0;">${escapeHtml(j.message || '')}</div>
+        </div>
+        <div style="min-width:120px;"><div class="progress-wrap"><div class="progress-bar" style="width:${j.progress || 0}%;"></div></div></div>
+      </div>`).join('') + data.tts_jobs.map(j => `
+      <div class="job-row">
+        <div>
+          <strong>${escapeHtml(j.title)}</strong> <span class="hint">(mustaqil audio)</span>
+          <div class="hint" style="margin:2px 0 0;">${escapeHtml(j.message || '')}</div>
+        </div>
+        <div style="min-width:120px;"><div class="progress-wrap"><div class="progress-bar" style="width:${j.progress || 0}%;"></div></div></div>
+      </div>`).join('');
+  } catch (e) {
+    document.getElementById('jobsList').innerHTML = `<p class="status err">Xato: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+/* ============================================================ */
+/*  XARAJATLAR                                                    */
+/* ============================================================ */
+async function loadCosts() {
+  try {
+    const c = await apiFetch('/api/costs');
+    document.getElementById('costToday').textContent = fmtUsd(c.today);
+    document.getElementById('costWeek').textContent = fmtUsd(c.week);
+    document.getElementById('costMonth').textContent = fmtUsd(c.month);
+    document.getElementById('costAll').textContent = fmtUsd(c.all_time);
+    const body = document.getElementById('costTableBody');
+    body.innerHTML = c.per_video.map(r => `
+      <tr><td>${escapeHtml(r.original_name)}</td><td>${fmtUsd(r.transcription)}</td>
+      <td>${fmtUsd(r.translation)}</td><td>${fmtUsd(r.tts)}</td><td>${fmtUsd(r.total)}</td></tr>`).join('');
+  } catch (e) {}
+}
+
+/* ============================================================ */
+/*  BOSHLANG'ICH YUKLASH VA POLLING                               */
+/* ============================================================ */
+window.addEventListener('DOMContentLoaded', () => {
+  setupUploadInput();
+  pingServer();
+  loadStorage();
+  loadConfig();
+  loadGlossaryGroups();
+  loadFolders();
+  loadVideos();
+  loadSplitVideos();
+  loadTranscribeList();
+  loadAudioList();
+  loadJobsPanel();
+  loadCosts();
+  loadGeneralSettings();
+  loadTranslationSettings();
+  loadMemoryChat();
+  loadMemoryNotes();
+
+  const memoryChatInput = document.getElementById('memoryChatInput');
+  if (memoryChatInput) {
+    memoryChatInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); sendMemoryChatMessage(); }
+    });
+  }
+
+  setInterval(() => {
+    pingServer();
+    loadStorage();
+    const activePage = document.querySelector('.page.active');
+    if (!activePage) return;
+    const id = activePage.id;
+    if (id === 'page-videos') {
+      const activeEl = document.activeElement;
+      const detailContentEl = document.getElementById('videoDetailContent');
+      const userTyping = activeEl && (activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'INPUT') &&
+        detailContentEl && detailContentEl.contains(activeEl);
+      const anyDetailsOpen = detailContentEl &&
+        Array.from(detailContentEl.querySelectorAll('details')).some(d => d.open);
+      const anyPanelOpen = userTyping || anyDetailsOpen || Array.from(document.querySelectorAll(
+        '[id^="block-editor-"], [id^="translate-form-"], [id^="audio-form-"], [id^="transcript-block-editor-"]'
+      )).some(el => el.innerHTML.trim() !== '');
+      if (currentDetailVideoId) {
+        if (currentDetailVideoStatus !== 'completed' && !anyPanelOpen) loadVideoDetail(currentDetailVideoId);
+      } else loadVideos();
+    } else if (id === 'page-transcribe') loadTranscribeList();
+    else if (id === 'page-translate') {
+      const active = document.querySelector('#page-translate .tarjima-subpage.active');
+      if (active && active.id === 'tarjima-inbox') loadCloudInbox();
+    }
+    else if (id === 'page-audio') loadAudioList();
+    else if (id === 'page-jobs') loadJobsPanel();
+    else if (id === 'page-settings') loadCosts();
+    else if (id === 'page-split') loadSplitVideos();
+  }, 4000);
+});
+
+/* ============ BIRLASHTIRISH: VIDEO + AUDIO + SUBTITR ============ */
+let mergeLastAudioBlob = null; // TTS bo'limida yaratilgan so'nggi audio (agar bor bo'lsa)
+
+function mergeLog(msg) {
+  const el = document.getElementById('mergeLog');
+  if (!el) return;
+  el.value += msg + '\n';
+  el.scrollTop = el.scrollHeight;
+}
+
+async function mergeLoadFfmpeg() {
+  // Video->Matn sahifasidagi ffmpeg yuklovchisi bilan bir xil nusxani qayta ishlatamiz
+  return oaiLoadFfmpeg();
+}
+
+function mergeEscapeSrtPath(name) {
+  // ffmpeg subtitles filtri ichida fayl nomi maxsus belgilarni escape talab qiladi
+  return name.replace(/([:\\])/g, '\\$1');
+}
+
+async function mergeRunMerge() {
+  const videoInput = document.getElementById('mergeVideoFile');
+  const audioInput = document.getElementById('mergeAudioFile');
+  const srtInput = document.getElementById('mergeSrtFile');
+  const startBtn = document.getElementById('mergeStartBtn');
+  const bar = document.getElementById('mergeProgressBar');
+
+  if (!videoInput.files[0]) { setStatus('mergeStatus', 'Avval asl videoni tanlang.', 'err'); return; }
+  if (!audioInput.files[0] && !mergeLastAudioBlob) { setStatus('mergeStatus', 'Avval dublyaj audioni tanlang yoki 2-bo\'limda yarating.', 'err'); return; }
+  if (!srtInput.files[0]) { setStatus('mergeStatus', 'Avval SRT faylni tanlang.', 'err'); return; }
+
+  document.getElementById('mergeLog').value = '';
+  document.getElementById('mergeResultCard').style.display = 'none';
+  startBtn.disabled = true;
+  startBtn.textContent = 'Ishlanmoqda...';
+  bar.style.width = '0%';
+  setStatus('mergeStatus', 'Tayyorlanmoqda...');
+
+  try {
+    const ffmpeg = await mergeLoadFfmpeg();
+    const videoFile = videoInput.files[0];
+    const audioBlob = audioInput.files[0] || mergeLastAudioBlob;
+    const srtText = await srtInput.files[0].text();
+
+    const videoExt = (videoFile.name.match(/\.\w+$/)?.[0] || '.mp4');
+    const videoName = 'in_video' + videoExt;
+    const audioName = 'in_audio.wav';
+    const srtName = 'subs.srt';
+    const outName = 'output.mp4';
+
+    mergeLog('Fayllar ffmpeg xotirasiga yuklanmoqda...');
+    await ffmpeg.writeFile(videoName, new Uint8Array(await videoFile.arrayBuffer()));
+    await ffmpeg.writeFile(audioName, new Uint8Array(await audioBlob.arrayBuffer()));
+    await ffmpeg.writeFile(srtName, srtText);
+
+    const fontSize = document.getElementById('mergeFontSize').value.trim() || '22';
+    const marginV = document.getElementById('mergeMarginV').value.trim() || '30';
+    const styleStr = `FontSize=${fontSize},PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV=${marginV}`;
+    const vf = `subtitles=${srtName}:force_style='${styleStr}'`;
+
+    let lastPercent = -1;
+    ffmpeg.on('progress', ({ progress }) => {
+      const pct = Math.min(Math.round(progress * 100), 99);
+      if (pct !== lastPercent) {
+        lastPercent = pct;
+        bar.style.width = pct + '%';
+        setStatus('mergeStatus', `Kodlanmoqda... ${pct}%`);
+      }
+    });
+
+    mergeLog('Birlashtirish boshlandi (video ovozsiz, yangi audio, subtitr kuydirilmoqda)...');
+    mergeLog('Bu jarayon video uzunligiga qarab bir necha daqiqa yoki undan ko\'proq davom etishi mumkin.');
+
+    await ffmpeg.exec([
+      '-i', videoName,
+      '-i', audioName,
+      '-vf', vf,
+      '-map', '0:v:0',
+      '-map', '1:a:0',
+      '-c:v', 'libx264',
+      '-preset', 'veryfast',
+      '-crf', '23',
+      '-c:a', 'aac',
+      '-b:a', '192k',
+      '-shortest',
+      outName,
+    ]);
+
+    mergeLog('Kodlash tugadi, natija tayyorlanmoqda...');
+    const data = await ffmpeg.readFile(outName);
+    const blob = new Blob([data.buffer], { type: 'video/mp4' });
+    const url = URL.createObjectURL(blob);
+
+    const videoEl = document.getElementById('mergeResultVideo');
+    videoEl.src = url;
+    document.getElementById('mergeResultCard').style.display = 'block';
+    document.getElementById('mergeDownloadBtn').onclick = () => {
+      const a = document.createElement('a');
+      a.href = url; a.download = 'birlashtirilgan_video.mp4';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    };
+
+    await ffmpeg.deleteFile(videoName);
+    await ffmpeg.deleteFile(audioName);
+    await ffmpeg.deleteFile(srtName);
+    await ffmpeg.deleteFile(outName);
+
+    bar.style.width = '100%';
+    setStatus('mergeStatus', 'Tayyor! Video pastda ko\'rinadi, yuklab olishingiz mumkin.', 'ok');
+    mergeLog('Tayyor.');
+  } catch (e) {
+    mergeLog('XATO: ' + e.message);
+    setStatus('mergeStatus', 'Xato yuz berdi: ' + e.message, 'err');
+  } finally {
+    startBtn.disabled = false;
+    startBtn.textContent = 'Birlashtirish';
+  }
+}
+
+document.getElementById('mergeStartBtn').addEventListener('click', mergeRunMerge);
+document.getElementById('mergeUseLastAudioBtn').addEventListener('click', () => {
+  if (typeof ttsLastMergedBlob !== 'undefined' && ttsLastMergedBlob) {
+    mergeLastAudioBlob = ttsLastMergedBlob;
+    setStatus('mergeStatus', "2-bo'limdagi so'nggi yaratilgan audio ishlatiladi.", 'ok');
+  } else {
+    setStatus('mergeStatus', "Hozircha 2-bo'limda audio yaratilmagan. Avval \"Matn → Audio\" bo'limida yagona faylga birlashtiring, yoki faylni qo'lda tanlang.", 'err');
+  }
+});
+
+/* ============================================================ */
+/*  PWA: planshet/telefon "Bosh ekranga qo'shish" uchun          */
+/* ============================================================ */
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  });
+}
+
+</script>
+</body>
+</html>
