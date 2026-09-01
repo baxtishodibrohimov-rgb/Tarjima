@@ -143,6 +143,28 @@
   .tiny-btn { background:transparent; border:1px solid var(--border); color:var(--text); padding:6px 12px; border-radius:999px; font-size:12.5px; cursor:pointer; font-weight:600; }
   .tiny-btn:hover { border-color:var(--accent); color:var(--accent); }
 
+  .storage-pill { display:flex; align-items:center; gap:8px; padding:7px 12px; border-radius:999px; background:var(--card-alt); font-size:11.5px; color:var(--muted); font-weight:600; }
+  .storage-bar { width:48px; height:5px; border-radius:999px; background:var(--border); overflow:hidden; flex:none; }
+  .storage-bar-fill { width:0%; height:100%; background:var(--accent); }
+
+  .fab-wrap { position:fixed; left:0; right:0; bottom:22px; display:flex; justify-content:center; z-index:15; pointer-events:none; }
+  .fab { pointer-events:auto; display:inline-flex; align-items:center; gap:8px; padding:14px 24px; border-radius:999px;
+    background:var(--accent); color:var(--accent-contrast); font-weight:800; font-size:14px; border:none; cursor:pointer;
+    box-shadow:var(--shadow); }
+  .fab:hover { background:var(--accent-dark); }
+
+  .stepper { display:flex; align-items:center; flex-wrap:wrap; gap:0; }
+  .step { display:flex; align-items:center; gap:8px; }
+  .step-dot { width:26px; height:26px; border-radius:999px; display:flex; align-items:center; justify-content:center; font-size:11.5px; font-weight:800; flex:none; }
+  .step-dot.done { background:var(--accent); color:var(--accent-contrast); }
+  .step-dot.now { background:transparent; border:2px solid var(--accent); color:var(--accent); }
+  .step-dot.error { background:transparent; border:2px solid var(--err); color:var(--err); }
+  .step-dot.todo { background:var(--card-alt); color:var(--muted); }
+  .step-label { font-size:12px; font-weight:700; }
+  .step-label.dim { color:var(--muted); font-weight:600; }
+  .step-line { flex:1; min-width:20px; max-width:52px; height:2px; background:var(--border); margin:0 10px; }
+  .step-line.done { background:var(--accent); }
+
   .modal-backdrop { display:none; position:fixed; inset:0; background:rgba(20,18,14,0.45); z-index:40; }
   .modal-backdrop.open { display:block; }
   .modal { display:none; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); z-index:41;
@@ -226,6 +248,10 @@
   <div class="header-top">
     <h1>Darslik Studiyasi</h1>
     <div class="header-actions">
+      <div class="storage-pill" id="headerStoragePill">
+        <span id="headerStorageText">—</span>
+        <span class="storage-bar"><span class="storage-bar-fill" id="headerStorageFill"></span></span>
+      </div>
       <span class="server-dot" id="serverDot" title="Server holati">🔴</span>
       <button class="tiny-btn theme-toggle" id="themeToggleBtn" onclick="toggleTheme()" title="Mavzuni almashtirish">🌙</button>
       <button class="tiny-btn" onclick="openModal('apiModal')">API</button>
@@ -386,16 +412,16 @@
   <p class="subtitle">Har bir video — alohida loyiha. Video, segmentlar, matn, tarjima, audio va yakuniy video shu loyihaga bog'langan holda saqlanadi.</p>
 
   <div id="videosGridView">
-    <div class="status" id="diskStatus" style="margin-bottom:10px;"></div>
-
-    <button class="add-video-btn" onclick="document.getElementById('uploadFile').click()">+ Video qo'shish</button>
-    <button class="small-btn" onclick="openCloudPicker('video', useCloudVideoInPipeline)">☁ Bulutdan olish</button>
+    <div class="row" style="margin-top:0;">
+      <button class="small-btn" onclick="openCloudPicker('video', useCloudVideoInPipeline)">☁ Bulutdan olish</button>
+    </div>
     <input type="file" id="uploadFile" accept="video/*,audio/*" style="display:none;">
     <div id="uploadProgressCard" style="display:none;" class="card">
       <div class="progress-wrap"><div class="progress-bar" id="uploadProgressBar"></div></div>
       <div class="status" id="uploadStatus"></div>
     </div>
 
+    <div id="statusFilterBar" class="folder-bar"></div>
     <div id="folderBar" class="folder-bar"></div>
 
     <div id="videoGrid" class="vgrid"><p class="hint">Yuklanmoqda...</p></div>
@@ -404,6 +430,12 @@
   <div id="videoDetailView" style="display:none;">
     <button class="back-link" onclick="closeVideoDetail()">← Videolarga qaytish</button>
     <div id="videoDetailContent"></div>
+  </div>
+
+  <div class="fab-wrap" id="videosFab">
+    <button class="fab" onclick="document.getElementById('uploadFile').click()">
+      <span style="font-size:16px; line-height:1;">+</span> Video qo'shish
+    </button>
   </div>
 </div>
 
@@ -781,8 +813,10 @@ async function loadStorage() {
   try {
     const s = await apiFetch('/api/storage');
     const pct = Math.min(100, Math.round((s.app_usage / s.storage_limit) * 100));
-    document.getElementById('diskStatus').textContent =
-      `Disk: ${fmtBytes(s.app_usage)} / ${fmtBytes(s.storage_limit)} ishlatilgan (${pct}%)`;
+    const textEl = document.getElementById('headerStorageText');
+    const fillEl = document.getElementById('headerStorageFill');
+    if (textEl) textEl.textContent = `${fmtBytes(s.app_usage)} / ${fmtBytes(s.storage_limit)}`;
+    if (fillEl) fillEl.style.width = pct + '%';
   } catch (e) {}
 }
 
@@ -1158,14 +1192,44 @@ const BLOCKED_LABELS = {
 let allVideosCache = [];
 let allFoldersCache = [];
 let currentFolderId = null; // null = "Barchasi"
+let currentStatusFilter = 'all'; // all | progress | done | error
 
 async function loadVideos() {
   try {
     allVideosCache = await apiFetch('/api/videos');
+    renderStatusFilterBar();
     renderVideoGrid();
   } catch (e) {
     document.getElementById('videoGrid').innerHTML = `<p class="status err">Xato: ${escapeHtml(e.message)}</p>`;
   }
+}
+
+const STATUS_FILTERS = [
+  { key: 'all', label: 'Barchasi' },
+  { key: 'progress', label: 'Ishlanmoqda' },
+  { key: 'done', label: 'Tayyor' },
+  { key: 'error', label: 'Xatoliklar' },
+];
+
+function matchesStatusFilter(v) {
+  if (currentStatusFilter === 'done') return v.status === 'completed';
+  if (currentStatusFilter === 'error') return !!v.blocked_reason || v.status === 'failed';
+  if (currentStatusFilter === 'progress') return v.status !== 'completed' && v.status !== 'failed' && !v.blocked_reason;
+  return true;
+}
+
+function renderStatusFilterBar() {
+  const bar = document.getElementById('statusFilterBar');
+  if (!bar) return;
+  bar.innerHTML = STATUS_FILTERS.map(f =>
+    `<span class="folder-chip ${currentStatusFilter === f.key ? 'active' : ''}" onclick="selectStatusFilter('${f.key}')">${f.label}</span>`
+  ).join('');
+}
+
+function selectStatusFilter(key) {
+  currentStatusFilter = key;
+  renderStatusFilterBar();
+  renderVideoGrid();
 }
 
 /* ============================================================ */
@@ -1392,9 +1456,16 @@ function folderSelectHtml(v) {
 function renderVideoGrid() {
   const grid = document.getElementById('videoGrid');
   if (!grid) return;
-  const videos = currentFolderId === null ? allVideosCache : allVideosCache.filter(v => v.folder_id === currentFolderId);
+  let videos = currentFolderId === null ? allVideosCache : allVideosCache.filter(v => v.folder_id === currentFolderId);
+  videos = videos.filter(matchesStatusFilter);
   if (videos.length === 0) {
-    grid.innerHTML = currentFolderId === null ? '<p class="hint">Hali video yuklanmagan.</p>' : '<p class="hint">Bu papkada video yo\'q.</p>';
+    if (allVideosCache.length === 0) {
+      grid.innerHTML = '<p class="hint">Hali video yuklanmagan.</p>';
+    } else if (currentFolderId !== null && currentStatusFilter === 'all') {
+      grid.innerHTML = '<p class="hint">Bu papkada video yo\'q.</p>';
+    } else {
+      grid.innerHTML = '<p class="hint">Bu filtrga mos video topilmadi.</p>';
+    }
     return;
   }
   grid.innerHTML = videos.map(v => {
@@ -1449,6 +1520,7 @@ function openVideoDetail(id) {
   currentDetailVideoStatus = null;
   document.getElementById('videosGridView').style.display = 'none';
   document.getElementById('videoDetailView').style.display = 'block';
+  document.getElementById('videosFab').style.display = 'none';
   loadVideoDetail(id);
 }
 
@@ -1457,6 +1529,7 @@ function closeVideoDetail() {
   currentDetailVideoStatus = null;
   document.getElementById('videoDetailView').style.display = 'none';
   document.getElementById('videosGridView').style.display = 'block';
+  document.getElementById('videosFab').style.display = 'flex';
   loadVideos();
 }
 
@@ -1475,6 +1548,36 @@ function stageStatusBadge(text, cls) {
   return `<span class="stage-status ${cls}">${escapeHtml(text)}</span>`;
 }
 
+function renderPipelineStepper(v) {
+  const order = ['uploaded', 'segmenting', 'segments_ready', 'transcribing', 'transcription_ready',
+    'transcription_approved', 'translation_ready', 'audio_processing', 'audio_ready', 'video_rendering', 'completed'];
+  const idx = order.indexOf(v.status);
+  const stages = [
+    { from: 0, to: 2, label: 'Yuklash' },
+    { from: 3, to: 5, label: 'Matn' },
+    { from: 6, to: 6, label: 'Tarjima' },
+    { from: 7, to: 8, label: 'Audio' },
+    { from: 9, to: 10, label: 'Yakuniy video' },
+  ];
+  function state(stage) {
+    if (v.status === 'completed') return 'done';
+    if (idx > stage.to) return 'done';
+    if (idx >= stage.from && idx <= stage.to) return v.blocked_reason ? 'error' : 'now';
+    return 'todo';
+  }
+  const parts = stages.map((s, i) => {
+    const st = state(s);
+    const dotContent = st === 'done' ? '✓' : String(i + 1);
+    const stepHtml = `<span class="step">
+      <span class="step-dot ${st}">${dotContent}</span>
+      <span class="step-label ${st === 'todo' ? 'dim' : ''}">${escapeHtml(s.label)}</span>
+    </span>`;
+    const lineHtml = i < stages.length - 1 ? `<span class="step-line ${st === 'done' ? 'done' : ''}"></span>` : '';
+    return stepHtml + lineHtml;
+  }).join('');
+  return `<div class="card stepper">${parts}</div>`;
+}
+
 function renderVideoDetail(v) {
   const thumb = v.has_thumbnail
     ? `<img src="${API_BASE}/api/videos/${v.id}/thumbnail" style="width:100%; max-width:280px; border-radius:10px; margin-bottom:10px;">`
@@ -1491,6 +1594,7 @@ function renderVideoDetail(v) {
       ${v.blocked_reason ? `<div class="warn-box">${escapeHtml(BLOCKED_LABELS[v.blocked_reason] || v.blocked_reason)}${v.repetition_info ? ': ' + escapeHtml(v.repetition_info) : ''}</div>` : ''}
     </div>`;
 
+  html += renderPipelineStepper(v);
   html += renderSegmentStage(v);
   html += renderTranscriptStage(v);
   html += renderTranslationStage(v);
