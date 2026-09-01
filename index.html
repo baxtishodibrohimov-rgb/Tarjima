@@ -45,6 +45,7 @@
     --run: #2c5c85; --run: oklch(0.4 0.09 195);
     --run-bg: #e2ecf5; --run-bg: oklch(0.91 0.035 195);
     --shadow: 0 10px 30px -12px rgba(20,18,14,0.12);
+    --pill-overlay: rgba(255,255,255,0.65);
   }
   html[data-theme="dark"] {
     --bg: #17140f; --bg: oklch(0.17 0.007 75);
@@ -65,15 +66,22 @@
     --run: #8fc1e9; --run: oklch(0.86 0.1 195);
     --run-bg: #1f2c36; --run-bg: oklch(0.235 0.04 195);
     --shadow: 0 12px 32px -10px rgba(0,0,0,0.5);
+    --pill-overlay: rgba(0,0,0,0.25);
   }
   * { box-sizing: border-box; }
   body { margin:0; font-family:"Manrope",-apple-system,"Segoe UI",Roboto,Arial,sans-serif; background:var(--bg); color:var(--text); transition:background .15s,color .15s; }
   .app-header { background:var(--card); border-bottom:1px solid var(--border); padding:14px 16px; position:sticky; top:0; z-index:10; }
   .app-header h1 { font-size:18px; font-weight:800; margin:0 0 10px; letter-spacing:-0.01em; }
   .nav { display:flex; gap:8px; flex-wrap:wrap; }
-  .nav-btn { padding:9px 16px; border:1px solid transparent; background:var(--card-alt); border-radius:999px; font-size:13.5px; font-weight:600; cursor:pointer; color:var(--muted); white-space:nowrap; }
-  .nav-btn.active { background:var(--accent); color:var(--accent-contrast); border-color:var(--accent); }
+  .nav-btn { padding:9px 16px; border:1px solid transparent; background:transparent; border-radius:999px; font-size:13.5px; font-weight:600; cursor:pointer; color:var(--muted); white-space:nowrap; }
+  .nav-btn.active { background:var(--card-alt); color:var(--text); border-color:transparent; }
   .theme-toggle { font-size:15px; line-height:1; padding:6px 10px; }
+  .icon-btn { width:36px; height:36px; border-radius:999px; display:flex; align-items:center; justify-content:center; color:var(--muted); background:transparent; border:none; cursor:pointer; flex:none; }
+  .icon-btn:hover { background:var(--card-alt); color:var(--text); }
+  .avatar { width:34px; height:34px; border-radius:999px; background:var(--accent); color:var(--accent-contrast); font-weight:800; font-size:13px; display:flex; align-items:center; justify-content:center; flex:none; }
+  .header-search { display:none; align-items:center; gap:8px; padding:8px 14px; border-radius:999px; background:var(--card-alt); margin-bottom:14px; }
+  .header-search.open { display:flex; }
+  .header-search input { border:none; background:transparent; outline:none; font-size:13px; color:var(--text); flex:1; }
   .page { display:none; max-width:900px; margin:0 auto; padding:20px 16px 64px; }
   .page.active { display:block; }
   .subtitle { color:var(--muted); font-size:14px; margin:0 0 16px; line-height:1.5; }
@@ -174,17 +182,22 @@
   .modal-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
   .modal-head h2 { margin:0; font-size:16px; }
 
-  .vgrid { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:16px; }
-  .vcard { background:var(--card); border:1px solid var(--border); border-radius:18px; overflow:hidden; cursor:pointer; transition:border-color .15s, transform .15s; }
-  .vcard:hover { border-color:var(--accent); transform:translateY(-1px); }
-  .vcard .thumb { width:100%; aspect-ratio:16/9; background:var(--card-alt) center/cover no-repeat; display:flex; align-items:center; justify-content:center; color:var(--muted); font-size:12px; }
-  .vcard .vbody { padding:12px 14px; }
-  .vcard .vname { font-weight:700; font-size:13.5px; margin:0 0 4px; word-break:break-word; letter-spacing:-0.005em; }
-  .vcard .vmeta { font-size:11.5px; color:var(--muted); margin-bottom:8px; font-family:"JetBrains Mono",ui-monospace,monospace; }
-  .pipeline-row { display:flex; gap:5px; flex-wrap:wrap; }
-  .pipe-dot { width:9px; height:9px; border-radius:50%; display:inline-block; }
-  .pipe-dot.done { background:var(--ok); } .pipe-dot.active { background:var(--run); }
-  .pipe-dot.wait { background:var(--card-alt); } .pipe-dot.error { background:var(--err); }
+  .vgrid { display:grid; grid-template-columns:repeat(auto-fill, minmax(240px, 1fr)); gap:18px; margin-bottom:90px; }
+  .vcard { background:var(--card); border:1px solid var(--border); border-radius:20px; padding:16px; display:flex; flex-direction:column;
+    gap:12px; cursor:pointer; transition:transform .15s; }
+  .vcard:hover { transform:translateY(-2px); }
+  .vcard.status-done { background:var(--ok-bg); border-color:transparent; }
+  .vcard.status-progress { background:var(--run-bg); border-color:transparent; }
+  .vcard.status-upload { background:var(--card-alt); border-color:transparent; }
+  .vcard.status-error { background:var(--err-bg); border-color:transparent; }
+  .vcard .thumb { width:100%; aspect-ratio:16/9; border-radius:12px; background:rgba(0,0,0,0.08) center/cover no-repeat; display:flex; align-items:center; justify-content:center; color:var(--muted); font-size:12px; }
+  .vcard .vbody { display:flex; flex-direction:column; gap:8px; flex:1; }
+  .vcard .vname { font-weight:700; font-size:14px; margin:0; word-break:break-word; letter-spacing:-0.005em; line-height:1.32; }
+  .vcard .vmeta { font-size:11.5px; color:var(--muted); margin:0; font-family:"JetBrains Mono",ui-monospace,monospace; }
+  .card-foot { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }
+  .status-pill { display:inline-flex; align-items:center; gap:6px; padding:5px 10px; border-radius:999px; font-size:11px; font-weight:700; background:var(--pill-overlay); white-space:nowrap; }
+  .status-pill.ok { color:var(--ok); } .status-pill.err { color:var(--err); }
+  .status-pill.run { color:var(--run); } .status-pill.wait { color:var(--muted); }
 
   .add-video-btn { display:inline-flex; align-items:center; gap:6px; background:var(--accent); color:var(--accent-contrast); border:none;
     padding:13px 22px; border-radius:999px; font-size:14px; font-weight:800; cursor:pointer; margin-bottom:16px;
@@ -199,6 +212,10 @@
   .folder-chip .fcount { opacity:0.7; }
   .folder-chip .fdel { opacity:0.6; margin-left:2px; }
   .folder-chip .fdel:hover { opacity:1; color:var(--err); }
+
+  .filter-chip { display:inline-flex; align-items:center; gap:6px; background:var(--card-alt); border:1px solid transparent;
+    color:var(--muted); padding:7px 14px; border-radius:999px; font-size:12.5px; cursor:pointer; font-weight:600; }
+  .filter-chip.active { background:var(--text); color:var(--bg); }
   .folder-chip-add { display:inline-flex; align-items:center; gap:4px; background:transparent; border:1px dashed var(--border);
     color:var(--muted); padding:7px 14px; border-radius:999px; font-size:12.5px; cursor:pointer; }
   .folder-chip-add:hover { border-color:var(--accent); color:var(--accent); }
@@ -253,9 +270,11 @@
         <span class="storage-bar"><span class="storage-bar-fill" id="headerStorageFill"></span></span>
       </div>
       <span class="server-dot" id="serverDot" title="Server holati">🔴</span>
+      <button class="icon-btn" onclick="toggleHeaderSearch()" title="Video qidirish">🔍</button>
       <button class="tiny-btn theme-toggle" id="themeToggleBtn" onclick="toggleTheme()" title="Mavzuni almashtirish">🌙</button>
       <button class="tiny-btn" onclick="openModal('apiModal')">API</button>
       <button class="tiny-btn" onclick="openModal('ayshaModal')">Aysha</button>
+      <div class="avatar" title="Darslik Studiyasi">D</div>
     </div>
   </div>
   <div class="nav">
@@ -421,6 +440,9 @@
       <div class="status" id="uploadStatus"></div>
     </div>
 
+    <div class="header-search" id="headerSearchBar">
+      🔍 <input type="text" id="headerSearchInput" placeholder="Video nomi bo'yicha qidirish..." oninput="renderVideoGrid()">
+    </div>
     <div id="statusFilterBar" class="folder-bar"></div>
     <div id="folderBar" class="folder-bar"></div>
 
@@ -655,6 +677,18 @@
 </div>
 
 <script>
+function toggleHeaderSearch() {
+  const bar = document.getElementById('headerSearchBar');
+  if (!bar) return;
+  bar.classList.toggle('open');
+  if (bar.classList.contains('open')) {
+    document.getElementById('headerSearchInput').focus();
+  } else {
+    document.getElementById('headerSearchInput').value = '';
+    renderVideoGrid();
+  }
+}
+
 function toggleTheme() {
   const cur = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
   const next = cur === 'dark' ? 'light' : 'dark';
@@ -1212,17 +1246,15 @@ const STATUS_FILTERS = [
 ];
 
 function matchesStatusFilter(v) {
-  if (currentStatusFilter === 'done') return v.status === 'completed';
-  if (currentStatusFilter === 'error') return !!v.blocked_reason || v.status === 'failed';
-  if (currentStatusFilter === 'progress') return v.status !== 'completed' && v.status !== 'failed' && !v.blocked_reason;
-  return true;
+  if (currentStatusFilter === 'all') return true;
+  return videoStatusInfo(v).cardCls === 'status-' + currentStatusFilter;
 }
 
 function renderStatusFilterBar() {
   const bar = document.getElementById('statusFilterBar');
   if (!bar) return;
   bar.innerHTML = STATUS_FILTERS.map(f =>
-    `<span class="folder-chip ${currentStatusFilter === f.key ? 'active' : ''}" onclick="selectStatusFilter('${f.key}')">${f.label}</span>`
+    `<span class="filter-chip ${currentStatusFilter === f.key ? 'active' : ''}" onclick="selectStatusFilter('${f.key}')">${f.label}</span>`
   ).join('');
 }
 
@@ -1458,6 +1490,9 @@ function renderVideoGrid() {
   if (!grid) return;
   let videos = currentFolderId === null ? allVideosCache : allVideosCache.filter(v => v.folder_id === currentFolderId);
   videos = videos.filter(matchesStatusFilter);
+  const searchEl = document.getElementById('headerSearchInput');
+  const query = searchEl ? searchEl.value.trim().toLowerCase() : '';
+  if (query) videos = videos.filter(v => (v.original_name || '').toLowerCase().includes(query));
   if (videos.length === 0) {
     if (allVideosCache.length === 0) {
       grid.innerHTML = '<p class="hint">Hali video yuklanmagan.</p>';
@@ -1470,42 +1505,30 @@ function renderVideoGrid() {
   }
   grid.innerHTML = videos.map(v => {
     const label = v.blocked_reason ? BLOCKED_LABELS[v.blocked_reason] || v.status : (STATUS_LABELS[v.status] || v.status);
-    const pillCls = v.status === 'completed' ? 'ok' : (v.blocked_reason ? 'err' : '');
+    const info = videoStatusInfo(v);
     const thumb = v.has_thumbnail
       ? `<div class="thumb" style="background-image:url('${API_BASE}/api/videos/${v.id}/thumbnail')"></div>`
       : `<div class="thumb">Video</div>`;
     return `
-    <div class="vcard" onclick="openVideoDetail('${v.id}')">
+    <div class="vcard ${info.cardCls}" onclick="openVideoDetail('${v.id}')">
       ${thumb}
       <div class="vbody">
         <p class="vname">${escapeHtml(v.original_name)}</p>
         <p class="vmeta">${fmtBytes(v.file_size)} ${v.duration ? '· ' + fmtMinSec(v.duration) : ''}</p>
-        <p class="vmeta"><span class="pill ${pillCls}">${label}</span></p>
-        ${pipelineDotsHtml(v)}
+        <div class="card-foot">
+          <span class="status-pill ${info.pillCls}">${info.icon} ${escapeHtml(label)}</span>
+        </div>
         ${folderSelectHtml(v)}
       </div>
     </div>`;
   }).join('');
 }
 
-function pipelineDotsHtml(v) {
-  const order = ['uploaded', 'segmenting', 'segments_ready', 'transcribing', 'transcription_ready',
-    'transcription_approved', 'translation_ready', 'audio_processing', 'audio_ready', 'video_rendering', 'completed'];
-  const idx = order.indexOf(v.status);
-  const stageAt = { segments: 2, transcript: 5, translate: 6, audio: 8, render: 10 };
-  function dotClass(stageIdx) {
-    if (v.status === 'completed') return 'done';
-    if (idx > stageIdx) return 'done';
-    if (idx === stageIdx || (idx === stageIdx - 1 && v.blocked_reason)) return v.blocked_reason ? 'error' : 'active';
-    return 'wait';
-  }
-  return `<div class="pipeline-row">
-    <span class="pipe-dot ${dotClass(stageAt.segments)}" title="Segmentlar"></span>
-    <span class="pipe-dot ${dotClass(stageAt.transcript)}" title="Matn"></span>
-    <span class="pipe-dot ${dotClass(stageAt.translate)}" title="Tarjima"></span>
-    <span class="pipe-dot ${dotClass(stageAt.audio)}" title="Audio"></span>
-    <span class="pipe-dot ${dotClass(stageAt.render)}" title="Yakuniy video"></span>
-  </div>`;
+function videoStatusInfo(v) {
+  if (v.status === 'completed') return { cardCls: 'status-done', pillCls: 'ok', icon: '✓' };
+  if (v.blocked_reason || v.status === 'failed') return { cardCls: 'status-error', pillCls: 'err', icon: '⚠' };
+  if (v.status === 'uploaded') return { cardCls: 'status-upload', pillCls: 'wait', icon: '⬆' };
+  return { cardCls: 'status-progress', pillCls: 'run', icon: '⏳' };
 }
 
 /* ============================================================ */
