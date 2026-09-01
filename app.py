@@ -1046,6 +1046,8 @@ async def upload_complete(upload_id: str, request: Request):
              u["total_size"], db.now()),
         )
         db.execute("UPDATE uploads SET status = 'completed' WHERE id = ?", (upload_id,))
+        if (u["file_kind"] or "video") == "video":
+            _generate_cloud_thumbnail(cloud_id, dest_dir, dest_path)
         return {"cloud_file_id": cloud_id}
 
     video_id = db.new_id()
@@ -1134,7 +1136,28 @@ async def cleanup_uploads():
 
 def cloud_file_public(f: dict) -> dict:
     return {"id": f["id"], "kind": f["kind"], "original_name": f["original_name"],
-            "file_size": f["file_size"], "created_at": f["created_at"]}
+            "file_size": f["file_size"], "created_at": f["created_at"],
+            "has_thumbnail": bool(f["thumbnail_path"]) if "thumbnail_path" in f.keys() else False}
+
+
+def _generate_cloud_thumbnail(cloud_id: str, dest_dir: Path, video_path: Path):
+    """Bulutga tushgan video uchun kichik rasmcha (thumbnail) yaratadi - ro'yxatda
+    fayl nomi/hajmi o'rniga ko'rgazmali ko'rinish uchun. Xato bo'lsa jim o'tkazib
+    yuboradi (thumbnail ixtiyoriy, asosiy yuklashni to'xtatmasligi kerak)."""
+    try:
+        thumb_path = dest_dir / "thumb.jpg"
+        if transcription.generate_thumbnail(video_path, thumb_path):
+            db.execute("UPDATE cloud_files SET thumbnail_path = ? WHERE id = ?", (str(thumb_path), cloud_id))
+    except Exception:
+        pass
+
+
+@app.get("/api/cloud-files/{cloud_id}/thumbnail")
+async def get_cloud_thumbnail(cloud_id: str):
+    f = db.fetchone("SELECT thumbnail_path FROM cloud_files WHERE id = ?", (cloud_id,))
+    if not f or not f["thumbnail_path"] or not Path(f["thumbnail_path"]).exists():
+        raise HTTPException(404, "Thumbnail topilmadi.")
+    return FileResponse(f["thumbnail_path"], media_type="image/jpeg")
 
 
 @app.post("/api/public/incoming-video")
@@ -1197,6 +1220,7 @@ async def incoming_video_from_bot(request: Request):
            VALUES (?, ?, ?, ?, ?, ?, ?)""",
         (cloud_id, "video", name, dest_path.name, str(dest_path), total, db.now()),
     )
+    _generate_cloud_thumbnail(cloud_id, dest_dir, dest_path)
     return {"ok": True, "cloud_file_id": cloud_id}
 
 

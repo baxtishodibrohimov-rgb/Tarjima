@@ -249,6 +249,9 @@ _TTS_JOB_NEW_COLUMNS = {
 _API_KEY_NEW_COLUMNS = {
     "provider": "TEXT DEFAULT 'openai'",
 }
+_CLOUD_FILE_NEW_COLUMNS = {
+    "thumbnail_path": "TEXT",
+}
 
 
 def _migrate_columns():
@@ -269,6 +272,10 @@ def _migrate_columns():
         for col, decl in _UPLOAD_NEW_COLUMNS.items():
             if col not in existing_uploads:
                 c.execute(f"ALTER TABLE uploads ADD COLUMN {col} {decl}")
+        existing_cloud = {row[1] for row in c.execute("PRAGMA table_info(cloud_files)").fetchall()}
+        for col, decl in _CLOUD_FILE_NEW_COLUMNS.items():
+            if col not in existing_cloud:
+                c.execute(f"ALTER TABLE cloud_files ADD COLUMN {col} {decl}")
 
 
 # ---------------------------------------------------------------------------

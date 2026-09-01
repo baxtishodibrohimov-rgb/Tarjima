@@ -24,6 +24,7 @@ from pathlib import Path
 import httpx
 
 import database as db
+import transcription
 from storage import CLOUD_DIR, INBOUND_BOT_TOKEN, LOCAL_BOT_API_URL, safe_name, has_space_for
 
 POLL_TIMEOUT = 30
@@ -105,6 +106,14 @@ async def _download_and_save_to_cloud(client: httpx.AsyncClient, file_id: str, o
            VALUES (?, ?, ?, ?, ?, ?, ?)""",
         (cloud_id, "video", name, dest_path.name, str(dest_path), total, db.now()),
     )
+    try:
+        thumb_path = dest_dir / "thumb.jpg"
+        loop = asyncio.get_event_loop()
+        has_thumb = await loop.run_in_executor(None, transcription.generate_thumbnail, dest_path, thumb_path)
+        if has_thumb:
+            db.execute("UPDATE cloud_files SET thumbnail_path = ? WHERE id = ?", (str(thumb_path), cloud_id))
+    except Exception:
+        pass
     await _send_message(client, chat_id, f'"{name}" qabul qilindi va Bulutga yuklandi ('
                                           f'saytda "Tarjima -> Kelgan videolarni ko\'rish"dan ko\'rasiz).')
 
