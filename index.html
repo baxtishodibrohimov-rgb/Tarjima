@@ -173,6 +173,26 @@
   .step-line { flex:1; min-width:20px; max-width:52px; height:2px; background:var(--border); margin:0 10px; }
   .step-line.done { background:var(--accent); }
 
+  .overview-grid { display:grid; grid-template-columns:minmax(240px,340px) 1fr; gap:16px; margin-bottom:16px; }
+  @media (max-width:680px) { .overview-grid { grid-template-columns:1fr; } }
+  .panel { border-radius:18px; background:var(--card); border:1px solid var(--border); padding:18px; }
+  .video-frame-ph { border-radius:12px; background:var(--card-alt); aspect-ratio:16/9; display:flex; align-items:center; justify-content:center; font-size:30px; color:var(--muted); }
+  .panel img.video-frame-img { width:100%; border-radius:12px; aspect-ratio:16/9; object-fit:cover; display:block; }
+  .panel-label { font-size:11px; font-weight:800; letter-spacing:0.04em; text-transform:uppercase; color:var(--muted); margin:16px 0 8px; }
+  .fact-row { display:flex; justify-content:space-between; padding:8px 0; border-top:1px solid var(--border); font-size:13px; gap:10px; }
+  .fact-row:first-of-type { border-top:none; }
+  .fact-k { color:var(--muted); }
+  .fact-v { font-weight:700; text-align:right; }
+  .ov-tabs { display:flex; gap:6px; margin-bottom:14px; }
+  .ov-tab { padding:7px 13px; border-radius:999px; font-size:12.5px; font-weight:700; color:var(--muted); background:transparent; cursor:pointer; border:none; }
+  .ov-tab.active { background:var(--card-alt); color:var(--text); }
+  .seg-row { display:flex; gap:14px; padding:11px 0; border-top:1px solid var(--border); }
+  .seg-row:first-of-type { border-top:none; }
+  .seg-cols { display:grid; grid-template-columns:1fr 1fr; gap:16px; flex:1; }
+  @media (max-width:560px) { .seg-cols { grid-template-columns:1fr; } }
+  .seg-orig { font-size:13px; color:var(--muted); line-height:1.5; }
+  .seg-tr { font-size:13px; line-height:1.5; }
+
   .modal-backdrop { display:none; position:fixed; inset:0; background:rgba(20,18,14,0.45); z-index:40; }
   .modal-backdrop.open { display:block; }
   .modal { display:none; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); z-index:41;
@@ -428,8 +448,6 @@
 <!--   PAGE: SERVER VIDEOLARI (markaziy bo'lim)                    -->
 <!-- ============================================================ -->
 <div class="page active" id="page-videos">
-  <p class="subtitle">Har bir video — alohida loyiha. Video, segmentlar, matn, tarjima, audio va yakuniy video shu loyihaga bog'langan holda saqlanadi.</p>
-
   <div id="videosGridView">
     <div class="row" style="margin-top:0;">
       <button class="small-btn" onclick="openCloudPicker('video', useCloudVideoInPipeline)">☁ Bulutdan olish</button>
@@ -440,10 +458,11 @@
       <div class="status" id="uploadStatus"></div>
     </div>
 
+    <p class="subtitle">Har bir video — alohida loyiha. Video, segmentlar, matn, tarjima, audio va yakuniy video shu loyihaga bog'langan holda saqlanadi.</p>
+
     <div class="header-search" id="headerSearchBar">
       🔍 <input type="text" id="headerSearchInput" placeholder="Video nomi bo'yicha qidirish..." oninput="renderVideoGrid()">
     </div>
-    <div id="statusFilterBar" class="folder-bar"></div>
     <div id="folderBar" class="folder-bar"></div>
 
     <div id="videoGrid" class="vgrid"><p class="hint">Yuklanmoqda...</p></div>
@@ -1562,8 +1581,35 @@ async function loadVideoDetail(id) {
     currentDetailVideoStatus = v.status;
     document.getElementById('videoDetailContent').innerHTML = renderVideoDetail(v);
     if (v.status === 'completed') initPlayer(id);
+    loadOverviewSegments(v);
   } catch (e) {
     document.getElementById('videoDetailContent').innerHTML = `<p class="status err">Xato: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function loadOverviewSegments(v) {
+  const el = document.getElementById('ovSegments-' + v.id);
+  if (!el) return;
+  const ready = ['ready', 'uploaded', 'pasted'].includes(v.translation_status);
+  if (!ready) {
+    el.innerHTML = '<p class="hint">Tarjima hali tayyor emas — pastdagi "O\'zbekcha tarjima" bo\'limidan boshlang.</p>';
+    return;
+  }
+  try {
+    const blocks = await apiFetch(`/api/videos/${v.id}/translation/blocks`);
+    const preview = blocks.slice(0, 8);
+    el.innerHTML = preview.map(b => `
+      <div class="seg-row">
+        <div class="seg-cols">
+          <div class="seg-orig">${escapeHtml(b.original_text || '')}</div>
+          <div class="seg-tr">${escapeHtml(b.translation_text || '')}</div>
+        </div>
+      </div>`).join('') +
+      (blocks.length > preview.length
+        ? `<p class="hint" style="margin-top:8px;">... va yana ${blocks.length - preview.length} ta bo'lak. To'liq ko'rish/tahrirlash uchun pastdagi "Tahrirlash va audio" tugmasini bosing.</p>`
+        : '');
+  } catch (e) {
+    el.innerHTML = `<p class="status err">Xato: ${escapeHtml(e.message)}</p>`;
   }
 }
 
@@ -1601,23 +1647,49 @@ function renderPipelineStepper(v) {
   return `<div class="card stepper">${parts}</div>`;
 }
 
-function renderVideoDetail(v) {
+function renderOverviewPanel(v) {
   const thumb = v.has_thumbnail
-    ? `<img src="${API_BASE}/api/videos/${v.id}/thumbnail" style="width:100%; max-width:280px; border-radius:10px; margin-bottom:10px;">`
-    : '';
+    ? `<img class="video-frame-img" src="${API_BASE}/api/videos/${v.id}/thumbnail">`
+    : `<div class="video-frame-ph">🎬</div>`;
+  const matnHolati = v.transcript_approved ? 'Tasdiqlangan'
+    : v.status === 'transcribing' ? 'Jarayonda'
+    : ['transcription_ready', 'transcription_approved', 'translation_ready', 'audio_processing', 'audio_ready', 'video_rendering', 'completed'].includes(v.status) ? 'Tayyor'
+    : 'Boshlanmagan';
+  const tarjimaHolati = ['ready', 'uploaded', 'pasted'].includes(v.translation_status) ? 'Tayyor'
+    : v.translation_status === 'generating' ? 'Jarayonda'
+    : v.translation_status === 'failed' ? 'Xato'
+    : 'Boshlanmagan';
+  return `
+  <div class="overview-grid">
+    <div class="panel">
+      ${thumb}
+      <div class="panel-label">Loyiha holati</div>
+      <div class="fact-row"><div class="fact-k">Bo'laklar</div><div class="fact-v mono">${v.chunk_count || 0}</div></div>
+      <div class="fact-row"><div class="fact-k">Matn</div><div class="fact-v">${escapeHtml(matnHolati)}</div></div>
+      <div class="fact-row"><div class="fact-k">Tarjima</div><div class="fact-v" style="color:var(--accent)">${escapeHtml(tarjimaHolati)}</div></div>
+      <div class="fact-row"><div class="fact-k">Xarajat</div><div class="fact-v mono">${fmtUsd(v.cost_total)}</div></div>
+    </div>
+    <div class="panel">
+      <div class="ov-tabs"><span class="ov-tab active">Original / Tarjima</span></div>
+      <div id="ovSegments-${v.id}"><p class="hint">Yuklanmoqda...</p></div>
+    </div>
+  </div>`;
+}
+
+function renderVideoDetail(v) {
   let html = `
     <div class="card">
       <div class="row" style="justify-content:space-between; margin-top:0;">
         <h2 style="margin:0;">${escapeHtml(v.original_name)}</h2>
         <button class="small-btn danger" onclick="deleteVideoFromDetail('${v.id}')">Videoni o'chirish</button>
       </div>
-      ${thumb}
-      <div class="status">${fmtBytes(v.file_size)} ${v.duration ? '· ' + fmtMinSec(v.duration) : ''} · Xarajat: ${fmtUsd(v.cost_total)}</div>
+      <div class="status">${fmtBytes(v.file_size)} ${v.duration ? '· ' + fmtMinSec(v.duration) : ''}</div>
       ${v.message ? `<div class="status">${escapeHtml(v.message)}</div>` : ''}
       ${v.blocked_reason ? `<div class="warn-box">${escapeHtml(BLOCKED_LABELS[v.blocked_reason] || v.blocked_reason)}${v.repetition_info ? ': ' + escapeHtml(v.repetition_info) : ''}</div>` : ''}
     </div>`;
 
   html += renderPipelineStepper(v);
+  html += renderOverviewPanel(v);
   html += renderSegmentStage(v);
   html += renderTranscriptStage(v);
   html += renderTranslationStage(v);
