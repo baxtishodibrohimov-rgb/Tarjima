@@ -8,6 +8,8 @@ Ishga tushirish (lokal sinov uchun):
 Railway'ga joylashtirish uchun README.txt'ga qarang.
 """
 import asyncio
+import base64
+import hmac
 import httpx
 import json
 import re
@@ -17,7 +19,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse, StreamingResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 import database as db
@@ -31,7 +33,7 @@ from storage import (VIDEOS_DIR, RESULTS_DIR, UPLOADS_DIR, CHUNKS_DIR, SPLIT_DIR
                       UPLOAD_CHUNK_SIZE, CHUNK_SECONDS, MAX_WHISPER_CONCURRENCY, MAX_ACTIVE_VIDEO_JOBS,
                       MAX_ACTIVE_TTS_JOBS, REPETITION_THRESHOLD, DARSLIK_API_KEY, IDEA_FLOW_URL,
                       TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, LOCAL_BOT_API_URL, INBOUND_BOT_TOKEN,
-                      safe_name, disk_usage, has_space_for)
+                      APP_USERNAME, APP_PASSWORD, safe_name, disk_usage, has_space_for)
 
 BASE = Path(__file__).resolve().parent
 
@@ -97,6 +99,32 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def require_login(request: Request, call_next):
+    """Butun saytni (barcha sahifa va API so'rovlarini) login/parol bilan
+    himoyalaydi - APP_USERNAME/APP_PASSWORD environment variable orqali
+    sozlanadi. Ikkalasi ham bo'sh bo'lsa (sozlanmagan bo'lsa), himoya
+    o'chirilgan holda qoladi (masalan lokal sinov uchun)."""
+    if not APP_USERNAME or not APP_PASSWORD:
+        return await call_next(request)
+
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.lower().startswith("basic "):
+        try:
+            decoded = base64.b64decode(auth_header[6:]).decode("utf-8")
+            username, _, password = decoded.partition(":")
+        except Exception:
+            username, password = "", ""
+        if hmac.compare_digest(username, APP_USERNAME) and hmac.compare_digest(password, APP_PASSWORD):
+            return await call_next(request)
+
+    return Response(
+        status_code=401,
+        content="Kirish uchun login va parol kerak.",
+        headers={"WWW-Authenticate": 'Basic realm="Darslik Studiyasi"'},
+    )
 
 
 @app.on_event("startup")

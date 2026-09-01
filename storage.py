@@ -37,6 +37,11 @@ STORAGE_LIMIT = int(os.environ.get("STORAGE_LIMIT", str(95 * 1024 * 1024 * 1024)
 REPETITION_THRESHOLD = int(os.environ.get("REPETITION_THRESHOLD", "3"))
 UPLOAD_CHUNK_SIZE = int(os.environ.get("UPLOAD_CHUNK_SIZE", str(8 * 1024 * 1024)))
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")  # bo'sh bo'lsa himoya o'chirilgan
+
+# Butun saytni login/parol bilan himoyalash uchun (HTTP Basic Auth) - ikkalasi
+# ham bo'sh bo'lsa, himoya o'chirilgan holda qoladi (masalan lokal sinov uchun).
+APP_USERNAME = os.environ.get("APP_USERNAME", "")
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
 # Idea Flow (Lovable) botidagi "Video Baza / Tarjima" papkasiga tayyor videolarni
 # yozib qo'yish uchun - ikkala tomonda ham bir xil bo'lishi shart.
 DARSLIK_API_KEY = os.environ.get("DARSLIK_API_KEY", "")
