@@ -67,7 +67,9 @@ async def _download_and_save_to_cloud(client: httpx.AsyncClient, file_id: str, o
         await _send_message(client, chat_id, f'"{original_name}" qabul qilinmadi - serverda joy yetarli emas.')
         return
 
-    resp = await client.post(_api_url("getFile"), data={"file_id": file_id}, timeout=60)
+    # Katta video uchun lokal bot-api serveri getFile so'rovi davomida faylni
+    # Telegram'dan orqa fonda yuklab olishi mumkin - shuning uchun uzunroq timeout.
+    resp = await client.post(_api_url("getFile"), data={"file_id": file_id}, timeout=180)
     resp.raise_for_status()
     file_path = resp.json()["result"]["file_path"]
 
@@ -77,14 +79,33 @@ async def _download_and_save_to_cloud(client: httpx.AsyncClient, file_id: str, o
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_path = dest_dir / name
 
+    # Katta fayllarni Telegram'dan lokal bot-api serveriga ko'chirish biroz vaqt olishi
+    # mumkin - shu vaqt ichida fayl hali "tayyor emas" (404) bo'lishi mumkin, shuning
+    # uchun darhol zaxira usulga o'tish o'rniga bir necha marta kutib qayta urinamiz.
     local_url = f"{LOCAL_BOT_API_URL.rstrip('/')}/file/bot{INBOUND_BOT_TOKEN}/{file_path}"
-    try:
-        total = await _stream_to_file(client, local_url, dest_path)
-    except httpx.HTTPStatusError as e:
-        # O'z-o'zini joylashtirgan server fayl xizmat qila olmadi (masalan 404) -
-        # ochiq Telegram Cloud API orqali qayta urinamiz (faqat <=20 MB fayllar uchun ishlaydi).
-        print(f"[telegram_bot] Lokal bot-api serveridan yuklab bo'lmadi ({e.response.status_code}), "
-              f"ochiq Telegram API orqali qayta urinilmoqda...", flush=True)
+    last_local_error: Exception | None = None
+    total = None
+    for attempt in range(6):
+        try:
+            total = await _stream_to_file(client, local_url, dest_path)
+            last_local_error = None
+            break
+        except httpx.HTTPStatusError as e:
+            last_local_error = e
+            if e.response.status_code == 404 and attempt < 5:
+                print(f"[telegram_bot] Fayl hali lokal serverda tayyor emas (404), "
+                      f"{attempt + 1}-urinish, 3s kutib qayta urinilmoqda...", flush=True)
+                await asyncio.sleep(3)
+                continue
+            break
+
+    if last_local_error is not None:
+        # O'z-o'zini joylashtirgan server bir necha urinishdan keyin ham fayl xizmat
+        # qila olmadi - ochiq Telegram Cloud API orqali qayta urinamiz (faqat <=20 MB
+        # fayllar uchun ishlaydi).
+        print(f"[telegram_bot] Lokal bot-api serveridan yuklab bo'lmadi "
+              f"({last_local_error.response.status_code}), ochiq Telegram API orqali "
+              f"qayta urinilmoqda...", flush=True)
         pub_resp = await client.post(f"{PUBLIC_API_BASE}/bot{INBOUND_BOT_TOKEN}/getFile",
                                       data={"file_id": file_id}, timeout=60)
         pub_resp.raise_for_status()
