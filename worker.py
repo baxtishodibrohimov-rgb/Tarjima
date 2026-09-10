@@ -60,6 +60,88 @@ def log(video_id: str, msg: str):
 
 
 # ---------------------------------------------------------------------------
+#                          LOYIHANI QAYTA BOSHLASH (RESTART)
+# ---------------------------------------------------------------------------
+
+# Bu holatlarda (va blocked_reason bo'lmasa - ya'ni haqiqatan FAOL ishlayotgan
+# bo'lsa) restart xavfli: fon vazifasi hali ham eski ma'lumot ustida ishlab,
+# tugagach restart bilan tozalangan holatni bosib qo'yishi (race condition)
+# mumkin. Shuning uchun bunday paytda restart rad etiladi - foydalanuvchi
+# avval "Bekor qilish"ni bosishi yoki tugashini kutishi kerak.
+_RESTART_UNSAFE_ACTIVE_STATUSES = {"segmenting", "transcribing", "video_rendering"}
+
+
+def restart_video(video_id: str):
+    """Loyihani xuddi VIDEO YANGI YUKLANGANDAN keyingi holatga qaytaradi:
+    transkripsiya, tarjima, audio va yakuniy video - bularning barchasi va
+    ularga tegishli fayllar (bo'laklar, TTS audiosi, render natijasi)
+    o'chiriladi, status 'uploaded'ga qaytariladi. Original video fayli va
+    thumbnail SAQLANADI. Xarajatlar (costs) va umumiy ish jurnali (job_logs)
+    ham SAQLANADI - bular haqiqiy sarflangan pul va tarixiy yozuv, ish
+    natijalari emas.
+
+    kind == 'pipeline' bo'lsa, video mavjud bo'lgani holda avtomatik
+    segmentatsiya darhol qayta navbatga qo'yiladi (xuddi birinchi yuklashda
+    bo'lgani kabi)."""
+    video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    if not video:
+        raise ValueError("Video topilmadi.")
+    if video["kind"] != "pipeline":
+        raise ValueError("Faqat tarjima loyihalari uchun qayta boshlash mumkin.")
+
+    if video["status"] in _RESTART_UNSAFE_ACTIVE_STATUSES and not video["blocked_reason"]:
+        raise ValueError(
+            f"Video hozir faol ishlamoqda ('{video['status']}') - qayta boshlashdan oldin "
+            f"avval uni bekor qiling yoki tugashini kuting."
+        )
+    if video["status"] == "audio_processing" and video["tts_job_id"]:
+        tts_job = db.fetchone("SELECT status FROM tts_jobs WHERE id = ?", (video["tts_job_id"],))
+        if tts_job and tts_job["status"] in ("running", "queued"):
+            raise ValueError(
+                "Audio hozir faol yaratilmoqda - qayta boshlashdan oldin avval uni bekor qiling "
+                "yoki tugashini kuting."
+            )
+
+    PAUSE_FLAGS.pop(video_id, None)
+    CANCEL_FLAGS.pop(video_id, None)
+
+    if video["tts_job_id"]:
+        from storage import TTS_DIR
+        import tts as tts_module
+        tts_module.PAUSE_FLAGS.pop(video["tts_job_id"], None)
+        tts_module.CANCEL_FLAGS.pop(video["tts_job_id"], None)
+        db.execute("DELETE FROM tts_segments WHERE job_id = ?", (video["tts_job_id"],))
+        db.execute("DELETE FROM tts_jobs WHERE id = ?", (video["tts_job_id"],))
+        shutil.rmtree(TTS_DIR / video["tts_job_id"], ignore_errors=True)
+
+    db.execute("DELETE FROM chunks WHERE video_id = ?", (video_id,))
+    db.execute("DELETE FROM results WHERE video_id = ?", (video_id,))
+    shutil.rmtree(CHUNKS_DIR / video_id, ignore_errors=True)
+    shutil.rmtree(RESULTS_DIR / video_id, ignore_errors=True)
+
+    _update_video(
+        video_id,
+        status="uploaded", blocked_reason=None, progress=0,
+        message="Loyiha boshidan boshlandi - bo'laklarga avtomatik qayta bo'linmoqda...",
+        error=None, chunk_count=0, language="", instruction="", detected_language="",
+        repetition_chunk_index=None, repetition_info=None,
+        transcript_text=None, transcript_segments=None, transcript_approved=0,
+        translation_text=None, translation_segments=None, translation_status="none", translation_source=None,
+        audio_path=None, audio_status="none", tts_job_id=None,
+        final_video_path=None, final_video_status="none", freeze_points=None,
+        flagged_issues=None, topic_group=None,
+        telegram_send_status="none", telegram_send_error=None, idea_flow_sent_at=None,
+        split_total_parts=0, split_parts_sent=0,
+    )
+    log(video_id, "=== LOYIHA QAYTA BOSHLANDI (Restart): barcha ish natijalari (transkripsiya, "
+                   "tarjima, audio, yakuniy video) tozalandi, video yuklangandan keyingi holatga "
+                   "qaytarildi. Xarajatlar tarixi saqlanib qoldi. ===")
+
+    if video["path"] and Path(video["path"]).exists():
+        enqueue_segment(video_id)
+
+
+# ---------------------------------------------------------------------------
 #                          BO'LAKLARGA BO'LISH (SEGMENTATSIYA)
 # ---------------------------------------------------------------------------
 

@@ -432,6 +432,21 @@ async def delete_video(video_id: str, mode: str = "full", _=Depends(check_admin)
     return {"ok": True}
 
 
+@app.post("/api/videos/{video_id}/restart")
+async def restart_video_endpoint(video_id: str, _=Depends(check_admin)):
+    """Loyihani video yuklangandan keyingi holatga qaytaradi - transkripsiya,
+    tarjima, audio va yakuniy video (va ularga tegishli fayllar) o'chiriladi,
+    original video saqlanib qoladi va bo'laklarga avtomatik qayta bo'linadi."""
+    v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    if not v:
+        raise HTTPException(404, "Video topilmadi.")
+    try:
+        worker.restart_video(video_id)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    return {"ok": True}
+
+
 @app.post("/api/videos/{video_id}/segment")
 async def segment_video_endpoint(video_id: str):
     v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))

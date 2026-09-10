@@ -1806,7 +1806,10 @@ function renderVideoDetail(v) {
     <div class="card">
       <div class="row" style="justify-content:space-between; margin-top:0;">
         <h2 style="margin:0;">${escapeHtml(v.original_name)}</h2>
-        <button class="small-btn danger" onclick="deleteVideoFromDetail('${v.id}')">Videoni o'chirish</button>
+        <div class="row" style="margin:0; gap:8px;">
+          <button class="small-btn" onclick="restartVideoFromDetail('${v.id}')" title="Transkripsiya, tarjima, audio va yakuniy videoni o'chirib, video yuklangandan keyingi holatga qaytaradi">↺ Qayta boshlash</button>
+          <button class="small-btn danger" onclick="deleteVideoFromDetail('${v.id}')">Videoni o'chirish</button>
+        </div>
       </div>
       <div class="status">${fmtBytes(v.file_size)} ${v.duration ? '· ' + fmtMinSec(v.duration) : ''}</div>
       ${v.message ? `<div class="status">${escapeHtml(v.message)}</div>` : ''}
@@ -2872,6 +2875,14 @@ async function submitTranslateFile(id) {
 async function renderVideo(id) {
   try { await apiFetch(`/api/videos/${id}/render`, { method: 'POST' }); loadVideoDetail(id); }
   catch (e) { alert('Xato: ' + e.message); }
+}
+
+async function restartVideoFromDetail(id) {
+  if (!confirm("Loyihani qaytadan boshlamoqchimisiz? Transkripsiya, tarjima, audio va yakuniy video butunlay o'chadi - video xuddi yangi yuklangandek, bo'laklarga avtomatik qayta bo'linadi. Original video va xarajatlar tarixi saqlanadi. Bu amalni ortga qaytarib bo'lmaydi.")) return;
+  try {
+    await apiFetch(`/api/videos/${id}/restart`, { method: 'POST' });
+    loadVideoDetail(id);
+  } catch (e) { alert('Xato: ' + e.message); }
 }
 
 async function deleteVideoFromDetail(id) {
