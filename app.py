@@ -1580,7 +1580,12 @@ async def subtitles_original_vtt(video_id: str):
 
 @app.get("/api/videos/{video_id}/subtitles/uz.vtt")
 async def subtitles_uz_vtt(video_id: str):
-    r = _result_by_kind(video_id, "vtt_uz")
+    # "uz" video treki - freeze bo'lsa - kadr kutib turishi bilan cho'zilgan yakuniy
+    # videodir, shuning uchun mos keladigan subtitr ham freeze bilan moslashtirilgan
+    # variant (vtt_uz_final) bo'lishi kerak, agar u mavjud bo'lsa. "Original" trek
+    # hech qachon freeze bilan o'zgartirilmaydi, shu sabab uning subtitri doim manba
+    # (vtt_original) bo'lib qoladi - subtitles_original_vtt bunga tegilmagan.
+    r = _result_by_kind(video_id, "vtt_uz_final") or _result_by_kind(video_id, "vtt_uz")
     if not r or not Path(r["path"]).exists():
         raise HTTPException(404, "O'zbekcha subtitr topilmadi.")
     return FileResponse(r["path"], media_type="text/vtt")

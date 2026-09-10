@@ -1947,9 +1947,15 @@ function renderFlaggedIssuesSummary(v) {
 }
 
 function renderTranscriptStage(v) {
-  const before = ['uploaded', 'segmenting'].includes(v.status);
-  const ready = v.status === 'transcription_ready';
-  const approved = !['uploaded', 'segmenting', 'segments_ready', 'transcribing', 'transcription_ready'].includes(v.status);
+  // Eski ma'lumotlarda ("cancelled" holati backend'da endi qaytarilmaydi, lekin
+  // avvalgi versiyada yaratilgan videolarda hali ham uchrashi mumkin) - shu holat
+  // "segments_ready" bilan bir xil ko'rsatiladi (til qayta tanlab qayta boshlash
+  // mumkin bo'lishi kerak), aks holda "Tasdiqlangan" bo'limi ostiga tasodifan
+  // tushib qolardi.
+  const status = v.status === 'cancelled' ? 'segments_ready' : v.status;
+  const before = ['uploaded', 'segmenting'].includes(status);
+  const ready = status === 'transcription_ready';
+  const approved = !['uploaded', 'segmenting', 'segments_ready', 'transcribing', 'transcription_ready'].includes(status);
 
   let badge = stageStatusBadge('Olinmagan', '');
   let body = '';
@@ -1957,7 +1963,7 @@ function renderTranscriptStage(v) {
   if (before) {
     badge = stageStatusBadge('Kutilmoqda', '');
     body = `<p class="hint">Avval videoni bo'laklarga bo'ling.</p>`;
-  } else if (v.status === 'segments_ready') {
+  } else if (status === 'segments_ready') {
     badge = stageStatusBadge('Boshlanmagan', '');
     body = `
       <div class="grid2" style="margin:10px 0;">
@@ -1976,13 +1982,17 @@ function renderTranscriptStage(v) {
       <label class="field">Qo'shimcha ko'rsatma (ixtiyoriy)</label>
       <input type="text" id="instr-${v.id}" placeholder="masalan: Bu darsda maxsus atamalar bor">
       <button class="action" onclick="startTranscribe('${v.id}', this)" style="margin-top:10px;">Transkripsiyani boshlash</button>`;
-  } else if (v.status === 'transcribing') {
+  } else if (status === 'transcribing') {
     badge = v.blocked_reason ? stageStatusBadge(BLOCKED_LABELS[v.blocked_reason], 'error') : stageStatusBadge('Ishlanmoqda...', 'active');
     body = `<div class="progress-wrap"><div class="progress-bar" style="width:${v.progress || 0}%;"></div></div>`;
     body += renderChunkDetailList(v.chunks);
     body += `<div class="row">`;
-    if (v.blocked_reason) body += `<button class="action" onclick="jobAction('${v.id}','resume', this)">Davom ettirish</button>`;
-    else body += `<button class="small-btn" onclick="jobAction('${v.id}','pause', this)">To'xtatish</button><button class="small-btn" onclick="jobAction('${v.id}','cancel', this)">Bekor qilish</button>`;
+    if (v.blocked_reason) {
+      body += `<button class="action" onclick="jobAction('${v.id}','resume', this)">Davom ettirish (avvalgi til bilan)</button>
+        <button class="small-btn" onclick="jobAction('${v.id}','cancel', this)">Bekor qilish va tilni qayta tanlash</button>`;
+    } else {
+      body += `<button class="small-btn" onclick="jobAction('${v.id}','pause', this)">To'xtatish</button><button class="small-btn" onclick="jobAction('${v.id}','cancel', this)">Bekor qilish</button>`;
+    }
     body += `</div>
       <div class="row">
         <input type="text" id="rangeStart-${v.id}" placeholder="boshlanish, mm:ss" style="width:120px;">
@@ -3055,12 +3065,22 @@ window.addEventListener('DOMContentLoaded', () => {
     if (id === 'page-videos') {
       const activeEl = document.activeElement;
       const detailContentEl = document.getElementById('videoDetailContent');
-      const userTyping = activeEl && (activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'INPUT') &&
+      const userTyping = activeEl && (activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'INPUT' || activeEl.tagName === 'SELECT') &&
         detailContentEl && detailContentEl.contains(activeEl);
       const anyDetailsOpen = detailContentEl &&
         Array.from(detailContentEl.querySelectorAll('details')).some(d => d.open);
       const anyModalOpen = document.querySelector('.modal.open') !== null;
-      const anyPanelOpen = userTyping || anyDetailsOpen || anyModalOpen || Array.from(document.querySelectorAll(
+      // Transkripsiya uchun til/yo'nalish tanlangan yoki ko'rsatma yozilgan bo'lsa
+      // ham (hatto fokus boshqa joyga o'tgan bo'lsa ham) - 4 soniyalik avtomatik
+      // yangilanish shu tanlovni "Avtomatik aniqlash"ga qaytarib yubormasligi
+      // uchun to'xtatiladi. Foydalanuvchi "Transkripsiyani boshlash"ni bosgach,
+      // holat 'transcribing'ga o'tadi va bu oyna baribir yo'qoladi.
+      const transcribeFormDirty = !!(detailContentEl && (
+        detailContentEl.querySelector('select[id^="lang-"]')?.value ||
+        detailContentEl.querySelector('select[id^="topicGroup-"]')?.value ||
+        detailContentEl.querySelector('input[id^="instr-"]')?.value.trim()
+      ));
+      const anyPanelOpen = userTyping || anyDetailsOpen || anyModalOpen || transcribeFormDirty || Array.from(document.querySelectorAll(
         '[id^="block-editor-"], [id^="translate-form-"], [id^="audio-form-"], [id^="transcript-block-editor-"]'
       )).some(el => el.innerHTML.trim() !== '');
       if (currentDetailVideoId) {

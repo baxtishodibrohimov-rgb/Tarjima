@@ -194,14 +194,38 @@ def pause_job(video_id: str):
     log(video_id, "Foydalanuvchi to'xtatishni so'radi (xavfsiz nuqtada to'xtaydi).")
 
 
+def _reset_transcription_to_segments_ready(video_id: str, message: str):
+    """Transkripsiyani bekor qilingandan keyin videoni 'segments_ready' holatiga
+    qaytaradi - shunda 'Til' tanlash oynasi qayta chiqadi va foydalanuvchi TO'G'RI
+    tilni tanlab, transkripsiyani boshidan boshlashi mumkin. Ilgari bu yerda status
+    'cancelled' qilib qo'yilardi - bu holat frontendda umuman ishlov berilmagan
+    ("tasdiqlangan" bo'limiga tasodifan tushib qolardi) va backend ham
+    /transcribe so'rovini qabul qilmasdi (faqat 'segments_ready'/'transcription_ready'
+    ruxsat etilgan) - natijada video umuman qayta ishlatib bo'lmaydigan holatda
+    qotib qolardi. Bo'laklar (chunks) o'zi bo'laklashda yaratilgani uchun qayta
+    saqlanadi - faqat ularning transkripsiya natijasi tozalanadi."""
+    db.execute("UPDATE chunks SET status = 'pending', transcript = NULL, error = NULL WHERE video_id = ?",
+               (video_id,))
+    _update_video(video_id, status="segments_ready", blocked_reason=None, progress=0, message=message, error=None,
+                  repetition_chunk_index=None, repetition_info=None)
+
+
 def cancel_job(video_id: str):
     CANCEL_FLAGS[video_id] = True
-    video = db.fetchone("SELECT status FROM videos WHERE id = ?", (video_id,))
-    if video and video["status"] == "transcribing":
-        pass  # tugagach o'zi 'cancelled' bo'ladi
-    else:
-        _update_video(video_id, status="cancelled", message="Bekor qilindi.")
-    log(video_id, "Bekor qilindi.")
+    video = db.fetchone("SELECT status, blocked_reason FROM videos WHERE id = ?", (video_id,))
+    if video and video["status"] == "transcribing" and not video["blocked_reason"]:
+        # Hozir faol ishlayotgan bo'laklar bor - ular xavfsiz nuqtada to'xtaguncha
+        # kutamiz. run_transcription_job() CANCEL_FLAGS'ni ko'rib, o'zi
+        # 'segments_ready'ga qaytaradi (pastda, jarayon tugagach).
+        log(video_id, "Bekor qilish so'raldi - joriy bo'laklar tugagach 'Bo'laklar tayyor' holatiga qaytariladi.")
+        return
+    # Allaqachon to'xtatilgan (pauza qilingan) yoki boshqa xato bilan bloklangan -
+    # faol run_transcription_job() yo'q, shuning uchun bu yerning o'zida darhol qaytaramiz.
+    PAUSE_FLAGS.pop(video_id, None)
+    CANCEL_FLAGS.pop(video_id, None)
+    _reset_transcription_to_segments_ready(
+        video_id, "Bekor qilindi. Tilni qayta tanlab, transkripsiyani qaytadan boshlashingiz mumkin.")
+    log(video_id, "Bekor qilindi - 'Bo'laklar tayyor' holatiga qaytarildi.")
 
 
 def _effective_chunk_language(video: dict, chunk: dict) -> str:
@@ -403,8 +427,10 @@ async def run_transcription_job(video_id: str):
         PAUSE_FLAGS.pop(video_id, None)
         return
     if CANCEL_FLAGS.get(video_id):
-        _update_video(video_id, status="cancelled", blocked_reason=None, message="Bekor qilindi.")
+        _reset_transcription_to_segments_ready(
+            video_id, "Bekor qilindi. Tilni qayta tanlab, transkripsiyani qaytadan boshlashingiz mumkin.")
         CANCEL_FLAGS.pop(video_id, None)
+        log(video_id, "Bekor qilindi - 'Bo'laklar tayyor' holatiga qaytarildi.")
         return
     if PAUSE_FLAGS.get(video_id):
         _update_video(video_id, blocked_reason="paused", message="To'xtatildi (xavfsiz nuqtada).")
@@ -834,6 +860,46 @@ def write_translation_results(video_id: str):
         )
 
 
+def write_final_subtitles(video_id: str, freeze_points: list):
+    """Freeze nuqtalari asosida, YAKUNIY (freeze bilan mos, 'uz' audio/video treki
+    uchun) SRT/VTT fayllarni yaratadi. MUHIM: manba (source) SRT/VTT fayllarga
+    (write_translation_results yozgan) HECH TEGILMAYDI - ular original vaqt bilan
+    o'zgarishsiz qoladi. 'Original' video/audio treki hech qachon freeze bilan
+    o'zgartirilmaydi, shuning uchun uning subtitri ham doim manba (original.vtt)
+    bo'lib qoladi - faqat 'uz' (freeze-rendered yakuniy video) treki uchun
+    moslashtirilgan variant kerak."""
+    db.execute("DELETE FROM results WHERE video_id = ? AND kind IN ('srt_uz_final', 'vtt_uz_final')",
+               (video_id,))
+    active = [f for f in (freeze_points or []) if f.get("duration", 0) > 0.05]
+    if not active:
+        return
+    video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    if not video:
+        return
+    translation_segments = json.loads(video["translation_segments"] or "[]")
+    if not translation_segments:
+        return
+
+    adjusted = transcription.apply_freeze_to_segments(translation_segments, active)
+    srt_text = transcription.build_srt(adjusted)
+    vtt_text = transcription.build_vtt(adjusted)
+
+    out_dir = RESULTS_DIR / video_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    base = safe_name(Path(video["original_name"]).stem) or "natija"
+    srt_path = out_dir / f"{base}.uz.final.srt"
+    vtt_path = out_dir / f"{base}.uz.final.vtt"
+    srt_path.write_text(srt_text, encoding="utf-8")
+    vtt_path.write_text(vtt_text, encoding="utf-8")
+    for kind, path in (("srt_uz_final", srt_path), ("vtt_uz_final", vtt_path)):
+        db.execute(
+            "INSERT INTO results (id, video_id, kind, filename, path, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (db.new_id(), video_id, kind, path.name, str(path), db.now()),
+        )
+    log(video_id, f"Yakuniy (freeze bilan moslashtirilgan) o'zbekcha subtitr fayllar yaratildi "
+                   f"({len(active)} ta freeze nuqtasi, jami {transcription.total_freeze_duration(active):.2f}s siljish).")
+
+
 def get_translation_blocks(video_id: str) -> list:
     """Har bir original segment va unga mos tarjima bo'lagini indeks bilan qaytaradi
     ('Tahrirlash va audio' bo'limi uchun)."""
@@ -945,18 +1011,31 @@ async def render_video(video_id: str):
         tmp_out_path.unlink(missing_ok=True)
 
         freeze_points = json.loads(video["freeze_points"]) if video["freeze_points"] else []
-        if freeze_points:
-            log(video_id, f"Video yig'ilmoqda: {len(freeze_points)} ta joyda audio uzunroq, "
+        active_freeze_points = [f for f in freeze_points if f.get("duration", 0) > 0.05]
+        if active_freeze_points:
+            log(video_id, f"Video yig'ilmoqda: {len(active_freeze_points)} ta joyda audio uzunroq, "
                            f"video shu nuqtalarda kutib turadi.")
         else:
             log(video_id, "Video va audio ffmpeg orqali birlashtirilmoqda (fayl hajmiga qarab bir necha "
                            "daqiqa vaqt olishi mumkin)...")
         freeze_work_dir = CHUNKS_DIR / video_id / "freeze_work"
 
+        # Yakuniy fayl aniq shu davomiylikda chiqishi kerak: asl video davomiyligi +
+        # freeze'lar yig'indisi. Bu "-shortest" o'rniga "-t" bilan ishlatiladi -
+        # qisqaroq audio videoni kesib qo'ymaydi, va ortiqcha uzunlikdan ham himoya qiladi.
+        video_duration = float(video["duration"] or 0) or transcription.get_duration_seconds(Path(video["path"]))
+        target_duration = None
+        if video_duration and video_duration > 0:
+            target_duration = video_duration + transcription.total_freeze_duration(active_freeze_points)
+            log(video_id, f"DEBUG render: video_duration={video_duration:.3f}s "
+                           f"freeze_total={transcription.total_freeze_duration(active_freeze_points):.3f}s "
+                           f"target_duration={target_duration:.3f}s")
+
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(
             None, transcription.mux_video_audio_with_freezes,
-            Path(video["path"]), Path(video["audio_path"]), tmp_out_path, freeze_points, freeze_work_dir)
+            Path(video["path"]), Path(video["audio_path"]), tmp_out_path, freeze_points, freeze_work_dir,
+            target_duration)
 
         tmp_out_path.replace(out_path)  # atomik ko'chirish - endigina yakuniy video hisoblanadi
         _update_video(video_id, status="completed", blocked_reason=None, final_video_status="ready",
@@ -998,17 +1077,19 @@ def sync_video_from_tts_job(job_id: str):
         log(video_id, f"Eski audio ish ({job_id}) tugadi, lekin video endi boshqa ishga bog'langan - e'tiborsiz qoldirildi.")
         return
     if job["status"] == "completed":
-        freeze_count = 0
+        freeze_points = []
         if job["freeze_points"]:
             try:
-                freeze_count = len(json.loads(job["freeze_points"]))
+                freeze_points = json.loads(job["freeze_points"])
             except Exception:
                 pass
+        freeze_count = len([f for f in freeze_points if f.get("duration", 0) > 0.05])
         message = "Audio tayyor."
         if freeze_count:
             message = f"Audio tayyor. {freeze_count} ta joyda yakuniy video 'kutib turadi' (audio uzunroq chiqdi)."
         _update_video(video_id, status="audio_ready", blocked_reason=None, audio_status="ready",
                       audio_path=job["result_path"], freeze_points=job["freeze_points"], message=message)
+        write_final_subtitles(video_id, freeze_points)
         log(video_id, f"Audio tayyor (TTS ishi yakunlandi).{' ' + str(freeze_count) + ' ta muzlatish nuqtasi.' if freeze_count else ''}")
 
         # Barcha audio segmentlari muvaffaqiyatli tayyor bo'lgani uchun (shu yerga

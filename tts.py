@@ -345,12 +345,19 @@ async def merge_job(job_id: str):
         _notify_video(job_id)
         return
 
+    video_duration = 0.0
+    if job["video_id"]:
+        v = db.fetchone("SELECT duration FROM videos WHERE id = ?", (job["video_id"],))
+        if v and v["duration"]:
+            video_duration = float(v["duration"])
+
     loop = asyncio.get_event_loop()
     out_path = TTS_DIR / job_id / f"{safe_name(job['title'])}_yakuniy.mp3"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         freeze_points = await loop.run_in_executor(
-            None, _merge_segments_pure_python, ok_segs, out_path, bool(job["stretch_to_fit"]))
+            None, _merge_segments_pure_python, ok_segs, out_path, bool(job["stretch_to_fit"]),
+            video_duration, 1.2, job_id)
         _update_job(job_id, status="completed", finished_at=db.now(), result_path=str(out_path), error=None,
                     freeze_points=json.dumps(freeze_points, ensure_ascii=False))
         if freeze_points:
@@ -411,7 +418,8 @@ def _resample_raw(raw: bytes, nchannels: int, sampwidth: int, target_frame_count
     return out.tobytes()
 
 
-def _merge_segments_pure_python(ok_segs: list, out_path: Path, stretch_to_fit: bool, max_rate: float = 1.2):
+def _merge_segments_pure_python(ok_segs: list, out_path: Path, stretch_to_fit: bool,
+                                 video_duration: float = 0.0, max_rate: float = 1.2, job_id: str = None):
     """Har bir bo'lak WAV faylini o'qib, bitta katta jim buferga joylaydi.
 
     Audio har doim TABIIY tezlikda o'qiladi. Agar bo'lak o'ziga ajratilgan
@@ -421,6 +429,19 @@ def _merge_segments_pure_python(ok_segs: list, out_path: Path, stretch_to_fit: b
       - Agar shundan keyin ham sig'masa, ortiqcha qism uchun "muzlatish
         nuqtasi" qaytariladi - buni video render bosqichi asl videoga
         qo'llab, o'sha joyda kadrni bir necha soniya "kutib turadi".
+
+    MUHIM: har bir bo'lakning "mavjud vaqti" (natural_gap) HAR DOIM shu
+    bo'lakning O'ZINING end_sec - start_sec farqi bilan hisoblanadi - keyingi
+    bo'lak boshlanishigacha bo'lgan masofa bilan EMAS. Aks holda: (1) audio
+    original pauzani "yeb qo'yishi" mumkin edi va freeze hech qachon
+    ishlamas edi; (2) oxirgi bo'lak umuman tekshirilmas edi. Bu bitta
+    o'zgarish freeze vaqtini ham to'g'irlaydi (freeze "time" = bo'lakning
+    o'z end_sec'i, keyingi bo'lak start_sec'i emas), chunki
+    adjusted_start + natural_gap == p["end_sec"] endi har doim to'g'ri.
+
+    adjusted_start hisoblanishi transcription.source_time_to_final_time()
+    orqali qilinadi - bu video freeze qo'yish va yakuniy SRT/VTT hisoblash
+    bilan BITTA umumiy manbadan foydalanishni kafolatlaydi.
 
     Qaytaradi: freeze_points - [{"time": <original video vaqti>, "duration": <necha soniya kutish>}, ...]
     """
@@ -437,7 +458,6 @@ def _merge_segments_pure_python(ok_segs: list, out_path: Path, stretch_to_fit: b
 
     # 1-o'tish: har bir bo'lak uchun moslashtirilgan (surilgan) boshlanish vaqtini,
     # kerak bo'lsa yengil tezlashtirishni (<=max_rate) va "muzlatish nuqtalari"ni hisoblaymiz.
-    cumulative_shift = 0.0
     freeze_points = []
     adjusted = []
     for idx, p in enumerate(parsed):
@@ -445,13 +465,11 @@ def _merge_segments_pure_python(ok_segs: list, out_path: Path, stretch_to_fit: b
         orig_frame_count = len(raw) // (p["nchannels"] * p["sampwidth"])
         orig_duration = orig_frame_count / p["framerate"] if p["framerate"] else 0
 
-        adjusted_start = p["start_sec"] + cumulative_shift
-        if idx + 1 < len(parsed):
-            natural_gap = parsed[idx + 1]["start_sec"] - p["start_sec"]
-        else:
-            natural_gap = max(p["end_sec"] - p["start_sec"], orig_duration)
+        adjusted_start = transcription.source_time_to_final_time(p["start_sec"], freeze_points)
+        natural_gap = p["end_sec"] - p["start_sec"]
 
         effective_duration = orig_duration
+        freeze_added = 0.0
         if stretch_to_fit and natural_gap > 0 and orig_duration > natural_gap:
             rate = min(orig_duration / natural_gap, max_rate)
             if rate > 1.001:
@@ -461,16 +479,27 @@ def _merge_segments_pure_python(ok_segs: list, out_path: Path, stretch_to_fit: b
                 effective_duration = orig_frame_count / p["framerate"] if p["framerate"] else 0
 
             if effective_duration > natural_gap + 0.01:
-                overflow = effective_duration - natural_gap
-                freeze_points.append({
-                    "time": round(p["start_sec"] + natural_gap, 3),
-                    "duration": round(overflow, 3),
-                })
-                cumulative_shift += overflow
+                overflow = round(effective_duration - natural_gap, 3)
+                freeze_points.append({"time": round(p["end_sec"], 3), "duration": overflow})
+                freeze_added = overflow
 
         adjusted.append({**p, "raw": raw, "adjusted_start": adjusted_start, "orig_duration": effective_duration})
 
-    total_duration = adjusted[-1]["adjusted_start"] + adjusted[-1]["orig_duration"] + 3.0
+        if job_id:
+            db.log_line(
+                job_id,
+                f"DEBUG segment {p['seg_index']}: source=[{p['start_sec']:.3f}, {p['end_sec']:.3f}] "
+                f"natural_gap={natural_gap:.3f}s orig_dur={orig_duration:.3f}s "
+                f"effective_dur={effective_duration:.3f}s adjusted_start={adjusted_start:.3f}s "
+                f"freeze_added={freeze_added:.3f}s"
+            )
+
+    natural_end = adjusted[-1]["adjusted_start"] + adjusted[-1]["orig_duration"]
+    target_end = transcription.source_time_to_final_time(video_duration, freeze_points) if video_duration > 0 else 0.0
+    # Kichik xavfsizlik zaxirasi (0.3s) - yaxlitlash xatoligi tufayli oxirgi
+    # so'zning kesilib qolmasligi uchun. Ilgari doim +3.0s qo'shilardi -
+    # bu asl video/audio davomiyligini hisobga olmasdi.
+    total_duration = max(natural_end, target_end) + 0.3
     total_frames = int(total_duration * framerate)
     buffer = array.array(typecode, bytes(total_frames * nchannels * sampwidth))
 

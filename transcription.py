@@ -117,13 +117,63 @@ def split_video_by_size(input_path: Path, out_dir: Path, max_bytes: int = TELEGR
     return parts
 
 
-def mux_video_audio(video_path: Path, audio_path: Path, out_path: Path):
-    """Original videoning tasvirini saqlab, audio yo'lini yangi audio bilan almashtiradi."""
+def source_time_to_final_time(source_time: float, freeze_points: list) -> float:
+    """Original (source) video/audio vaqtini, freeze_points asosida yakuniy
+    (freeze-frame bilan cho'zilgan) vaqt chizig'idagi vaqtga o'giradi.
+
+    Bu - TTS audio joylashtirish (tts.py), video freeze qo'yish va yakuniy
+    SRT/VTT hisoblash uchun BITTA umumiy manba (single source of truth).
+    Har biri o'zicha alohida hisoblasa, ular orasida arifmetik farq paydo
+    bo'lib, audio/video/subtitr sinxronligini buzishi mumkin edi.
+
+    freeze_points: [{"time": <source vaqti>, "duration": <necha soniya>}, ...]
+    "time"dan OLDIN yoki AYNAN o'sha nuqtada joylashgan har bir freeze,
+    undan keyingi barcha vaqtlarni o'z duration'i qadar oldinga suradi."""
+    if not freeze_points:
+        return round(source_time, 3)
+    shift = sum(fp.get("duration", 0) or 0 for fp in freeze_points if (fp.get("time", 0) or 0) <= source_time)
+    return round(source_time + shift, 3)
+
+
+def total_freeze_duration(freeze_points: list) -> float:
+    """freeze_points ichidagi barcha 'kutish' vaqtlarining yig'indisi (soniya)."""
+    return sum(fp.get("duration", 0) or 0 for fp in (freeze_points or []))
+
+
+def apply_freeze_to_segments(segments: list, freeze_points: list) -> list:
+    """SRT/VTT segmentlar ro'yxatini (har biri {"start","end","text"}) freeze_points
+    asosida yakuniy (freeze bilan cho'zilgan) vaqt chizig'iga moslaydi. Original
+    ro'yxatni O'ZGARTIRMAYDI - yangi ro'yxat qaytaradi, shuning uchun manba (source)
+    SRT/VTT har doim o'zgarishsiz qoladi."""
+    if not freeze_points:
+        return segments
+    result = []
+    for s in segments:
+        result.append({
+            **s,
+            "start": source_time_to_final_time(s["start"], freeze_points),
+            "end": source_time_to_final_time(s["end"], freeze_points),
+        })
+    return result
+
+
+def mux_video_audio(video_path: Path, audio_path: Path, out_path: Path, target_duration: float = None):
+    """Original videoning tasvirini saqlab, audio yo'lini yangi audio bilan almashtiradi.
+
+    target_duration berilsa (original video davomiyligi + freeze'lar yig'indisi),
+    "-shortest" o'rniga "-t" ishlatiladi: bu qisqaroq audio videoni "qisib
+    qo'ymasligini" kafolatlaydi (audio tugagach video davom etadi / jim qoladi),
+    va shu bilan birga yakuniy fayl kutilganidan uzunroq chiqib ketmasligini
+    ta'minlaydi (xavfsizlik yopig'i)."""
     cmd = [
         ffmpeg_exe(), "-y", "-i", str(video_path), "-i", str(audio_path),
         "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-        "-shortest", str(out_path),
     ]
+    if target_duration and target_duration > 0:
+        cmd += ["-t", f"{target_duration:.3f}"]
+    else:
+        cmd += ["-shortest"]
+    cmd += [str(out_path)]
     try:
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="ignore",
                                timeout=FFMPEG_TIMEOUT)
@@ -168,15 +218,19 @@ def _detect_fps(ffmpeg_info: str) -> float:
 
 
 def mux_video_audio_with_freezes(video_path: Path, audio_path: Path, out_path: Path,
-                                  freeze_points: list, work_dir: Path):
+                                  freeze_points: list, work_dir: Path, target_duration: float = None):
     """E-band: agar audio ba'zi joylarda o'ziga ajratilgan vaqtdan uzunroq chiqqan
     bo'lsa (freeze_points), yakuniy videoda o'sha nuqtalarda kadr bir necha
     soniya 'muzlab' turadi (video to'xtaydi, audio davom etadi) - shunda hech
     qanday overlap yoki audio yo'qolishi bo'lmaydi. freeze_points bo'sh bo'lsa,
-    oddiy (tez, qayta kodlanmaydigan) mux ishlatiladi."""
+    oddiy (tez, qayta kodlanmaydigan) mux ishlatiladi.
+
+    target_duration - yakuniy fayl uchun kutilgan aniq davomiylik (odatda: asl
+    video davomiyligi + shu funksiyaga berilgan freeze_points yig'indisi).
+    mux_video_audio()ga uzatiladi ("-shortest" o'rniga "-t" ishlatish uchun)."""
     freeze_points = [f for f in (freeze_points or []) if f.get("duration", 0) > 0.05]
     if not freeze_points:
-        mux_video_audio(video_path, audio_path, out_path)
+        mux_video_audio(video_path, audio_path, out_path, target_duration=target_duration)
         return
 
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -237,7 +291,7 @@ def mux_video_audio_with_freezes(video_path: Path, audio_path: Path, out_path: P
         "-c", "copy", str(video_only_path),
     ], "bo'laklarni birlashtirish")
 
-    mux_video_audio(video_only_path, audio_path, out_path)
+    mux_video_audio(video_only_path, audio_path, out_path, target_duration=target_duration)
 
     for p in part_paths:
         p.unlink(missing_ok=True)
