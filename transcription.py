@@ -308,6 +308,34 @@ def extract_audio_slice(input_path: Path, start: float, end: float, out_path: Pa
         raise RuntimeError("Segment uchun audio ajratilmadi (fayl bo'sh chiqdi).")
 
 
+def split_audio_into_pieces(input_path: Path, out_dir: Path, piece_seconds: int = 45) -> list:
+    """Audio faylni (masalan bitta 5 daqiqalik bo'lakning mp3'ini) piece_seconds
+    soniyalik vaqtinchalik kichik qismlarga bo'ladi - bo'lakni qayta ishlashda
+    (retry) Whisper aniqligini oshirish uchun. Original fayl (input_path) hech
+    qachon o'zgartirilmaydi yoki o'chirilmaydi - faqat out_dir ichida yangi
+    vaqtinchalik qism fayllar yaratiladi. Qaytaradi: [(Path, duration_seconds), ...]
+    vaqt tartibida."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pattern = str(out_dir / "piece_%03d.mp3")
+    cmd = [
+        ffmpeg_exe(), "-y", "-i", str(input_path),
+        "-vn", "-ac", "1", "-ar", "16000", "-b:a", "64k",
+        "-f", "segment", "-segment_time", str(piece_seconds), "-reset_timestamps", "1",
+        pattern,
+    ]
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="ignore",
+                               timeout=FFMPEG_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("ffmpeg bo'lakni kichik qismlarga bo'lishda juda uzoq davom etdi va to'xtatildi.")
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg xatosi (kichik qismlarga bo'lish): {(proc.stdout or '')[-1000:]}")
+    piece_files = sorted(out_dir.glob("piece_*.mp3"))
+    if not piece_files:
+        raise RuntimeError("Bo'lak kichik qismlarga bo'linmadi.")
+    return [(p, get_duration_seconds(p)) for p in piece_files]
+
+
 def extract_and_chunk(input_path: Path, work_dir: Path, chunk_seconds: int):
     """Videoni audioga aylantiradi va belgilangan uzunlikdagi bo'laklarga bo'ladi.
     Faqat preprocessing bosqichida chaqiriladi, OpenAI'ga hech narsa yubormaydi."""
@@ -454,6 +482,11 @@ def build_prompt(language: str, instruction: str, group: str = None) -> str:
         glossary_prompt = build_initial_prompt("ru", remaining, group=group)
     elif language == "en":
         glossary_prompt = build_initial_prompt("en", remaining, group=group)
+    elif language:
+        # Lug'atda ru/uz/en'dan boshqa til uchun yozuv yo'q - ru/en atamalarini
+        # qo'shish bu tilning promptini chalkashtirib yuboradi, shuning uchun faqat
+        # asosiy ko'rsatma ishlatiladi.
+        glossary_prompt = ""
     else:
         half = remaining // 2
         glossary_prompt = (build_initial_prompt("ru", half, group=group) + " " +

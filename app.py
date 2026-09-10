@@ -33,7 +33,16 @@ from storage import (VIDEOS_DIR, RESULTS_DIR, UPLOADS_DIR, CHUNKS_DIR, SPLIT_DIR
                       UPLOAD_CHUNK_SIZE, CHUNK_SECONDS, MAX_WHISPER_CONCURRENCY, MAX_ACTIVE_VIDEO_JOBS,
                       MAX_ACTIVE_TTS_JOBS, REPETITION_THRESHOLD, DARSLIK_API_KEY, IDEA_FLOW_URL,
                       TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, LOCAL_BOT_API_URL, INBOUND_BOT_TOKEN,
-                      APP_USERNAME, APP_PASSWORD, safe_name, disk_usage, has_space_for)
+                      APP_USERNAME, APP_PASSWORD, safe_name, disk_usage, has_space_for,
+                      TRANSCRIBE_LANGUAGE_CODES, TRANSCRIBE_LANGUAGES)
+
+
+def _validate_transcribe_language(language: str):
+    """Whisper so'roviga yuboriladigan til kodini tekshiradi - noto'g'ri kod
+    OpenAI'ga borib qimmatga tushmasdan, shu yerda o'zbekcha tushunarli xato
+    bilan qaytariladi."""
+    if language not in TRANSCRIBE_LANGUAGE_CODES:
+        raise HTTPException(400, f"Noto'g'ri til kodi: '{language}'. Ro'yxatdan tanlang.")
 
 BASE = Path(__file__).resolve().parent
 
@@ -279,6 +288,10 @@ def chunk_detail(c: dict, transcript_segments: list = None) -> dict:
         "end_time": c["end_time"], "duration": round(c["end_time"] - c["start_time"], 1),
         "status": c["status"], "attempts": c["attempts"], "error": c["error"],
         "text": text, "issues": issues,
+        # None = bo'lak uchun alohida til belgilanmagan (videoning umumiy tilidan
+        # foydalaniladi) - frontend "Qayta yuborish" oynasida shuni bilib, standart
+        # tanlovni to'g'ri ko'rsatishi uchun kerak.
+        "language": c["language"] if "language" in c.keys() else None,
         "running_seconds": round(time.time() - running_since, 0) if running_since else None,
         "segments": segments,
     }
@@ -361,7 +374,7 @@ async def get_video(video_id: str):
     if not v:
         raise HTTPException(404, "Video topilmadi.")
     chunks = db.fetchall(
-        "SELECT id, chunk_index, start_time, end_time, status, attempts, error, transcript FROM chunks "
+        "SELECT id, chunk_index, start_time, end_time, status, attempts, error, transcript, language FROM chunks "
         "WHERE video_id = ? ORDER BY chunk_index ASC", (video_id,))
     logs = db.get_logs(video_id, 200)
     results = db.fetchall("SELECT id, kind, filename, created_at FROM results WHERE video_id = ?", (video_id,))
@@ -436,12 +449,14 @@ async def transcribe_endpoint(video_id: str, language: str = Form(""), instructi
     v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
     if not v:
         raise HTTPException(404, "Video topilmadi.")
+    _validate_transcribe_language(language)
     if v["status"] not in ("segments_ready", "transcription_ready"):
         raise HTTPException(400, f"Video holati '{v['status']}' - transkripsiyani boshlab bo'lmaydi. "
                                   f"Avval videoni bo'laklarga bo'ling.")
     if not keys_manager.has_any_active_key():
         raise HTTPException(400, "Ishlaydigan OpenAI API kalit topilmadi. Avval API kalit qo'shing.")
-    db.execute("UPDATE chunks SET status = 'pending', transcript = NULL WHERE video_id = ?", (video_id,))
+    db.execute("UPDATE chunks SET status = 'pending', transcript = NULL, language = NULL, force_split = 0 "
+               "WHERE video_id = ?", (video_id,))
     worker.start_transcription(video_id, language, instruction, topic_group)
     return {"ok": True}
 
@@ -449,6 +464,14 @@ async def transcribe_endpoint(video_id: str, language: str = Form(""), instructi
 @app.get("/api/glossary/groups")
 async def glossary_groups_endpoint():
     return {"groups": glossary_data.GLOSSARY_GROUPS}
+
+
+@app.get("/api/transcribe-languages")
+async def transcribe_languages_endpoint():
+    """Video -> Matn bosqichida (va qayta yuborish modalida) tanlash mumkin
+    bo'lgan til ro'yxati - frontend va backend bitta manbadan (storage.py)
+    foydalanishi uchun."""
+    return {"languages": [{"code": code, "label": label} for code, label in TRANSCRIBE_LANGUAGES]}
 
 
 @app.get("/api/videos/{video_id}/transcript/blocks")
@@ -488,15 +511,19 @@ async def segment_audio_endpoint(video_id: str, index: int):
 
 
 @app.post("/api/videos/{video_id}/transcript/segments/{index}/retranscribe")
-async def retranscribe_segment_endpoint(video_id: str, index: int):
+async def retranscribe_segment_endpoint(video_id: str, index: int, language: str = Form(None)):
     """Bitta aniq segmentni original videodan qayta ajratib, qayta Whisper'ga yuboradi -
     butun bo'lakni emas, faqat shu bitta segmentni. Mos tarjima bo'lagi ham tozalanadi
-    (qayta tarjima qilinishi kerakligini bildirish uchun)."""
+    (qayta tarjima qilinishi kerakligini bildirish uchun). `language` berilsa (None emas),
+    aynan shu til so'rovga majburiy yuboriladi - berilmasa, videoning umumiy tili
+    ishlatiladi."""
     v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
     if not v:
         raise HTTPException(404, "Video topilmadi.")
+    if language is not None:
+        _validate_transcribe_language(language)
     try:
-        result = await worker.retranscribe_segment(video_id, index)
+        result = await worker.retranscribe_segment(video_id, index, language)
     except ValueError as e:
         raise HTTPException(400, str(e))
     return {"ok": True, **result}
@@ -1386,9 +1413,15 @@ async def job_cancel(video_id: str):
 
 
 @app.post("/api/jobs/{video_id}/retry-chunk/{chunk_id}")
-async def job_retry_chunk(video_id: str, chunk_id: str):
+async def job_retry_chunk(video_id: str, chunk_id: str, language: str = Form(None)):
+    """`language` berilsa (None emas - bo'sh satr ham "ataylab avtomatik" degani),
+    shu bo'lak uchun til ATAYLAB shu qiymatga o'rnatiladi va Whisper so'roviga
+    majburiy yuboriladi - avvalgi (noto'g'ri) til bilan qayta-qayta xato natija
+    olish muammosi shu bilan tuzatiladi."""
     _ensure_video(video_id)
-    worker.retry_chunk(video_id, chunk_id)
+    if language is not None:
+        _validate_transcribe_language(language)
+    worker.retry_chunk(video_id, chunk_id, language)
     return {"ok": True}
 
 

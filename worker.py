@@ -136,15 +136,33 @@ def resume_job(video_id: str):
     TRANSCRIBE_QUEUE.put_nowait(video_id)
 
 
-def retry_chunk(video_id: str, chunk_id: str):
-    db.execute("UPDATE chunks SET status = 'pending', error = NULL WHERE id = ? AND video_id = ?",
-               (chunk_id, video_id))
+def retry_chunk(video_id: str, chunk_id: str, language: str = None):
+    """Bitta bo'lakni qayta transkripsiya qilish uchun navbatga qo'yadi. `language`
+    berilsa (None emas - bo'sh satr ham "ataylab avtomatik" degani), shu bo'lak
+    uchun til ATAYLAB shu qiymatga o'rnatiladi va keyingi barcha urinishlarda
+    (ushbu retry ham, kelajakdagilar ham, qayta o'zgartirilmaguncha) ishlatiladi -
+    shu bilan "qayta yuborish eski (noto'g'ri) til bilan yana xato natija beradi"
+    muammosi tuzatiladi. force_split=1 bu bo'lakni kichik (30-60s) qismlarga
+    bo'lib qayta ishlashni so'raydi (bir martalik, shu urinishdan keyin 0'ga tushadi)."""
+    sets = ["status = 'pending'", "error = NULL", "force_split = 1", "updated_at = ?"]
+    params = [db.now()]
+    if language is not None:
+        sets.append("language = ?")
+        params.append(language)
+    params += [chunk_id, video_id]
+    db.execute(f"UPDATE chunks SET {', '.join(sets)} WHERE id = ? AND video_id = ?", params)
     _update_video(video_id, status="transcribing", blocked_reason=None,
                   message="Navbatda (bo'lak qayta ishlanmoqda)...")
     PAUSE_FLAGS.pop(video_id, None)
     CANCEL_FLAGS.pop(video_id, None)
-    log(video_id, f"Bo'lak {chunk_id} qayta ishlash uchun navbatga qo'yildi.")
+    lang_note = f" (til: {storage_lang_label(language)})" if language is not None else ""
+    log(video_id, f"Bo'lak {chunk_id} qayta ishlash uchun navbatga qo'yildi{lang_note}.")
     TRANSCRIBE_QUEUE.put_nowait(video_id)
+
+
+def storage_lang_label(code: str) -> str:
+    from storage import TRANSCRIBE_LANGUAGE_LABELS
+    return TRANSCRIBE_LANGUAGE_LABELS.get(code or "", code or "avtomatik")
 
 
 def retry_range(video_id: str, start: float, end: float):
@@ -177,10 +195,76 @@ def cancel_job(video_id: str):
     log(video_id, "Bekor qilindi.")
 
 
-async def _process_one_chunk(client, video, chunk, prompt, lock, ctx):
+def _effective_chunk_language(video: dict, chunk: dict) -> str:
+    """Bo'lak uchun ATAYLAB o'rnatilgan til (chunks.language, None bo'lmasa - bo'sh
+    satr ham "ataylab avtomatik" hisoblanadi) bo'lsa o'shani, aks holda videoning
+    umumiy tilini qaytaradi. Shu funksiya orqali har bir bo'lak (jumladan qayta
+    yuborilgan bo'laklar) O'ZINING tilida ishlanadi, butun ish uchun bitta umumiy
+    til/prompt emas."""
+    chunk_language = chunk.get("language") if isinstance(chunk, dict) else chunk["language"]
+    if chunk_language is not None:
+        return chunk_language
+    return video["language"] or ""
+
+
+async def _transcribe_chunk_in_pieces(client, chunk: dict, api_key: str, language: str, prompt: str,
+                                       piece_seconds: int = 45):
+    """Qayta ishlashda (retry) aniqlikni oshirish uchun bo'lak audiosini kichik
+    vaqtinchalik qismlarga bo'lib, har birini alohida Whisper'ga yuboradi, so'ng
+    vaqt kodlarini to'g'ri qo'shib bo'lak-darajasidagi bitta natijaga birlashtiradi.
+    Bo'lish yoki istalgan qism muvaffaqiyatsiz bo'lsa None qaytaradi - chaqiruvchi
+    tomon shunda butun bo'lakni yagona so'rov bilan (oddiy usulda) qayta urinadi,
+    ya'ni bu funksiya hech qachon retry jarayonini butunlay to'xtatmaydi."""
+    chunk_path = Path(chunk["path"])
+    work_dir = CHUNKS_DIR / chunk["video_id"] / f"retry_{chunk['id']}"
+    shutil.rmtree(work_dir, ignore_errors=True)
+    try:
+        loop = asyncio.get_event_loop()
+        pieces = await loop.run_in_executor(
+            None, transcription.split_audio_into_pieces, chunk_path, work_dir, piece_seconds)
+    except Exception:
+        shutil.rmtree(work_dir, ignore_errors=True)
+        return None
+
+    all_segments = []
+    detected_langs = []
+    cumulative = 0.0
+    try:
+        for piece_path, piece_duration in pieces:
+            data = await transcription.transcribe_chunk_via_api(client, piece_path, api_key, language, prompt)
+            for s in data.get("segments", []):
+                all_segments.append({
+                    "start": float(s.get("start", 0)) + cumulative,
+                    "end": float(s.get("end", 0)) + cumulative,
+                    "text": (s.get("text") or "").strip(),
+                    "no_speech_prob": s.get("no_speech_prob"),
+                    "avg_logprob": s.get("avg_logprob"),
+                })
+            if data.get("language"):
+                detected_langs.append(data["language"])
+            cumulative += piece_duration
+    except Exception:
+        return None
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+    detected_lang = max(set(detected_langs), key=detected_langs.count) if detected_langs else ""
+    return {"segments": all_segments, "language": detected_lang}
+
+
+async def _process_one_chunk(client, video, chunk, lock, ctx):
     if CANCEL_FLAGS.get(video["id"]) or PAUSE_FLAGS.get(video["id"]) or ctx["stop"]:
         return
     db.execute("UPDATE chunks SET status = 'running', updated_at = ? WHERE id = ?", (db.now(), chunk["id"]))
+
+    effective_language = _effective_chunk_language(video, chunk)
+    prompt = transcription.build_prompt(effective_language, video["instruction"] or "",
+                                         group=video["topic_group"] or None)
+    use_split = bool(chunk.get("force_split"))
+    # Bir martalik bayroq - shu urinishdan keyin iste'mol qilinadi (keyingi oddiy
+    # qayta ishlashlar, masalan "vaqt oralig'ini qayta ishlash", uni qayta yoqmaydi;
+    # faqat "Bo'lakni qayta yubor" tugmasi uni qayta 1 ga o'rnatadi).
+    db.execute("UPDATE chunks SET force_split = 0 WHERE id = ?", (chunk["id"],))
 
     tried_key_ids = set()
     generic_attempts = 0
@@ -209,8 +293,16 @@ async def _process_one_chunk(client, video, chunk, prompt, lock, ctx):
                 ctx["stop"] = True
             return
         try:
-            data = await transcription.transcribe_chunk_via_api(
-                client, Path(chunk["path"]), raw_key, video["language"], prompt)
+            if use_split:
+                data = await _transcribe_chunk_in_pieces(client, chunk, raw_key, effective_language, prompt)
+                if data is None:
+                    # Kichik qismlarga bo'lish yoki ulardan biri muvaffaqiyatsiz bo'ldi -
+                    # butun bo'lakni yagona so'rov bilan (oddiy usulda) qayta urinamiz.
+                    data = await transcription.transcribe_chunk_via_api(
+                        client, Path(chunk["path"]), raw_key, effective_language, prompt)
+            else:
+                data = await transcription.transcribe_chunk_via_api(
+                    client, Path(chunk["path"]), raw_key, effective_language, prompt)
             keys_manager.mark_result(kid, True)
             used_key_id = kid
             break
@@ -245,7 +337,7 @@ async def _process_one_chunk(client, video, chunk, prompt, lock, ctx):
         for s in data.get("segments", []) if (s.get("text") or "").strip()
     ]
     detected_lang = data.get("language", "") or ""
-    issues = transcription.assess_segment_issues(data.get("segments", []), offset, expected_language=video["language"] or "")
+    issues = transcription.assess_segment_issues(data.get("segments", []), offset, expected_language=effective_language or "")
 
     async with lock:
         db.execute(
@@ -274,8 +366,6 @@ async def run_transcription_job(video_id: str):
         "SELECT * FROM chunks WHERE video_id = ? AND status = 'pending' ORDER BY chunk_index ASC", (video_id,))
 
     if pending_chunks:
-        prompt = transcription.build_prompt(video["language"] or "", video["instruction"] or "",
-                                             group=video["topic_group"] or None)
         sem = asyncio.Semaphore(MAX_WHISPER_CONCURRENCY)
         lock = asyncio.Lock()
         ctx = {"stop": False}
@@ -285,7 +375,7 @@ async def run_transcription_job(video_id: str):
                 RUNNING_CHUNK_TASKS[chunk["id"]] = asyncio.current_task()
                 CHUNK_STARTED_AT[chunk["id"]] = time.time()
                 try:
-                    await _process_one_chunk(client, video, chunk, prompt, lock, ctx)
+                    await _process_one_chunk(client, video, chunk, lock, ctx)
                 except asyncio.CancelledError:
                     async with lock:
                         db.execute("UPDATE chunks SET status = 'pending', updated_at = ? WHERE id = ?",
@@ -359,13 +449,37 @@ async def finalize_results(video_id: str):
             flagged_issues.append({**issue, "chunk_index": c["chunk_index"]})
     flagged_issues.sort(key=lambda i: i["start"])
 
+    # Agar bu bo'lak QAYTA ishlangandan keyingi jamlash bo'lsa (video allaqachon
+    # tarjima qilingan edi) va segmentlar soni o'zgargan bo'lsa, eski tarjima
+    # endi noto'g'ri joylarga mos kelib qolishi mumkin (tarjima segmentlari
+    # original bilan INDEKS orqali bog'langan) - shuning uchun xavfsizlik uchun
+    # tarjima tozalanadi va foydalanuvchiga aniq sabab bilan qayta tarjima
+    # qilish kerakligi bildiriladi.
+    had_translation = (video["translation_status"] or "none") in ("ready", "uploaded", "pasted", "generating")
+    old_translation_count = len(json.loads(video["translation_segments"] or "[]"))
+    translation_mismatch = had_translation and old_translation_count != len(final_segments)
+
+    extra_fields = {}
+    if translation_mismatch:
+        extra_fields = {
+            "translation_status": "none", "translation_text": "", "translation_segments": "[]",
+        }
+
     _update_video(video_id, status="transcription_ready", blocked_reason=None, progress=100,
                   message="Transkripsiya tayyor. Tekshirib tasdiqlang.",
                   detected_language=detected_lang, error=None,
                   transcript_text=txt_text,
                   transcript_segments=json.dumps(final_segments, ensure_ascii=False),
-                  flagged_issues=json.dumps(flagged_issues, ensure_ascii=False))
+                  flagged_issues=json.dumps(flagged_issues, ensure_ascii=False),
+                  **extra_fields)
     write_transcript_results(video_id)
+    if translation_mismatch:
+        log(video_id, "OGOHLANTIRISH: bo'lak qayta ishlangandan keyin segmentlar soni o'zgardi - "
+                       "eski tarjima endi original matn bilan mos kelmasligi mumkin edi, shuning uchun "
+                       "xavfsizlik uchun tozalandi. Original matnni qaytadan tasdiqlab, tarjimani qaytadan yarating.")
+    elif had_translation:
+        log(video_id, "Diqqat: bo'lak qayta ishlandi, video allaqachon tarjima qilingan edi - "
+                       "o'zgargan qismning tarjimasini \"Tahrirlash va audio\" bo'limidan tekshirib chiqing.")
     issue_note = f" {len(flagged_issues)} ta shubhali joy topildi." if flagged_issues else ""
     log(video_id, f"Yakunlandi. Jami {len(final_segments)} ta segment.{issue_note} Natijalar saqlandi.")
 
@@ -448,10 +562,12 @@ def approve_transcript(video_id: str):
     log(video_id, "Original matn tasdiqlandi.")
 
 
-async def retranscribe_segment(video_id: str, index: int) -> dict:
+async def retranscribe_segment(video_id: str, index: int, language: str = None) -> dict:
     """Bitta aniq segmentni (butun bo'lakni emas) original videodan qayta ajratib,
     qayta Whisper'ga yuboradi - foydalanuvchi tarjimadan norozi bo'lgan joyni, avval
-    original matnni yangilab, keyin qayta tarjima qilishi uchun."""
+    original matnni yangilab, keyin qayta tarjima qilishi uchun. `language` berilsa
+    (None emas), aynan shu til Whisper so'roviga majburiy yuboriladi - berilmasa,
+    videoning umumiy tili ishlatiladi (avvalgi xatti-harakat)."""
     video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
     if not video:
         raise ValueError("Video topilmadi.")
@@ -463,6 +579,7 @@ async def retranscribe_segment(video_id: str, index: int) -> dict:
     if not keys_manager.has_any_active_key():
         raise ValueError("Ishlaydigan OpenAI API kalit topilmadi. Avval API kalit qo'shing.")
 
+    effective_language = language if language is not None else (video["language"] or "")
     seg = segments[index]
     work_dir = CHUNKS_DIR / video_id / "resegment"
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -472,7 +589,7 @@ async def retranscribe_segment(video_id: str, index: int) -> dict:
     await loop.run_in_executor(
         None, transcription.extract_audio_slice, Path(video["path"]), seg["start"], seg["end"], clip_path)
 
-    prompt = transcription.build_prompt(video["language"] or "", video["instruction"] or "",
+    prompt = transcription.build_prompt(effective_language, video["instruction"] or "",
                                          group=video["topic_group"] or None)
     kid, raw_key = keys_manager.get_next_active_key()
     if not raw_key:
@@ -481,7 +598,7 @@ async def retranscribe_segment(video_id: str, index: int) -> dict:
 
     try:
         async with httpx.AsyncClient(timeout=120) as client:
-            data = await transcription.transcribe_chunk_via_api(client, clip_path, raw_key, video["language"], prompt)
+            data = await transcription.transcribe_chunk_via_api(client, clip_path, raw_key, effective_language, prompt)
         keys_manager.mark_result(kid, True)
     except Exception as e:
         keys_manager.mark_result(kid, False, str(e))
@@ -510,7 +627,8 @@ async def retranscribe_segment(video_id: str, index: int) -> dict:
         write_translation_results(video_id)
         translation_cleared = True
 
-    log(video_id, f"{index + 1}-segment Whisper orqali qayta olindi."
+    lang_note = f" (til: {storage_lang_label(effective_language)})" if language is not None else ""
+    log(video_id, f"{index + 1}-segment Whisper orqali qayta olindi{lang_note}."
                    f"{' Tarjimasi tozalandi - qayta tarjima qiling.' if translation_cleared else ''}")
     return {"text": new_text, "translation_cleared": translation_cleared}
 

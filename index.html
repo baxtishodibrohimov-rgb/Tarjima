@@ -414,6 +414,22 @@
   </div>
 </div>
 
+<div class="modal-backdrop" id="retryModal-backdrop" onclick="closeModal('retryModal')"></div>
+<div class="modal" id="retryModal">
+  <div class="modal-head">
+    <h2 id="retryModalTitle">Qayta yuborish</h2>
+    <button class="tiny-btn" onclick="closeModal('retryModal')">Yopish</button>
+  </div>
+  <p class="hint" id="retryModalHint"></p>
+  <label class="field">Til</label>
+  <select id="retryModalLang"></select>
+  <div class="row">
+    <button class="action" id="retryModalSubmitBtn" onclick="submitRetryModal()">Qayta yuborish</button>
+    <button class="secondary" onclick="closeModal('retryModal')">Bekor qilish</button>
+  </div>
+  <div class="status" id="retryModalStatus"></div>
+</div>
+
 <div class="modal-backdrop" id="cloudPickerModal-backdrop" onclick="closeModal('cloudPickerModal')"></div>
 <div class="modal" id="cloudPickerModal">
   <div class="modal-head">
@@ -1308,6 +1324,20 @@ const BLOCKED_LABELS = {
   chunk_errors: "Ba'zi bo'laklarda xato", error: "Xato",
 };
 
+// Diqqat: backend'dagi storage.py TRANSCRIBE_LANGUAGES bilan bir xil bo'lishi shart.
+const TRANSCRIBE_LANGUAGES = [
+  ["", "Avtomatik aniqlash"], ["uz", "O'zbekcha"], ["ru", "Ruscha"], ["en", "Inglizcha"],
+  ["it", "Italyancha"], ["de", "Nemischa"], ["fr", "Fransuzcha"], ["es", "Ispancha"],
+  ["tr", "Turkcha"], ["ar", "Arabcha"], ["ko", "Koreyscha"], ["ja", "Yaponcha"],
+];
+const TRANSCRIBE_LANGUAGE_LABELS = Object.fromEntries(TRANSCRIBE_LANGUAGES);
+
+function languageSelectOptionsHtml(selectedCode) {
+  return TRANSCRIBE_LANGUAGES.map(([code, label]) =>
+    `<option value="${code}" ${code === (selectedCode || '') ? 'selected' : ''}>${escapeHtml(label)}</option>`
+  ).join('');
+}
+
 let allVideosCache = [];
 let allFoldersCache = [];
 let currentFolderId = null; // null = "Barchasi"
@@ -1645,12 +1675,41 @@ async function loadVideoDetail(id) {
   try {
     const v = await apiFetch(`/api/videos/${id}`);
     currentDetailVideoStatus = v.status;
+    currentDetailVideoLanguage = v.language || '';
     document.getElementById('videoDetailContent').innerHTML = renderVideoDetail(v);
     if (v.status === 'completed') initPlayer(id);
     loadOverviewSegments(v);
   } catch (e) {
     document.getElementById('videoDetailContent').innerHTML = `<p class="status err">Xato: ${escapeHtml(e.message)}</p>`;
   }
+}
+
+/* Foydalanuvchi harakatidan keyin (masalan "Bo'laklarga bo'lish" yoki "Tasdiqlash"
+   bosilganda) video sahifasini qayta yuklaydi, lekin oldin sahifadagi boshqa
+   (harakatga aloqasi bo'lmagan) ochiq <details> bo'limlari va skroll holatini
+   saqlab, qayta chizilgandan keyin tiklaydi - shu bilan boshqa joyda ochib
+   qo'yilgan bo'lak/panel to'satdan yopilib qolmaydi.*/
+function captureDetailUIState() {
+  const root = document.getElementById('videoDetailContent');
+  if (!root) return null;
+  const openDetails = [];
+  root.querySelectorAll('details').forEach((d, i) => { if (d.open) openDetails.push(i); });
+  return { scrollY: window.scrollY, openDetails };
+}
+
+function restoreDetailUIState(state) {
+  if (!state) return;
+  const root = document.getElementById('videoDetailContent');
+  if (!root) return;
+  const detailsEls = root.querySelectorAll('details');
+  state.openDetails.forEach(i => { if (detailsEls[i]) detailsEls[i].open = true; });
+  window.scrollTo(0, state.scrollY);
+}
+
+async function reloadVideoDetail(id) {
+  const state = captureDetailUIState();
+  await loadVideoDetail(id);
+  restoreDetailUIState(state);
 }
 
 async function loadOverviewSegments(v) {
@@ -1774,11 +1833,11 @@ function renderSegmentStage(v) {
   if (v.status === 'uploaded') {
     const estimate = appConfig.chunk_seconds ? Math.ceil((v.duration || 0) / appConfig.chunk_seconds) : '?';
     body = `<p class="hint">Bu video taxminan ${estimate} ta bo'lakka bo'linadi (${appConfig.chunk_seconds}s har biri).</p>
-      <button class="action" onclick="segmentVideo('${v.id}')">Bo'laklarga bo'lish</button>`;
+      <button class="action" onclick="segmentVideo('${v.id}', this)">Bo'laklarga bo'lish</button>`;
   } else if (v.status === 'segmenting') {
     if (v.blocked_reason === 'error') {
       badge = stageStatusBadge('Xato', 'error');
-      body = `<button class="action" onclick="segmentVideo('${v.id}')">Qayta urinish</button>`;
+      body = `<button class="action" onclick="segmentVideo('${v.id}', this)">Qayta urinish</button>`;
     } else {
       badge = stageStatusBadge('Bo\'linmoqda...', 'active');
       body = `<p class="hint">Server videoni bo'laklarga bo'lmoqda...</p>`;
@@ -1810,10 +1869,11 @@ function renderChunkDetailList(chunks) {
       `<div class="issue-line">⚠️ ${escapeHtml(ISSUE_LABELS[i.kind] || i.kind)}: ${escapeHtml(i.detail)} (${fmtMinSec(i.start)}–${fmtMinSec(i.end)})</div>`
     ).join('');
     let retryBtn = '';
+    const chunkLang = c.language != null ? c.language : (currentDetailVideoLanguage || '');
     if (c.status === 'error') {
-      retryBtn = `<button class="small-btn" onclick="event.stopPropagation(); retryChunk(currentDetailVideoId, '${c.id}')">Qayta urinish</button>`;
+      retryBtn = `<button class="small-btn" onclick="event.stopPropagation(); openRetryChunkModal(currentDetailVideoId, '${c.id}', ${c.chunk_index + 1}, '${chunkLang}')">Qayta urinish</button>`;
     } else if (c.status === 'completed') {
-      retryBtn = `<button class="small-btn" onclick="event.stopPropagation(); retryChunkConfirm(currentDetailVideoId, '${c.id}', ${c.chunk_index + 1})">🔁 Bo'lakni qayta yubor</button>`;
+      retryBtn = `<button class="small-btn" onclick="event.stopPropagation(); openRetryChunkModal(currentDetailVideoId, '${c.id}', ${c.chunk_index + 1}, '${chunkLang}')">🔁 Bo'lakni qayta yubor</button>`;
     }
     const cancelBtn = c.status === 'running' && c.running_seconds != null
       ? `<button class="small-btn" onclick="event.stopPropagation(); cancelChunk(currentDetailVideoId, '${c.id}')">Bekor qilib qayta urinish</button>` : '';
@@ -1903,11 +1963,7 @@ function renderTranscriptStage(v) {
       <div class="grid2" style="margin:10px 0;">
         <div>
           <label class="field">Til</label>
-          <select id="lang-${v.id}">
-            <option value="">Avtomatik aniqlash</option>
-            <option value="ru">Ruscha</option>
-            <option value="en">Inglizcha</option>
-          </select>
+          <select id="lang-${v.id}">${languageSelectOptionsHtml('')}</select>
         </div>
         <div>
           <label class="field">Yo'nalish (lug'at uchun)</label>
@@ -1919,20 +1975,20 @@ function renderTranscriptStage(v) {
       </div>
       <label class="field">Qo'shimcha ko'rsatma (ixtiyoriy)</label>
       <input type="text" id="instr-${v.id}" placeholder="masalan: Bu darsda maxsus atamalar bor">
-      <button class="action" onclick="startTranscribe('${v.id}')" style="margin-top:10px;">Transkripsiyani boshlash</button>`;
+      <button class="action" onclick="startTranscribe('${v.id}', this)" style="margin-top:10px;">Transkripsiyani boshlash</button>`;
   } else if (v.status === 'transcribing') {
     badge = v.blocked_reason ? stageStatusBadge(BLOCKED_LABELS[v.blocked_reason], 'error') : stageStatusBadge('Ishlanmoqda...', 'active');
     body = `<div class="progress-wrap"><div class="progress-bar" style="width:${v.progress || 0}%;"></div></div>`;
     body += renderChunkDetailList(v.chunks);
     body += `<div class="row">`;
-    if (v.blocked_reason) body += `<button class="action" onclick="jobAction('${v.id}','resume')">Davom ettirish</button>`;
-    else body += `<button class="small-btn" onclick="jobAction('${v.id}','pause')">To'xtatish</button><button class="small-btn" onclick="jobAction('${v.id}','cancel')">Bekor qilish</button>`;
+    if (v.blocked_reason) body += `<button class="action" onclick="jobAction('${v.id}','resume', this)">Davom ettirish</button>`;
+    else body += `<button class="small-btn" onclick="jobAction('${v.id}','pause', this)">To'xtatish</button><button class="small-btn" onclick="jobAction('${v.id}','cancel', this)">Bekor qilish</button>`;
     body += `</div>
       <div class="row">
         <input type="text" id="rangeStart-${v.id}" placeholder="boshlanish, mm:ss" style="width:120px;">
         <span>dan</span>
         <input type="text" id="rangeEnd-${v.id}" placeholder="tugash, mm:ss" style="width:120px;">
-        <button class="secondary" onclick="retryRange('${v.id}')">Shu vaqt oralig'ini qayta ishlash</button>
+        <button class="secondary" onclick="retryRange('${v.id}', this)">Shu vaqt oralig'ini qayta ishlash</button>
       </div>`;
   } else if (ready) {
     badge = stageStatusBadge('Tekshirishni kutmoqda', 'active');
@@ -1941,12 +1997,12 @@ function renderTranscriptStage(v) {
       ${chunksZipButtonHtml(v)}
       <details style="margin-top:8px;"><summary style="cursor:pointer; font-size:12.5px; color:var(--muted);">Bo'laklar bo'yicha batafsil</summary>${renderChunkDetailList(v.chunks)}</details>
       <div class="row">
-        <button class="action" onclick="approveTranscript('${v.id}')">Tasdiqlash</button>
+        <button class="action" onclick="approveTranscript('${v.id}', this)">Tasdiqlash</button>
         <button class="secondary" onclick="openTranscriptBlockEditor('${v.id}')">Bo'laklarni tahrirlash</button>
       </div>
       <div id="transcript-block-editor-${v.id}"></div>`;
   } else if (approved) {
-    const langLabel = v.detected_language ? ({ ru: 'Ruscha', en: 'Inglizcha' }[v.detected_language] || v.detected_language) : '';
+    const langLabel = v.detected_language ? (TRANSCRIBE_LANGUAGE_LABELS[v.detected_language] || v.detected_language) : '';
     badge = stageStatusBadge(`✅ Tasdiqlangan ${langLabel ? '(' + langLabel + ')' : ''}`, 'done');
     body = renderFlaggedIssuesSummary(v);
     body += `<details><summary style="cursor:pointer; font-size:12.5px; color:var(--muted);">Matnni ko'rish</summary>
@@ -2237,41 +2293,98 @@ function playSegmentAudio(videoId, index, btnEl) {
 }
 
 let _retranscribeInFlight = false;
+let currentDetailVideoLanguage = '';
+let _retryModalState = null; // {kind:'chunk', videoId, chunkId} | {kind:'segment', videoId, index, btnEl}
 
-async function retranscribeSegment(videoId, index, btnEl) {
+function retranscribeSegment(videoId, index, btnEl) {
   if (_retranscribeInFlight) return;
-  if (!confirm(`${index + 1}-bo'lakni Whisper orqali qayta olishni xohlaysizmi? (kichik OpenAI xarajati bo'ladi)`)) return;
-  _retranscribeInFlight = true;
-  const originalLabel = btnEl.textContent;
-  btnEl.disabled = true; btnEl.textContent = '…';
-  try {
-    const r = await apiFetch(`/api/videos/${videoId}/transcript/segments/${index}/retranscribe`, { method: 'POST' });
+  _retryModalState = { kind: 'segment', videoId, index, btnEl };
+  document.getElementById('retryModalTitle').textContent = `${index + 1}-jumlani qayta yuborish`;
+  document.getElementById('retryModalHint').textContent =
+    "Faqat shu jumlaning audiosi qaytadan Whisper'ga yuboriladi (kichik OpenAI xarajati bo'ladi).";
+  document.getElementById('retryModalLang').innerHTML = languageSelectOptionsHtml(currentDetailVideoLanguage || '');
+  setStatus('retryModalStatus', '', '');
+  openModal('retryModal');
+}
 
-    if (transcriptBlockEditorData[index]) {
-      transcriptBlockEditorData[index].text = r.text;
-      const ta = document.getElementById(`t-block-text-${videoId}-${index}`);
-      if (ta) { ta.value = r.text; markTranscriptBlockChanged(videoId, index); }
-    }
-    if (blockEditorData[index]) {
-      blockEditorData[index].original_text = r.text;
-      const origTa = document.getElementById(`block-orig-${videoId}-${index}`);
-      if (origTa) origTa.value = r.text;
-      if (r.translation_cleared) {
-        blockEditorData[index].translation_text = '';
-        const trTa = document.getElementById(`block-text-${videoId}-${index}`);
-        if (trTa) { trTa.value = ''; markBlockChanged(videoId, index); }
+function openRetryChunkModal(videoId, chunkId, chunkNumber, currentLang) {
+  _retryModalState = { kind: 'chunk', videoId, chunkId };
+  document.getElementById('retryModalTitle').textContent = `${chunkNumber}-bo'lakni qayta yuborish`;
+  document.getElementById('retryModalHint').textContent =
+    "Butun bo'lak (bir necha daqiqalik audio) qaytadan Whisper'ga yuboriladi - aniqlik uchun kichik " +
+    "qismlarga bo'lib qayta ishlanadi. Bo'lak matni yangilanadi, tekshirib tasdiqlaganingizdan keyin " +
+    "SRT/TXT qaytadan jamlanadi. OpenAI xarajati bo'ladi.";
+  document.getElementById('retryModalLang').innerHTML = languageSelectOptionsHtml(currentLang || '');
+  setStatus('retryModalStatus', '', '');
+  openModal('retryModal');
+}
+
+async function submitRetryModal() {
+  if (!_retryModalState) return;
+  const state = _retryModalState;
+  const language = document.getElementById('retryModalLang').value;
+  const btn = document.getElementById('retryModalSubmitBtn');
+  const originalBtnText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Yuborilmoqda...';
+  setStatus('retryModalStatus', '', '');
+  try {
+    if (state.kind === 'chunk') {
+      const form = new FormData();
+      form.append('language', language);
+      await apiFetch(`/api/jobs/${state.videoId}/retry-chunk/${state.chunkId}`, { method: 'POST', body: form });
+      closeModal('retryModal');
+      reloadVideoDetail(state.videoId);
+    } else {
+      _retranscribeInFlight = true;
+      if (state.btnEl) {
+        state.btnEl.dataset.origLabel = state.btnEl.textContent;
+        state.btnEl.disabled = true;
+        state.btnEl.textContent = '…';
       }
+      const form = new FormData();
+      form.append('language', language);
+      const r = await apiFetch(`/api/videos/${state.videoId}/transcript/segments/${state.index}/retranscribe`,
+        { method: 'POST', body: form });
+      applyRetranscribeSegmentResult(state.videoId, state.index, r, state.btnEl);
+      closeModal('retryModal');
     }
-    const chunkSegTa = document.getElementById(`c-seg-text-${videoId}-${index}`);
-    if (chunkSegTa) chunkSegTa.value = r.text;
+  } catch (e) {
+    setStatus('retryModalStatus', 'Xato: ' + e.message, 'err');
+    if (state.kind === 'segment' && state.btnEl) {
+      state.btnEl.disabled = false;
+      state.btnEl.textContent = state.btnEl.dataset.origLabel || state.btnEl.textContent;
+    }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalBtnText;
+    if (state.kind === 'segment') _retranscribeInFlight = false;
+  }
+}
+
+function applyRetranscribeSegmentResult(videoId, index, r, btnEl) {
+  if (transcriptBlockEditorData[index]) {
+    transcriptBlockEditorData[index].text = r.text;
+    const ta = document.getElementById(`t-block-text-${videoId}-${index}`);
+    if (ta) { ta.value = r.text; markTranscriptBlockChanged(videoId, index); }
+  }
+  if (blockEditorData[index]) {
+    blockEditorData[index].original_text = r.text;
+    const origTa = document.getElementById(`block-orig-${videoId}-${index}`);
+    if (origTa) origTa.value = r.text;
+    if (r.translation_cleared) {
+      blockEditorData[index].translation_text = '';
+      const trTa = document.getElementById(`block-text-${videoId}-${index}`);
+      if (trTa) { trTa.value = ''; markBlockChanged(videoId, index); }
+    }
+  }
+  const chunkSegTa = document.getElementById(`c-seg-text-${videoId}-${index}`);
+  if (chunkSegTa) chunkSegTa.value = r.text;
+  if (btnEl) {
+    btnEl.disabled = false;
+    const originalLabel = btnEl.dataset.origLabel || btnEl.textContent;
     btnEl.textContent = '✅';
     setTimeout(() => { btnEl.textContent = originalLabel; }, 1500);
-  } catch (e) {
-    alert('Xato: ' + e.message);
-    btnEl.textContent = originalLabel;
-  } finally {
-    btnEl.disabled = false;
-    _retranscribeInFlight = false;
   }
 }
 
@@ -2620,38 +2733,49 @@ function renderFilesAndLog(v) {
 }
 
 /* ---- video detail bosqich harakatlari ---- */
-async function segmentVideo(id) {
-  try { await apiFetch(`/api/videos/${id}/segment`, { method: 'POST' }); loadVideoDetail(id); }
-  catch (e) { alert('Xato: ' + e.message); }
+
+/* Tugmani so'rov davomida "band" holatga o'tkazadi (ikki marta bosishning oldini
+   oladi) va tugagach avvalgi holatiga qaytaradi - odatda darhol keyin butun
+   bo'lim qayta chizilib, tugma o'zi yangi (to'g'ri) holat bilan almashadi. */
+async function withBusyButton(btnEl, busyText, fn) {
+  if (btnEl && btnEl.disabled) return;
+  const originalText = btnEl ? btnEl.textContent : null;
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = busyText; }
+  try {
+    await fn();
+  } catch (e) {
+    alert('Xato: ' + e.message);
+  } finally {
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = originalText; }
+  }
 }
 
-async function startTranscribe(id) {
+async function segmentVideo(id, btnEl) {
+  await withBusyButton(btnEl, 'Boshlanmoqda...', async () => {
+    await apiFetch(`/api/videos/${id}/segment`, { method: 'POST' });
+    reloadVideoDetail(id);
+  });
+}
+
+async function startTranscribe(id, btnEl) {
   const language = document.getElementById('lang-' + id).value;
   const instruction = document.getElementById('instr-' + id).value.trim();
   const topicGroup = document.getElementById('topicGroup-' + id).value;
-  try {
+  await withBusyButton(btnEl, 'Boshlanmoqda...', async () => {
     const form = new FormData();
     form.append('language', language); form.append('instruction', instruction);
     form.append('topic_group', topicGroup);
     await apiFetch(`/api/videos/${id}/transcribe`, { method: 'POST', body: form });
-    loadVideoDetail(id);
-  } catch (e) { alert('Xato: ' + e.message); }
+    reloadVideoDetail(id);
+  });
 }
 
-async function jobAction(id, action) {
-  try { await apiFetch(`/api/jobs/${id}/${action}`, { method: 'POST' }); loadVideoDetail(id); }
-  catch (e) { alert('Xato: ' + e.message); }
-}
-
-async function retryChunk(videoId, chunkId) {
-  try { await apiFetch(`/api/jobs/${videoId}/retry-chunk/${chunkId}`, { method: 'POST' }); loadVideoDetail(videoId); }
-  catch (e) { alert('Xato: ' + e.message); }
-}
-
-function retryChunkConfirm(videoId, chunkId, chunkNumber) {
-  if (!confirm(`${chunkNumber}-bo'lakni (butun audio qismi, bir necha daqiqa) qayta Whisper'ga yuborishni xohlaysizmi? ` +
-    `Bu bo'lakning barcha matni yangilanadi, tekshirib tasdiqlaganingizdan keyin SRT/TXT hammasi qaytadan jamlanadi. OpenAI xarajati bo'ladi.`)) return;
-  retryChunk(videoId, chunkId);
+async function jobAction(id, action, btnEl) {
+  const busyLabels = { pause: "To'xtatilmoqda...", resume: 'Davom ettirilmoqda...', cancel: 'Bekor qilinmoqda...' };
+  await withBusyButton(btnEl, busyLabels[action] || '...', async () => {
+    await apiFetch(`/api/jobs/${id}/${action}`, { method: 'POST' });
+    reloadVideoDetail(id);
+  });
 }
 
 async function uploadChunkTranscript(videoId, chunkId, chunkNumber, fileInputId) {
@@ -2667,7 +2791,7 @@ async function uploadChunkTranscript(videoId, chunkId, chunkNumber, fileInputId)
   try {
     const r = await apiFetch(`/api/videos/${videoId}/chunks/${chunkId}/replace-transcript`, { method: 'POST', body: form });
     alert(`${chunkNumber}-bo'lak matni yangilandi (${r.segment_count} ta qism). Endi matnni qaytadan tekshirib tasdiqlang.`);
-    loadVideoDetail(videoId);
+    reloadVideoDetail(videoId);
   } catch (e) {
     alert('Xato: ' + e.message);
   } finally {
@@ -2676,26 +2800,28 @@ async function uploadChunkTranscript(videoId, chunkId, chunkNumber, fileInputId)
 }
 
 async function cancelChunk(videoId, chunkId) {
-  try { await apiFetch(`/api/jobs/${videoId}/cancel-chunk/${chunkId}`, { method: 'POST' }); loadVideoDetail(videoId); }
+  try { await apiFetch(`/api/jobs/${videoId}/cancel-chunk/${chunkId}`, { method: 'POST' }); reloadVideoDetail(videoId); }
   catch (e) { alert('Xato: ' + e.message); }
 }
 
-async function retryRange(id) {
-  try {
-    const s = parseTimeField(document.getElementById('rangeStart-' + id).value);
-    const e = parseTimeField(document.getElementById('rangeEnd-' + id).value);
-    if (s === null || e === null) { alert("Boshlanish va tugash vaqtini kiriting (mm:ss)."); return; }
+async function retryRange(id, btnEl) {
+  const s = parseTimeField(document.getElementById('rangeStart-' + id).value);
+  const e = parseTimeField(document.getElementById('rangeEnd-' + id).value);
+  if (s === null || e === null) { alert("Boshlanish va tugash vaqtini kiriting (mm:ss)."); return; }
+  await withBusyButton(btnEl, 'Yuborilmoqda...', async () => {
     const form = new FormData();
     form.append('start_time', String(s)); form.append('end_time', String(e));
     const r = await apiFetch(`/api/jobs/${id}/retry-range`, { method: 'POST', body: form });
     alert(`${r.chunks_queued} ta bo'lak qayta ishlash uchun navbatga qo'yildi.`);
-    loadVideoDetail(id);
-  } catch (err) { alert('Xato: ' + err.message); }
+    reloadVideoDetail(id);
+  });
 }
 
-async function approveTranscript(id) {
-  try { await apiFetch(`/api/videos/${id}/approve`, { method: 'POST' }); loadVideoDetail(id); }
-  catch (e) { alert('Xato: ' + e.message); }
+async function approveTranscript(id, btnEl) {
+  await withBusyButton(btnEl, 'Tasdiqlanmoqda...', async () => {
+    await apiFetch(`/api/videos/${id}/approve`, { method: 'POST' });
+    reloadVideoDetail(id);
+  });
 }
 
 async function autoTranslate(id, provider) {
@@ -2933,7 +3059,8 @@ window.addEventListener('DOMContentLoaded', () => {
         detailContentEl && detailContentEl.contains(activeEl);
       const anyDetailsOpen = detailContentEl &&
         Array.from(detailContentEl.querySelectorAll('details')).some(d => d.open);
-      const anyPanelOpen = userTyping || anyDetailsOpen || Array.from(document.querySelectorAll(
+      const anyModalOpen = document.querySelector('.modal.open') !== null;
+      const anyPanelOpen = userTyping || anyDetailsOpen || anyModalOpen || Array.from(document.querySelectorAll(
         '[id^="block-editor-"], [id^="translate-form-"], [id^="audio-form-"], [id^="transcript-block-editor-"]'
       )).some(el => el.innerHTML.trim() !== '');
       if (currentDetailVideoId) {

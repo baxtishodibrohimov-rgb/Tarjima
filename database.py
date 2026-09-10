@@ -252,6 +252,14 @@ _API_KEY_NEW_COLUMNS = {
 _CLOUD_FILE_NEW_COLUMNS = {
     "thumbnail_path": "TEXT",
 }
+_CHUNK_NEW_COLUMNS = {
+    # NULL = bo'lak uchun alohida til belgilanmagan (videoning umumiy tilidan foydalaniladi),
+    # "" = bu bo'lak uchun ataylab "avtomatik aniqlash" tanlangan, "xx" = aniq til kodi.
+    "language": "TEXT",
+    # Foydalanuvchi "Bo'lakni qayta yubor" tugmasini bosganda 1 ga o'rnatiladi - shu bo'lak
+    # bir martalik, kichik (30-60s) qismlarga bo'lib qayta transkripsiya qilinishini bildiradi.
+    "force_split": "INTEGER DEFAULT 0",
+}
 
 
 def _migrate_columns():
@@ -276,6 +284,10 @@ def _migrate_columns():
         for col, decl in _CLOUD_FILE_NEW_COLUMNS.items():
             if col not in existing_cloud:
                 c.execute(f"ALTER TABLE cloud_files ADD COLUMN {col} {decl}")
+        existing_chunks = {row[1] for row in c.execute("PRAGMA table_info(chunks)").fetchall()}
+        for col, decl in _CHUNK_NEW_COLUMNS.items():
+            if col not in existing_chunks:
+                c.execute(f"ALTER TABLE chunks ADD COLUMN {col} {decl}")
 
 
 # ---------------------------------------------------------------------------

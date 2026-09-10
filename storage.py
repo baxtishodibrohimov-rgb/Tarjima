@@ -62,6 +62,26 @@ LOCAL_BOT_API_URL = os.environ.get("LOCAL_BOT_API_URL", "http://telegram-bot-api
 # ishonchsiz ishlab qolishi mumkin.
 INBOUND_BOT_TOKEN = os.environ.get("INBOUND_BOT_TOKEN", "")
 
+# Video -> Matn bosqichida tanlash mumkin bo'lgan Whisper til kodlari ("" = avtomatik
+# aniqlash). OpenAI Whisper qo'llaydigan ISO-639-1 kodlari - frontend shu ro'yxatdan
+# tanlov ko'rsatadi, backend esa har bir so'rovda shu ro'yxat bilan tekshiradi.
+TRANSCRIBE_LANGUAGES = [
+    ("", "Avtomatik aniqlash"),
+    ("uz", "O'zbekcha"),
+    ("ru", "Ruscha"),
+    ("en", "Inglizcha"),
+    ("it", "Italyancha"),
+    ("de", "Nemischa"),
+    ("fr", "Fransuzcha"),
+    ("es", "Ispancha"),
+    ("tr", "Turkcha"),
+    ("ar", "Arabcha"),
+    ("ko", "Koreyscha"),
+    ("ja", "Yaponcha"),
+]
+TRANSCRIBE_LANGUAGE_CODES = {code for code, _ in TRANSCRIBE_LANGUAGES}
+TRANSCRIBE_LANGUAGE_LABELS = dict(TRANSCRIBE_LANGUAGES)
+
 
 def disk_usage() -> dict:
     """STORAGE_DIR joylashgan diskning umumiy holati + biz egallagan hajm."""
