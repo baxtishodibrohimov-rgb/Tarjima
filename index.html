@@ -2012,6 +2012,7 @@ function renderTranscriptStage(v) {
       <div class="row">
         <button class="action" onclick="approveTranscript('${v.id}', this)">Tasdiqlash</button>
         <button class="secondary" onclick="openTranscriptBlockEditor('${v.id}')">Bo'laklarni tahrirlash</button>
+        <button class="small-btn" onclick="restartFromStage('${v.id}', 'transcription')">🔁 Qaytadan boshlash</button>
       </div>
       <div id="transcript-block-editor-${v.id}"></div>`;
   } else if (approved) {
@@ -2022,7 +2023,10 @@ function renderTranscriptStage(v) {
       <textarea readonly style="min-height:140px; margin-top:8px;">${escapeHtml(v.transcript_text || '')}</textarea></details>
       ${chunksZipButtonHtml(v)}
       <details style="margin-top:8px;"><summary style="cursor:pointer; font-size:12.5px; color:var(--muted);">Bo'laklar bo'yicha batafsil (5 daqiqalik qismlar)</summary>${renderChunkDetailList(v.chunks)}</details>
-      <div class="row"><button class="secondary" onclick="openTranscriptBlockEditor('${v.id}')">Bo'laklarni tahrirlash</button></div>
+      <div class="row">
+        <button class="secondary" onclick="openTranscriptBlockEditor('${v.id}')">Bo'laklarni tahrirlash</button>
+        <button class="small-btn" onclick="restartFromStage('${v.id}', 'transcription')">🔁 Qaytadan boshlash</button>
+      </div>
       <div id="transcript-block-editor-${v.id}"></div>`;
   }
   return `<div class="stage ${before ? 'dim' : ''}"><div class="stage-head"><h3>2. Original matn</h3>${badge}</div>${body}</div>`;
@@ -2045,6 +2049,7 @@ function renderTranslationStage(v) {
       <div class="row">
         <button class="action" onclick="openBlockEditor('${v.id}')">Tahrirlash va audio</button>
         <button class="secondary" onclick="showTranslateForm('${v.id}')">Tayyor matn bilan almashtirish</button>
+        <button class="small-btn" onclick="restartFromStage('${v.id}', 'translation')">🔁 Qaytadan boshlash</button>
       </div>
       <div id="translate-form-${v.id}"></div>
       <div id="block-editor-${v.id}"></div>`;
@@ -2441,7 +2446,8 @@ function renderAudioStage(v) {
     badge = stageStatusBadge('✅ Tayyor', 'done');
     body = `<audio controls src="${API_BASE}/api/tts/jobs/${v.tts_job_id}/download"></audio>
       <div class="row"><a class="small-btn" style="text-decoration:none; display:inline-block;" href="${API_BASE}/api/tts/jobs/${v.tts_job_id}/download">Yuklab olish</a>
-      <button class="secondary" onclick="showAudioForm('${v.id}')">Qayta yaratish</button></div>
+      <button class="secondary" onclick="showAudioForm('${v.id}')">Qayta yaratish</button>
+      <button class="small-btn" onclick="restartFromStage('${v.id}', 'audio')">🔁 Qaytadan boshlash</button></div>
       <div id="audio-form-${v.id}"></div>`;
   } else {
     if (v.audio_status === 'error' || v.blocked_reason === 'api_key') {
@@ -2881,6 +2887,20 @@ async function restartVideoFromDetail(id) {
   if (!confirm("Loyihani qaytadan boshlamoqchimisiz? Transkripsiya, tarjima, audio va yakuniy video butunlay o'chadi - video xuddi yangi yuklangandek, bo'laklarga avtomatik qayta bo'linadi. Original video va xarajatlar tarixi saqlanadi. Bu amalni ortga qaytarib bo'lmaydi.")) return;
   try {
     await apiFetch(`/api/videos/${id}/restart`, { method: 'POST' });
+    loadVideoDetail(id);
+  } catch (e) { alert('Xato: ' + e.message); }
+}
+
+const RESTART_STAGE_CONFIRM = {
+  transcription: "Transkripsiyadan qaytadan boshlamoqchimisiz? Original matn, tarjima, audio va yakuniy video butunlay o'chadi (bo'laklar saqlanadi - qaytadan bo'laklashga hojat yo'q). Tilni qaytadan tanlab, transkripsiyani boshidan boshlashingiz kerak bo'ladi. Bu amalni ortga qaytarib bo'lmaydi.",
+  translation: "Tarjimadan qaytadan boshlamoqchimisiz? Tarjima, audio va yakuniy video butunlay o'chadi (original matn saqlanadi). Bu amalni ortga qaytarib bo'lmaydi.",
+  audio: "Audiodan qaytadan boshlamoqchimisiz? Audio va yakuniy video butunlay o'chadi (tarjima saqlanadi). Bu amalni ortga qaytarib bo'lmaydi.",
+};
+
+async function restartFromStage(id, stage) {
+  if (!confirm(RESTART_STAGE_CONFIRM[stage] || "Qaytadan boshlamoqchimisiz?")) return;
+  try {
+    await apiFetch(`/api/videos/${id}/restart/${stage}`, { method: 'POST' });
     loadVideoDetail(id);
   } catch (e) { alert('Xato: ' + e.message); }
 }

@@ -447,6 +447,22 @@ async def restart_video_endpoint(video_id: str, _=Depends(check_admin)):
     return {"ok": True}
 
 
+@app.post("/api/videos/{video_id}/restart/{stage}")
+async def restart_stage_endpoint(video_id: str, stage: str, _=Depends(check_admin)):
+    """Loyihani berilgan bosqichdan (transcription/translation/audio) boshlab
+    qaytadan boshlaydi - undan oldingi ish saqlanadi, undan keyingisi tozalanadi."""
+    v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    if not v:
+        raise HTTPException(404, "Video topilmadi.")
+    if stage not in ("transcription", "translation", "audio"):
+        raise HTTPException(400, "Noto'g'ri bosqich nomi.")
+    try:
+        worker.reset_from_stage(video_id, stage)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    return {"ok": True}
+
+
 @app.post("/api/videos/{video_id}/segment")
 async def segment_video_endpoint(video_id: str):
     v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))

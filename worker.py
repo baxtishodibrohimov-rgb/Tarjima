@@ -141,6 +141,145 @@ def restart_video(video_id: str):
         enqueue_segment(video_id)
 
 
+def _clear_tts_and_final_video(video: dict):
+    """Bog'langan TTS ishini (agar bor bo'lsa) va yakuniy render qilingan
+    videoni butunlay o'chiradi - transkripsiya/tarjima/audio bosqichlaridan
+    QAYSI biridan qayta boshlansa ham, undan KEYINGI hamma narsa (audio,
+    yakuniy video) endi eskirgan hisoblanadi va saqlanishi mumkin emas."""
+    video_id = video["id"]
+    if video["tts_job_id"]:
+        from storage import TTS_DIR
+        import tts as tts_module
+        tts_module.PAUSE_FLAGS.pop(video["tts_job_id"], None)
+        tts_module.CANCEL_FLAGS.pop(video["tts_job_id"], None)
+        db.execute("DELETE FROM tts_segments WHERE job_id = ?", (video["tts_job_id"],))
+        db.execute("DELETE FROM tts_jobs WHERE id = ?", (video["tts_job_id"],))
+        shutil.rmtree(TTS_DIR / video["tts_job_id"], ignore_errors=True)
+    if video["final_video_path"]:
+        Path(video["final_video_path"]).unlink(missing_ok=True)
+    out_dir = RESULTS_DIR / video_id
+    if out_dir.exists():
+        for p in out_dir.glob("*_yakuniy.rendering.mp4"):
+            p.unlink(missing_ok=True)
+
+
+def _delete_result_kinds(video_id: str, kinds: list):
+    """results jadvalidan berilgan 'kind'larga mos yozuvlarni (va ularning
+    diskdagi fayllarini) o'chiradi - boshqa kind'larga (masalan original
+    transkripsiya fayllariga) tegilmaydi."""
+    placeholders = ",".join("?" for _ in kinds)
+    rows = db.fetchall(f"SELECT * FROM results WHERE video_id = ? AND kind IN ({placeholders})",
+                        (video_id, *kinds))
+    for r in rows:
+        Path(r["path"]).unlink(missing_ok=True)
+    db.execute(f"DELETE FROM results WHERE video_id = ? AND kind IN ({placeholders})", (video_id, *kinds))
+
+
+_STAGE_ORDER = ("segmentation", "transcription", "translation", "audio", "render")
+
+
+def reset_from_stage(video_id: str, stage: str):
+    """Loyihani berilgan BOSQICHDAN boshlab, undan keyingi hamma narsani
+    tozalab, undan oldingi ishni SAQLAB qoladi - ya'ni "Qayta boshlash"ning
+    bosqichma-bosqich (cascading) varianti:
+      - 'segmentation' - restart_video() bilan bir xil (hech narsa saqlanmaydi,
+        faqat original video).
+      - 'transcription' - bo'laklar (chunks) saqlanadi, matn+tarjima+audio+video
+        tozalanadi. Til qayta tanlab, transkripsiyani boshidan boshlash kerak.
+      - 'translation' - original matn (transkripsiya) saqlanadi, tarjima+audio+video
+        tozalanadi.
+      - 'audio' - tarjima saqlanadi, audio+video tozalanadi.
+    ('render' bosqichi uchun alohida funksiya kerak emas - mavjud
+    "Videoni qayta yig'ish" tugmasi/enqueue_render() aynan shu ishni qiladi.)
+    """
+    if stage == "segmentation":
+        return restart_video(video_id)
+    if stage not in _STAGE_ORDER:
+        raise ValueError(f"Noma'lum bosqich: {stage}")
+
+    video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    if not video:
+        raise ValueError("Video topilmadi.")
+    if video["kind"] != "pipeline":
+        raise ValueError("Faqat tarjima loyihalari uchun qayta boshlash mumkin.")
+
+    # Umumiy xavfsizlik tekshiruvi: video hozir biror bosqichda FAOL
+    # ishlayotgan bo'lsa, uni bekor qilib bo'lmaydi (fon vazifasi hali ham
+    # eski ma'lumot ustida ishlab, tugagach tozalangan holatni bosib qo'yishi
+    # mumkin edi - race condition).
+    if video["status"] in _RESTART_UNSAFE_ACTIVE_STATUSES and not video["blocked_reason"]:
+        raise ValueError(
+            f"Video hozir faol ishlamoqda ('{video['status']}') - qayta boshlashdan oldin "
+            f"avval uni bekor qiling yoki tugashini kuting."
+        )
+    if video["status"] == "audio_processing" and video["tts_job_id"]:
+        tts_job = db.fetchone("SELECT status FROM tts_jobs WHERE id = ?", (video["tts_job_id"],))
+        if tts_job and tts_job["status"] in ("running", "queued"):
+            raise ValueError(
+                "Audio hozir faol yaratilmoqda - qayta boshlashdan oldin avval uni bekor qiling "
+                "yoki tugashini kuting."
+            )
+    if video["translation_status"] == "generating":
+        raise ValueError("Tarjima hozir avtomatik yaratilmoqda - avval tugashini kuting.")
+
+    PAUSE_FLAGS.pop(video_id, None)
+    CANCEL_FLAGS.pop(video_id, None)
+
+    if stage == "transcription":
+        if video["status"] in ("uploaded", "segmenting"):
+            raise ValueError(
+                "Video hali bo'laklarga bo'linmagan - transkripsiyadan qayta boshlash uchun "
+                "avval bo'laklash tugashi kerak."
+            )
+        _clear_tts_and_final_video(video)
+        _delete_result_kinds(video_id, ["srt", "txt", "vtt_original", "srt_uz", "vtt_uz",
+                                         "srt_uz_final", "vtt_uz_final"])
+        db.execute("UPDATE chunks SET status = 'pending', transcript = NULL, error = NULL WHERE video_id = ?",
+                   (video_id,))
+        _update_video(
+            video_id, status="segments_ready", blocked_reason=None, progress=0,
+            message="Transkripsiyadan qaytadan boshlash uchun tozalandi - tilni qayta tanlab boshlang.",
+            error=None, language="", instruction="", detected_language="", topic_group=None,
+            repetition_chunk_index=None, repetition_info=None,
+            transcript_text=None, transcript_segments=None, transcript_approved=0,
+            translation_text=None, translation_segments=None, translation_status="none", translation_source=None,
+            audio_path=None, audio_status="none", tts_job_id=None,
+            final_video_path=None, final_video_status="none", freeze_points=None,
+            flagged_issues=None,
+        )
+        log(video_id, "=== TRANSKRIPSIYADAN QAYTA BOSHLANDI: original matn, tarjima, audio va yakuniy "
+                       "video tozalandi. Bo'laklar (chunks) saqlanib qoldi. ===")
+
+    elif stage == "translation":
+        if not video["transcript_approved"]:
+            raise ValueError("Original matn hali tasdiqlanmagan - avval transkripsiyani tasdiqlang.")
+        _clear_tts_and_final_video(video)
+        _delete_result_kinds(video_id, ["srt_uz", "vtt_uz", "srt_uz_final", "vtt_uz_final"])
+        _update_video(
+            video_id, status="transcription_approved", blocked_reason=None,
+            message="Tarjimadan qaytadan boshlash uchun tozalandi.", error=None,
+            translation_text=None, translation_segments=None, translation_status="none", translation_source=None,
+            audio_path=None, audio_status="none", tts_job_id=None,
+            final_video_path=None, final_video_status="none", freeze_points=None,
+        )
+        log(video_id, "=== TARJIMADAN QAYTA BOSHLANDI: tarjima, audio va yakuniy video tozalandi. "
+                       "Original matn saqlanib qoldi. ===")
+
+    elif stage == "audio":
+        if video["translation_status"] not in ("ready", "uploaded", "pasted"):
+            raise ValueError("Tarjima hali tayyor emas - avval tarjimani tayyorlang.")
+        _clear_tts_and_final_video(video)
+        _delete_result_kinds(video_id, ["srt_uz_final", "vtt_uz_final"])
+        _update_video(
+            video_id, status="translation_ready", blocked_reason=None,
+            message="Audiodan qaytadan boshlash uchun tozalandi.", error=None,
+            audio_path=None, audio_status="none", tts_job_id=None,
+            final_video_path=None, final_video_status="none", freeze_points=None,
+        )
+        log(video_id, "=== AUDIODAN QAYTA BOSHLANDI: audio va yakuniy video tozalandi. "
+                       "Tarjima saqlanib qoldi. ===")
+
+
 # ---------------------------------------------------------------------------
 #                          BO'LAKLARGA BO'LISH (SEGMENTATSIYA)
 # ---------------------------------------------------------------------------
