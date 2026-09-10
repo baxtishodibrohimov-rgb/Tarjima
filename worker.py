@@ -63,11 +63,20 @@ def log(video_id: str, msg: str):
 #                          BO'LAKLARGA BO'LISH (SEGMENTATSIYA)
 # ---------------------------------------------------------------------------
 
-def enqueue_segment(video_id: str):
+def enqueue_segment(video_id: str) -> bool:
+    """Bo'laklarga bo'lishni navbatga qo'yadi. Video uchun bu ish ALLAQACHON
+    faol ishlayotgan bo'lsa (status='segmenting' va xato/to'xtagan emas),
+    qayta navbatga qo'ymaydi va False qaytaradi - bir faylni parallel ikki
+    marta bo'lash yoki eski (allaqachon bo'langan) faylni bekorga qayta
+    bo'lashning oldini olish uchun."""
+    video = db.fetchone("SELECT status, blocked_reason FROM videos WHERE id = ?", (video_id,))
+    if video and video["status"] == "segmenting" and not video["blocked_reason"]:
+        return False
     _update_video(video_id, status="segmenting", blocked_reason=None,
                   message="Bo'laklarga bo'linmoqda...", error=None)
     log(video_id, "Bo'laklarga bo'lish navbatga qo'yildi.")
     SEGMENT_QUEUE.put_nowait(video_id)
+    return True
 
 
 async def segment_video(video_id: str):
@@ -894,17 +903,26 @@ def apply_block_edits(video_id: str, new_texts: list):
 #                          YAKUNIY VIDEO YIG'ISH (RENDER)
 # ---------------------------------------------------------------------------
 
-def enqueue_render(video_id: str):
+def enqueue_render(video_id: str) -> bool:
+    """Yakuniy video yig'ishni navbatga qo'yadi. Video uchun bu ish ALLAQACHON
+    faol ishlayotgan bo'lsa (status='video_rendering' va xato/to'xtagan emas),
+    qayta navbatga qo'ymaydi va False qaytaradi - bitta video uchun parallel
+    ikkita render ishlashining oldini olish uchun."""
+    video = db.fetchone("SELECT status, blocked_reason FROM videos WHERE id = ?", (video_id,))
+    if video and video["status"] == "video_rendering" and not video["blocked_reason"]:
+        return False
     _update_video(video_id, status="video_rendering", blocked_reason=None,
                   message="Video yig'ilmoqda...", error=None)
     log(video_id, "Video yig'ish navbatga qo'yildi.")
     RENDER_QUEUE.put_nowait(video_id)
+    return True
 
 
 async def render_video(video_id: str):
     video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
     if not video:
         return
+    tmp_out_path = None
     try:
         if not video["audio_path"] or not Path(video["audio_path"]).exists():
             raise RuntimeError("Audio fayl topilmadi. Avval audio yarating.")
@@ -918,6 +936,13 @@ async def render_video(video_id: str):
         out_dir.mkdir(parents=True, exist_ok=True)
         base = safe_name(Path(video["original_name"]).stem) or "video"
         out_path = out_dir / f"{base}_yakuniy.mp4"
+        # Avval VAQTINCHALIK faylga yig'iladi - ffmpeg muvaffaqiyatli tugab,
+        # natija tekshirilgandan keyingina yakuniy joyga ko'chiriladi. Shu bilan
+        # qayta yig'ish (masalan "Videoni qayta yig'ish") o'rtada xato bilan
+        # to'xtasa ham, avvalgi sog'lom yakuniy video hech qachon yarim
+        # buzilgan holatda qolmaydi/almashtirilmaydi.
+        tmp_out_path = out_dir / f"{base}_yakuniy.rendering.mp4"
+        tmp_out_path.unlink(missing_ok=True)
 
         freeze_points = json.loads(video["freeze_points"]) if video["freeze_points"] else []
         if freeze_points:
@@ -931,12 +956,15 @@ async def render_video(video_id: str):
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(
             None, transcription.mux_video_audio_with_freezes,
-            Path(video["path"]), Path(video["audio_path"]), out_path, freeze_points, freeze_work_dir)
+            Path(video["path"]), Path(video["audio_path"]), tmp_out_path, freeze_points, freeze_work_dir)
 
+        tmp_out_path.replace(out_path)  # atomik ko'chirish - endigina yakuniy video hisoblanadi
         _update_video(video_id, status="completed", blocked_reason=None, final_video_status="ready",
                       final_video_path=str(out_path), message="Yakuniy video tayyor.", error=None)
         log(video_id, "Yakuniy video tayyor.")
     except Exception as e:
+        if tmp_out_path:
+            tmp_out_path.unlink(missing_ok=True)
         _update_video(video_id, blocked_reason="error", final_video_status="error", error=str(e),
                       message="Video yig'ishda xato.")
         log(video_id, f"XATO (render): {e}\n{traceback.format_exc()[-400:]}")
@@ -982,6 +1010,20 @@ def sync_video_from_tts_job(job_id: str):
         _update_video(video_id, status="audio_ready", blocked_reason=None, audio_status="ready",
                       audio_path=job["result_path"], freeze_points=job["freeze_points"], message=message)
         log(video_id, f"Audio tayyor (TTS ishi yakunlandi).{' ' + str(freeze_count) + ' ta muzlatish nuqtasi.' if freeze_count else ''}")
+
+        # Barcha audio segmentlari muvaffaqiyatli tayyor bo'lgani uchun (shu yerga
+        # faqat merge_job() muvaffaqiyatli tugaganda kelinadi) - foydalanuvchi
+        # "Video yig'ish"ni bosishini kutmasdan, yakuniy videoni avtomatik
+        # navbatga qo'yamiz. Original video fayli va umumiy audio mavjudligini
+        # oldindan tekshiramiz; boshqa render allaqachon ketayotgan bo'lsa
+        # enqueue_render o'zi qayta navbatga qo'ymaydi.
+        full_video = db.fetchone("SELECT path FROM videos WHERE id = ?", (video_id,))
+        if full_video and full_video["path"] and Path(full_video["path"]).exists() and job["result_path"]:
+            log(video_id, "Barcha audio segmentlari tayyor - yakuniy video avtomatik yig'ishga navbatga qo'yildi.")
+            enqueue_render(video_id)
+        else:
+            log(video_id, "OGOHLANTIRISH: audio tayyor bo'ldi, lekin original video fayli topilmadi - "
+                           "avtomatik video yig'ish boshlanmadi. \"Videoni qayta yig'ish\"ni qo'lda urinib ko'ring.")
     elif job["status"] == "paused_api_key":
         _update_video(video_id, blocked_reason="api_key", audio_status="error",
                       message="Audio yaratishda: ishlaydigan OpenAI API kalit topilmadi.")

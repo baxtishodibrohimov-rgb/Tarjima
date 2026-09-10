@@ -439,7 +439,8 @@ async def segment_video_endpoint(video_id: str):
         raise HTTPException(404, "Video topilmadi.")
     if v["status"] not in ("uploaded", "segmenting", "segments_ready"):
         raise HTTPException(400, f"Video holati '{v['status']}' - bo'laklarga bo'lish mumkin emas.")
-    worker.enqueue_segment(video_id)
+    if not worker.enqueue_segment(video_id):
+        raise HTTPException(409, "Video allaqachon bo'laklanmoqda.")
     return {"ok": True}
 
 
@@ -876,7 +877,8 @@ async def render_endpoint(video_id: str):
         raise HTTPException(404, "Video topilmadi.")
     if v["status"] not in ("audio_ready", "completed") or not v["audio_path"]:
         raise HTTPException(400, "Avval audio tayyor bo'lishi kerak.")
-    worker.enqueue_render(video_id)
+    if not worker.enqueue_render(video_id):
+        raise HTTPException(409, "Video allaqachon yig'ilmoqda.")
     return {"ok": True}
 
 
@@ -1084,7 +1086,7 @@ async def upload_complete(upload_id: str, request: Request):
     shutil.move(str(tmp_path), str(dest_path))
 
     init_status = "uploaded" if kind == "pipeline" else "completed"
-    init_message = "Serverda saqlangan. Bo'laklarga bo'lishni kuting." if kind == "pipeline" else "Yuklandi, botga yuborilmoqda..."
+    init_message = "Serverda saqlangan. Bo'laklarga avtomatik bo'linmoqda..." if kind == "pipeline" else "Yuklandi, botga yuborilmoqda..."
     db.execute(
         """INSERT INTO videos (id, original_name, filename, path, file_size, status, kind,
            created_at, updated_at, message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -1103,6 +1105,13 @@ async def upload_complete(upload_id: str, request: Request):
                               thumbnail_path=str(thumb_path) if has_thumb else None)
     except Exception as e:
         db.log_line(video_id, f"Ogohlantirish: thumbnail/davomiylik olinmadi: {e}")
+
+    # Video/audio serverga TO'LIQ va muvaffaqiyatli yuklangach, foydalanuvchi
+    # "Bo'laklarga bo'lish"ni bosishini kutmasdan, 5 daqiqalik bo'laklarga
+    # bo'lish avtomatik navbatga qo'yiladi. Transkripsiya bunga kirmaydi - u
+    # hamon faqat foydalanuvchi "Transkripsiyani boshlash"ni bosganda ketadi.
+    if kind == "pipeline":
+        worker.enqueue_segment(video_id)
 
     if kind == "split_only":
         if DARSLIK_API_KEY and IDEA_FLOW_URL:
