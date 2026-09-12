@@ -716,7 +716,11 @@ async def finalize_results(video_id: str):
     # tarjima tozalanadi va foydalanuvchiga aniq sabab bilan qayta tarjima
     # qilish kerakligi bildiriladi.
     had_translation = (video["translation_status"] or "none") in ("ready", "uploaded", "pasted", "generating")
-    old_translation_count = len(json.loads(video["translation_segments"] or "[]"))
+    old_blocks = json.loads(video["translation_segments"] or "[]")
+    # Har bir blok necha original segmentni qamrab olganini yig'ib, tarjima
+    # generatsiya qilingan paytdagi original segmentlar sonini tiklaymiz
+    # (source_indices yo'q - eski format - bo'lsa, blok = 1 ta segment deb hisoblanadi).
+    old_translation_count = sum(len(b.get("source_indices") or [1]) for b in old_blocks)
     translation_mismatch = had_translation and old_translation_count != len(final_segments)
 
     extra_fields = {}
@@ -877,20 +881,56 @@ async def retranscribe_segment(video_id: str, index: int, language: str = None) 
     db.add_cost(video_id, "transcription", transcription.estimate_whisper_cost(seg["end"] - seg["start"]),
                 detail=f"{index + 1}-segmentni qayta Whisper'ga yuborish")
 
-    translation_cleared = False
-    translations = json.loads(video["translation_segments"] or "[]")
-    if index < len(translations):
-        translations[index] = {"start": seg["start"], "end": seg["end"], "text": ""}
-        plain = "\n\n".join(t["text"] for t in translations)
-        _update_video(video_id, translation_text=plain,
-                      translation_segments=json.dumps(translations, ensure_ascii=False))
-        write_translation_results(video_id)
-        translation_cleared = True
+    invalidated_count = _invalidate_translation_blocks_covering(video_id, index)
+    translation_cleared = invalidated_count > 0
 
     lang_note = f" (til: {storage_lang_label(effective_language)})" if language is not None else ""
-    log(video_id, f"{index + 1}-segment Whisper orqali qayta olindi{lang_note}."
-                   f"{' Tarjimasi tozalandi - qayta tarjima qiling.' if translation_cleared else ''}")
-    return {"text": new_text, "translation_cleared": translation_cleared}
+    invalidate_note = (f" {invalidated_count} ta tarjima bloki tozalandi (shu segmentni qamrab olgan) "
+                        "- qayta tarjima qiling." if translation_cleared else "")
+    log(video_id, f"{index + 1}-segment Whisper orqali qayta olindi{lang_note}.{invalidate_note}")
+    return {"text": new_text, "translation_cleared": translation_cleared, "invalidated_blocks": invalidated_count}
+
+
+def _invalidate_translation_blocks_covering(video_id: str, source_index: int) -> int:
+    """Berilgan ORIGINAL segment indeksini (source_index) qamrab olgan barcha
+    yakuniy tarjima bloklarini topib, matnini tozalaydi (source_indices/start/end
+    o'zgarmaydi - faqat matn qayta tarjima kutilayotganini bildiradi). Shu bloklarga
+    mos, allaqachon 'completed' bo'lgan TTS segmentlari ham eskirgan hisoblanadi va
+    'pending'ga qaytariladi (aks holda merge/render eskirgan audio bilan davom etadi).
+    Nechta blok tozalanganini qaytaradi."""
+    video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    translations = json.loads(video["translation_segments"] or "[]")
+    if not translations:
+        return 0
+    changed = False
+    invalidated_final_indices = []
+    for i, block in enumerate(translations):
+        src = block.get("source_indices")
+        if src is None:
+            src = [i]  # eski format - orqaga moslik
+        if source_index in src and (block.get("text") or "").strip():
+            block["text"] = ""
+            changed = True
+            invalidated_final_indices.append(i)
+    if not changed:
+        return 0
+    plain = "\n\n".join((t.get("text") or "") for t in translations)
+    _update_video(video_id, translation_text=plain,
+                  translation_segments=json.dumps(translations, ensure_ascii=False))
+    write_translation_results(video_id)
+
+    if video["tts_job_id"] and invalidated_final_indices:
+        placeholders = ",".join("?" * len(invalidated_final_indices))
+        # Matnni ham bo'shatamiz (nafaqat statusni) - aks holda tarjima
+        # tozalangan bo'lsa-da, tts_segments.text eski (endi mos kelmaydigan)
+        # matnni saqlab qolib, keyingi ishga tushirishda o'sha ESKI matn bilan
+        # qayta sintez qilinib ketishi mumkin edi.
+        db.execute(
+            f"UPDATE tts_segments SET status = 'pending', audio_path = NULL, cache_key = NULL, error = NULL, "
+            f"text = '' WHERE job_id = ? AND status = 'completed' AND seg_index IN ({placeholders})",
+            (video["tts_job_id"], *invalidated_final_indices),
+        )
+    return len(invalidated_final_indices)
 
 
 def replace_chunk_transcript(video_id: str, chunk_id: str, segments: list):
@@ -917,6 +957,39 @@ def get_translation_memory_context() -> str:
     return "\n".join(f"- {n['content']}" for n in notes)
 
 
+def _chunk_original_segments(segments: list, chunk_size: int = 100, pad_search: int = 20,
+                              min_gap: float = 1.5):
+    """Uzun videolar uchun segmentlarni LLM so'roviga mos guruhlarga bo'ladi (har
+    bir chaqiruv uchun katta massivni yuborish javobni kesilishi/xatosiga olib
+    kelishi mumkin). Chegara joylashgan segment atrofida (pad_search doirasida)
+    tabiiy pauza (>= min_gap soniya) qidiriladi va chegara shu yerga moslashtiriladi
+    - shu orqali bitta gapni ikki bo'lak orasida bo'lib yuborish ehtimoli kamayadi
+    (garov emas, lekin kuchli evristika). Qaytaradi: [(offset, chunk_segments), ...]
+    - offset shu chunkning birinchi elementi to'liq ro'yxatdagi (0-based) indeksi."""
+    n = len(segments)
+    if n <= chunk_size:
+        return [(0, segments)]
+    chunks = []
+    start = 0
+    while start < n:
+        ideal_end = min(start + chunk_size, n)
+        if ideal_end >= n:
+            chunks.append((start, segments[start:n]))
+            break
+        best_end = ideal_end
+        best_gap = -1.0
+        lo = max(start + 1, ideal_end - pad_search)
+        hi = min(n - 1, ideal_end + pad_search)
+        for i in range(lo, hi + 1):
+            gap = segments[i]["start"] - segments[i - 1]["end"]
+            if gap >= min_gap and gap > best_gap:
+                best_gap = gap
+                best_end = i
+        chunks.append((start, segments[start:best_end]))
+        start = best_end
+    return chunks
+
+
 async def run_auto_translate(video_id: str, provider: str = "openai"):
     video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
     if not video:
@@ -935,55 +1008,70 @@ async def run_auto_translate(video_id: str, provider: str = "openai"):
         memory_notes = get_translation_memory_context()
         full_context = "\n\n".join(x for x in (context, memory_notes) if x)
 
+        chunks = _chunk_original_segments(segments)
+        all_blocks = []
+        total_input_tok = total_output_tok = 0
+        usage_present = False
         async with httpx.AsyncClient() as client:
-            if provider == "claude":
-                translated_texts, usage = await translation.translate_segments_via_claude(
-                    client, raw, segments, extra_instructions=instruction, extra_context=full_context)
-            else:
-                translated_texts, usage = await translation.translate_segments_via_openai(
-                    client, raw, segments, extra_instructions=instruction, extra_context=full_context)
+            for offset, chunk_segments in chunks:
+                if provider == "claude":
+                    chunk_blocks, usage = await translation.translate_segments_via_claude(
+                        client, raw, chunk_segments, extra_instructions=instruction, extra_context=full_context)
+                else:
+                    chunk_blocks, usage = await translation.translate_segments_via_openai(
+                        client, raw, chunk_segments, extra_instructions=instruction, extra_context=full_context)
+                for b in chunk_blocks:
+                    all_blocks.append({
+                        "source_indices": [offset + x for x in b["source_indices"]],
+                        "start": b["start"], "end": b["end"], "text": b["text"],
+                    })
+                if usage:
+                    usage_present = True
+                    total_input_tok += usage.get("prompt_tokens", 0)
+                    total_output_tok += usage.get("completion_tokens", 0)
         keys_manager.mark_result(kid, True)
 
-        translation_segments = [
-            {"start": s["start"], "end": s["end"], "text": t} for s, t in zip(segments, translated_texts)
-        ]
-        plain = "\n\n".join(translated_texts)
+        translation_segments = [{"final_index": i, **b} for i, b in enumerate(all_blocks)]
+        plain = "\n\n".join(b["text"] for b in all_blocks)
         _update_video(video_id, translation_text=plain,
                       translation_segments=json.dumps(translation_segments, ensure_ascii=False),
                       translation_status="ready", translation_source=f"auto_{provider}", status="translation_ready",
                       blocked_reason=None, error=None, message="Avtomatik tarjima tayyor.")
 
-        if usage:
-            input_tok = usage.get("prompt_tokens", 0)
-            output_tok = usage.get("completion_tokens", 0)
-            cost = translation.estimate_translation_cost(0, 0, provider=provider)
+        if usage_present:
             if provider == "claude":
-                cost = round((input_tok / 1_000_000) * 1.0 + (output_tok / 1_000_000) * 5.0, 6)
+                cost = round((total_input_tok / 1_000_000) * 1.0 + (total_output_tok / 1_000_000) * 5.0, 6)
             else:
-                cost = round((input_tok / 1_000_000) * 0.15 + (output_tok / 1_000_000) * 0.60, 6)
+                cost = round((total_input_tok / 1_000_000) * 0.15 + (total_output_tok / 1_000_000) * 0.60, 6)
         else:
             cost = translation.estimate_translation_cost(
-                sum(len(s["text"]) for s in segments), sum(len(t) for t in translated_texts), provider=provider)
+                sum(len(s["text"]) for s in segments), sum(len(b["text"]) for b in all_blocks), provider=provider)
         provider_label = "Claude Haiku" if provider == "claude" else "OpenAI gpt-4o-mini"
-        db.add_cost(video_id, "translation", cost, detail=f"{provider_label} avtomatik tarjima")
+        chunk_note = f", {len(chunks)} qismda yuborildi" if len(chunks) > 1 else ""
+        db.add_cost(video_id, "translation", cost, detail=f"{provider_label} avtomatik tarjima{chunk_note}")
         write_translation_results(video_id)
-        log(video_id, f"Avtomatik tarjima tayyor ({provider_label}).")
+        log(video_id, f"Avtomatik tarjima tayyor ({provider_label}{chunk_note}, "
+                       f"{len(segments)} ta original segment -> {len(all_blocks)} ta yakuniy blok).")
     except Exception as e:
         _update_video(video_id, translation_status="failed", message=f"Tarjima xatosi: {e}")
         log(video_id, f"XATO (tarjima): {e}\n{traceback.format_exc()[-400:]}")
 
 
 async def fill_empty_translations(video_id: str, provider: str = "openai"):
-    """Faqat matni bo'sh qolgan tarjima bo'laklarini AI orqali to'ldiradi -
-    to'liq qayta tarjima qilmaydi, allaqachon mavjud matnlarga tegmaydi."""
+    """Faqat matni bo'sh qolgan YAKUNIY tarjima bloklarini AI orqali to'ldiradi -
+    to'liq qayta tarjima qilmaydi, allaqachon mavjud bloklarga/chegaralarga
+    tegmaydi. Har bir bo'sh blok allaqachon "bitta yakuniy gap" sifatida
+    belgilangan bo'lgani uchun, uni qamrab olgan original segmentlar matni
+    birlashtirilib BITTA pseudo-segment sifatida yuboriladi - shu orqali AI
+    bloklarni qayta guruhlashga urinmaydi (urinsa - aniq xato bilan to'xtatiladi)."""
     video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
     if not video:
         return
     try:
         originals = json.loads(video["transcript_segments"] or "[]")
         translations = json.loads(video["translation_segments"] or "[]")
-        if not originals or len(originals) != len(translations):
-            raise RuntimeError("Tarjima segmentlari original bilan mos emas.")
+        if not originals or not translations:
+            raise RuntimeError("Tarjima segmentlari topilmadi.")
         empty_indices = [i for i, t in enumerate(translations) if not (t.get("text") or "").strip()]
         if not empty_indices:
             _update_video(video_id, blocked_reason=None, message="Bo'sh bo'lak topilmadi.")
@@ -998,37 +1086,63 @@ async def fill_empty_translations(video_id: str, provider: str = "openai"):
         memory_notes = get_translation_memory_context()
         full_context = "\n\n".join(x for x in (context, memory_notes) if x)
 
-        to_translate = [originals[i] for i in empty_indices]
+        pseudo_segments = []
+        for i in empty_indices:
+            block = translations[i]
+            src = block.get("source_indices") or [i]
+            covered_text = " ".join(
+                (originals[x]["text"] or "").strip() for x in src if 0 <= x < len(originals)
+            ).strip()
+            pseudo_segments.append({"start": block.get("start"), "end": block.get("end"), "text": covered_text})
+
+        chunks = _chunk_original_segments(pseudo_segments)
+        result_texts_by_index = {}
+        total_input_tok = total_output_tok = 0
+        usage_present = False
         async with httpx.AsyncClient() as client:
-            if provider == "claude":
-                translated_texts, usage = await translation.translate_segments_via_claude(
-                    client, raw, to_translate, extra_instructions=instruction, extra_context=full_context)
-            else:
-                translated_texts, usage = await translation.translate_segments_via_openai(
-                    client, raw, to_translate, extra_instructions=instruction, extra_context=full_context)
+            for offset, chunk_segments in chunks:
+                if provider == "claude":
+                    chunk_blocks, usage = await translation.translate_segments_via_claude(
+                        client, raw, chunk_segments, extra_instructions=instruction, extra_context=full_context)
+                else:
+                    chunk_blocks, usage = await translation.translate_segments_via_openai(
+                        client, raw, chunk_segments, extra_instructions=instruction, extra_context=full_context)
+                if len(chunk_blocks) != len(chunk_segments) or any(
+                        len(b["source_indices"]) != 1 for b in chunk_blocks):
+                    raise RuntimeError(
+                        "Bo'sh bo'laklarni to'ldirishda AI ularni qayta guruhlashga urindi - har bir bo'sh "
+                        "blok mustaqil to'ldirilishi kerak edi. Qayta urinib ko'ring."
+                    )
+                for b in chunk_blocks:
+                    local_i = b["source_indices"][0]
+                    result_texts_by_index[offset + local_i] = b["text"]
+                if usage:
+                    usage_present = True
+                    total_input_tok += usage.get("prompt_tokens", 0)
+                    total_output_tok += usage.get("completion_tokens", 0)
         keys_manager.mark_result(kid, True)
 
-        for idx, text in zip(empty_indices, translated_texts):
-            translations[idx] = {"start": originals[idx]["start"], "end": originals[idx]["end"], "text": text}
-        plain = "\n\n".join(t["text"] for t in translations)
+        for pseudo_i, orig_block_i in enumerate(empty_indices):
+            translations[orig_block_i]["text"] = result_texts_by_index[pseudo_i]
+        plain = "\n\n".join((t.get("text") or "") for t in translations)
         _update_video(video_id, translation_text=plain,
                       translation_segments=json.dumps(translations, ensure_ascii=False),
                       translation_status="ready", status="translation_ready",
                       blocked_reason=None, error=None,
                       message=f"{len(empty_indices)} ta bo'sh bo'lak avtomatik tarjima qilindi.")
 
-        if usage:
-            input_tok = usage.get("prompt_tokens", 0)
-            output_tok = usage.get("completion_tokens", 0)
+        if usage_present:
             if provider == "claude":
-                cost = round((input_tok / 1_000_000) * 1.0 + (output_tok / 1_000_000) * 5.0, 6)
+                cost = round((total_input_tok / 1_000_000) * 1.0 + (total_output_tok / 1_000_000) * 5.0, 6)
             else:
-                cost = round((input_tok / 1_000_000) * 0.15 + (output_tok / 1_000_000) * 0.60, 6)
+                cost = round((total_input_tok / 1_000_000) * 0.15 + (total_output_tok / 1_000_000) * 0.60, 6)
         else:
             cost = translation.estimate_translation_cost(
-                sum(len(s["text"]) for s in to_translate), sum(len(t) for t in translated_texts), provider=provider)
+                sum(len(s["text"]) for s in pseudo_segments),
+                sum(len(t) for t in result_texts_by_index.values()), provider=provider)
         provider_label = "Claude Haiku" if provider == "claude" else "OpenAI gpt-4o-mini"
-        db.add_cost(video_id, "translation", cost, detail=f"{provider_label}: {len(empty_indices)} bo'sh bo'lak to'ldirildi")
+        db.add_cost(video_id, "translation", cost,
+                    detail=f"{provider_label}: {len(empty_indices)} bo'sh bo'lak to'ldirildi")
         write_translation_results(video_id)
         log(video_id, f"{len(empty_indices)} ta bo'sh bo'lak avtomatik tarjima qilindi ({provider_label}).")
     except Exception as e:
@@ -1126,8 +1240,12 @@ def write_final_subtitles(video_id: str, freeze_points: list):
 
 
 def get_translation_blocks(video_id: str) -> list:
-    """Har bir original segment va unga mos tarjima bo'lagini indeks bilan qaytaradi
-    ('Tahrirlash va audio' bo'limi uchun)."""
+    """Har bir YAKUNIY tarjima blokini (bir yoki bir nechta original segmentni
+    mexanik ravishda birlashtirgan bo'lishi mumkin), uning qamrab olgan original
+    matni va audio holati bilan qaytaradi ('Tahrirlash va audio' bo'limi uchun).
+    `source_indices` - shu blok qamrab olgan original segment(lar)ning 0-based
+    indeksi(lari) (eski, source_indices'siz ma'lumot uchun [index] deb qaraladi -
+    orqaga moslik)."""
     video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
     originals = json.loads(video["transcript_segments"] or "[]")
     translations = json.loads(video["translation_segments"] or "[]")
@@ -1137,39 +1255,44 @@ def get_translation_blocks(video_id: str) -> list:
                             (video["tts_job_id"],))
         audio_status_by_index = {s["seg_index"]: {"status": s["status"], "error": s["error"]} for s in segs}
     blocks = []
-    for i, orig in enumerate(originals):
-        tr = translations[i] if i < len(translations) else None
+    for i, block in enumerate(translations):
+        src = block.get("source_indices")
+        if not src:
+            src = [i]  # eski format - orqaga moslik
+        original_text = " ".join(
+            (originals[x]["text"] or "").strip() for x in src if 0 <= x < len(originals)
+        ).strip()
         blocks.append({
-            "index": i, "start": orig["start"], "end": orig["end"],
-            "original_text": orig["text"], "translation_text": tr["text"] if tr else "",
+            "index": i, "source_indices": src,
+            "start": block.get("start"), "end": block.get("end"),
+            "original_text": original_text, "translation_text": block.get("text") or "",
             "audio": audio_status_by_index.get(i),
         })
     return blocks
 
 
 def apply_block_edits(video_id: str, new_texts: list):
-    """Faqat o'zgargan bo'laklarni qayta ishlash uchun belgilaydi - o'zgarmagan
-    bo'laklarning tayyor audiosi saqlanib qoladi (§10-13)."""
+    """Faqat o'zgargan YAKUNIY bloklarni qayta ishlash uchun belgilaydi -
+    o'zgarmagan bloklarning tayyor audiosi saqlanib qoladi (§10-13). Har bir
+    blokning source_indices/start/end o'zgarishsiz qoladi - faqat matni
+    yangilanadi."""
     video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
-    originals = json.loads(video["transcript_segments"] or "[]")
-    old_translations = json.loads(video["translation_segments"] or "[]")
-    if len(new_texts) != len(originals):
-        raise ValueError(f"Bo'laklar soni mos kelmadi: {len(new_texts)} != {len(originals)}")
+    translations = json.loads(video["translation_segments"] or "[]")
+    if len(new_texts) != len(translations):
+        raise ValueError(f"Bloklar soni mos kelmadi: {len(new_texts)} != {len(translations)}")
 
     changed_indices = []
-    new_translation_segments = []
-    for i, orig in enumerate(originals):
-        old_text = old_translations[i]["text"] if i < len(old_translations) else None
+    for i, block in enumerate(translations):
         new_text = new_texts[i]
-        new_translation_segments.append({"start": orig["start"], "end": orig["end"], "text": new_text})
-        if old_text != new_text:
+        if (block.get("text") or "") != new_text:
             changed_indices.append(i)
+        block["text"] = new_text
 
-    plain = "\n\n".join(t["text"] for t in new_translation_segments)
+    plain = "\n\n".join((t.get("text") or "") for t in translations)
     _update_video(video_id, translation_text=plain,
-                  translation_segments=json.dumps(new_translation_segments, ensure_ascii=False))
+                  translation_segments=json.dumps(translations, ensure_ascii=False))
     write_translation_results(video_id)
-    log(video_id, f"Tarjima tahrirlandi: {len(changed_indices)} ta bo'lak o'zgardi.")
+    log(video_id, f"Tarjima tahrirlandi: {len(changed_indices)} ta blok o'zgardi.")
 
     if not changed_indices:
         return {"changed_count": 0, "audio_requeued": False}
@@ -1181,10 +1304,10 @@ def apply_block_edits(video_id: str, new_texts: list):
                        (new_texts[i], video["tts_job_id"], i))
         db.execute("UPDATE tts_jobs SET status = 'queued', error = NULL WHERE id = ?", (video["tts_job_id"],))
         _update_video(video_id, status="audio_processing", blocked_reason=None, audio_status="generating",
-                      message=f"{len(changed_indices)} ta bo'lak uchun audio qayta yaratilmoqda...")
+                      message=f"{len(changed_indices)} ta blok uchun audio qayta yaratilmoqda...")
         import tts
         tts.TTS_QUEUE.put_nowait(video["tts_job_id"])
-        log(video_id, f"{len(changed_indices)} ta o'zgargan bo'lak uchun audio qayta navbatga qo'yildi.")
+        log(video_id, f"{len(changed_indices)} ta o'zgargan blok uchun audio qayta navbatga qo'yildi.")
         return {"changed_count": len(changed_indices), "audio_requeued": True}
 
     return {"changed_count": len(changed_indices), "audio_requeued": False}

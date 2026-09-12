@@ -348,6 +348,35 @@ async def run_tts_job(job_id: str):
 async def merge_job(job_id: str):
     job = db.fetchone("SELECT * FROM tts_jobs WHERE id = ?", (job_id,))
     segs = db.fetchall("SELECT * FROM tts_segments WHERE job_id = ? ORDER BY seg_index ASC", (job_id,))
+
+    # Merge/render BOSHLANISHIDAN OLDIN: agar bog'langan videoning biror YAKUNIY
+    # tarjima blokida HOZIR matn bo'sh bo'lsa-yu, bu segment ataylab "o'tkazib
+    # yuborish" (skipped, foydalanuvchi oldindan tasdiqlagan) sifatida
+    # belgilanmagan bo'lsa (masalan, qayta-transkripsiya orqali tarjima
+    # tozalangan-u, hali qayta tarjima qilinmagan) - jim bo'shliq bilan sirtli
+    # davom etish o'rniga, aniq xabar bilan TO'XTATILADI.
+    if job and job["video_id"] and not job["for_track"]:
+        v = db.fetchone("SELECT translation_segments FROM videos WHERE id = ?", (job["video_id"],))
+        if v:
+            blocks = json.loads(v["translation_segments"] or "[]")
+            seg_by_index = {s["seg_index"]: s for s in segs}
+            missing_blocks = []
+            for i, block in enumerate(blocks):
+                if (block.get("text") or "").strip():
+                    continue
+                seg = seg_by_index.get(i)
+                if seg is None or seg["status"] != "skipped":
+                    missing_blocks.append(i + 1)
+            if missing_blocks:
+                shown = ", ".join(str(x) for x in missing_blocks[:20])
+                more = " ..." if len(missing_blocks) > 20 else ""
+                msg = (f"{len(missing_blocks)} ta blokning tarjimasi bo'sh ({shown}{more}) - audio/video "
+                       "yig'ishdan oldin ularni to'ldiring yoki ataylab o'tkazib yuborishni tasdiqlang.")
+                _update_job(job_id, status="error", error=msg)
+                db.log_line(job_id, f"XATO (merge oldindan tekshiruv): {msg}")
+                _notify_video(job_id)
+                return
+
     ok_segs = [s for s in segs if s["status"] == "completed" and s["audio_path"]]
     if not ok_segs:
         _update_job(job_id, status="error", error="Birlashtirish uchun tayyor segment yo'q.")

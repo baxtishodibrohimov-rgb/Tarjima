@@ -553,6 +553,31 @@ async def segment_audio_endpoint(video_id: str, index: int):
     return FileResponse(clip_path, media_type="audio/mpeg")
 
 
+@app.get("/api/videos/{video_id}/audio-range")
+async def audio_range_endpoint(video_id: str, start: float, end: float):
+    """Original videodan istalgan [start,end] vaqt oralig'idagi audioni qaytaradi -
+    tarjima blok muharriridagi 'tinglash' tugmasi uchun (bitta yakuniy blok bir
+    nechta original segmentni qamrab olishi mumkin, shuning uchun segment indeksi
+    emas, vaqt oralig'i ishlatiladi)."""
+    v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    if not v:
+        raise HTTPException(404, "Video topilmadi.")
+    if not v["path"] or not Path(v["path"]).exists():
+        raise HTTPException(404, "Original video fayli topilmadi.")
+    if end <= start or start < 0:
+        raise HTTPException(400, "Vaqt oralig'i noto'g'ri.")
+    clip_dir = CHUNKS_DIR / video_id / "listen"
+    clip_dir.mkdir(parents=True, exist_ok=True)
+    clip_path = clip_dir / f"range_{int(start * 1000):09d}_{int(end * 1000):09d}.mp3"
+    loop = asyncio.get_event_loop()
+    try:
+        await loop.run_in_executor(
+            None, transcription.extract_audio_slice, Path(v["path"]), start, end, clip_path)
+    except Exception as e:
+        raise HTTPException(500, f"Audio ajratishda xato: {e}")
+    return FileResponse(clip_path, media_type="audio/mpeg")
+
+
 @app.post("/api/videos/{video_id}/transcript/segments/{index}/retranscribe")
 async def retranscribe_segment_endpoint(video_id: str, index: int, language: str = Form(None)):
     """Bitta aniq segmentni original videodan qayta ajratib, qayta Whisper'ga yuboradi -
@@ -800,9 +825,14 @@ async def translation_preview_file_endpoint(video_id: str, file: UploadFile = Fi
             text = raw.decode("utf-8")
         except UnicodeDecodeError:
             text = raw.decode("cp1251", errors="ignore")
-    segments = _json_or_empty(v["transcript_segments"])
+    # Bo'laklar soni endi YAKUNIY tarjima bloklariga (translation_segments) mos
+    # bo'lishi kerak - "Tahrirlash va audio" jadvali bir necha original segmentni
+    # birlashtirgan bo'lishi mumkin, shuning uchun original transkripsiya emas.
+    translations = _json_or_empty(v["translation_segments"])
+    if not translations:
+        raise HTTPException(400, "Avval tarjima tayyor bo'lishi kerak.")
     try:
-        texts = translation.parse_manual_translation(text, segments)
+        texts = translation.parse_manual_translation(text, translations)
     except ValueError as e:
         raise HTTPException(400, str(e))
     return {"texts": texts}
@@ -837,8 +867,8 @@ async def translation_fix_segments_endpoint(video_id: str, indices: str = Form(.
     if not original_segments:
         raise HTTPException(400, "Original matn segmentlari topilmadi.")
     current_translations = _json_or_empty(v["translation_segments"])
-    if not current_translations or len(current_translations) != len(original_segments):
-        raise HTTPException(400, "Avval tarjima tayyor bo'lishi kerak (segmentlar soni original bilan mos bo'lishi shart).")
+    if not current_translations:
+        raise HTTPException(400, "Avval tarjima tayyor bo'lishi kerak.")
 
     try:
         target_indices = sorted(set(int(x.strip()) - 1 for x in indices.split(",") if x.strip()))
@@ -846,6 +876,28 @@ async def translation_fix_segments_endpoint(video_id: str, indices: str = Form(.
         raise HTTPException(400, "Segment raqamlarini vergul bilan ajratib kiriting (masalan: 3, 15, 42).")
     if not target_indices:
         raise HTTPException(400, "Kamida bitta segment raqami kiriting.")
+
+    # Har bir so'ralgan ORIGINAL segment indeksi qaysi YAKUNIY blokka tegishli
+    # ekanini aniqlaymiz. Agar shu blok bir nechta original segmentni birlashtirgan
+    # bo'lsa (mexanik bo'lingan bitta gap), bitta segmentning vaqt belgisi bo'yicha
+    # qaysi qismini almashtirish kerakligi noaniq bo'lib qoladi - shunday holatda
+    # aniq xato qaytariladi va hech narsa o'zgartirilmaydi.
+    block_by_source_index = {}
+    for bi, block in enumerate(current_translations):
+        src = block.get("source_indices") or [bi]
+        for x in src:
+            block_by_source_index[x] = (bi, len(src))
+
+    merged_conflicts = sorted(
+        idx for idx in target_indices
+        if block_by_source_index.get(idx) and block_by_source_index[idx][1] > 1
+    )
+    if merged_conflicts:
+        raise HTTPException(400, {
+            "message": (f"{', '.join(str(i + 1) for i in merged_conflicts)} - segment(lar) boshqa segment(lar) "
+                        "bilan bitta yakuniy blokka birlashtirilgan - bu yerdan alohida tuzatib bo'lmaydi. "
+                        "\"Tahrirlash va audio\" bo'limidan yakuniy blokni tahrirlang."),
+        })
 
     raw = await file.read()
     try:
@@ -865,12 +917,13 @@ async def translation_fix_segments_endpoint(video_id: str, indices: str = Form(.
             "errors": errors,
         })
 
-    new_texts = [t["text"] if isinstance(t, dict) else t for t in current_translations]
+    new_block_texts = [b.get("text") or "" for b in current_translations]
     for idx, text in matched.items():
-        new_texts[idx] = text
+        bi, _ = block_by_source_index[idx]
+        new_block_texts[bi] = text
 
     try:
-        result = worker.apply_block_edits(video_id, new_texts)
+        result = worker.apply_block_edits(video_id, new_block_texts)
     except ValueError as e:
         raise HTTPException(400, str(e))
     return {"ok": True, "fixed_indices": [i + 1 for i in matched.keys()], **result}

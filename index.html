@@ -2203,15 +2203,38 @@ async function fixSegmentsByTimestamp(id) {
 
 function renderBlockRow(videoId, b, i) {
   const audioLabel = b.audio ? ({ completed: '✅', pending: '⏳', running: '⏳', error: '❌' }[b.audio.status] || '') : '';
+  const srcIndices = b.source_indices || [i];
+  const isMerged = srcIndices.length > 1;
+  // Blok bir nechta original segmentni birlashtirgan bo'lsa, "shu bitta segmentni
+  // qayta Whisper'ga yuborish" tugmasi ma'nosiz bo'lib qoladi (qaysi qismini
+  // deyish noaniq) - shunday holatda tugma ko'rsatilmaydi, "Original matn"
+  // bo'limidan tegishli segment(lar)ni alohida qayta yuborish mumkin.
+  const mergedNote = isMerged
+    ? `<div class="hint" style="font-size:10px; line-height:1.3; margin-top:2px;">${srcIndices.length} segment birlashgan</div>`
+    : '';
+  const retranscribeBtn = isMerged ? '' : `
+        <button class="small-btn" style="margin-top:2px; font-size:10.5px; padding:2px 6px;" onclick="retranscribeSegment('${videoId}', ${srcIndices[0]}, this)" title="Original matnni Whisper'ga qayta yuborib yangilaydi, tarjimasi tozalanadi">🔁</button>`;
   return `
     <div class="block-editor-row" id="block-row-${videoId}-${i}">
-      <div class="bidx">${i + 1} ${audioLabel}<br>
-        <button class="small-btn" style="margin-top:4px; font-size:10.5px; padding:2px 6px;" onclick="playSegmentAudio('${videoId}', ${i}, this)" title="Bu bo'lakni tinglash">🔊</button>
-        <button class="small-btn" style="margin-top:2px; font-size:10.5px; padding:2px 6px;" onclick="retranscribeSegment('${videoId}', ${i}, this)" title="Original matnni Whisper'ga qayta yuborib yangilaydi, tarjimasi tozalanadi">🔁</button>
+      <div class="bidx">${i + 1} ${audioLabel}${mergedNote}<br>
+        <button class="small-btn" style="margin-top:4px; font-size:10.5px; padding:2px 6px;" onclick="playBlockRangeAudio('${videoId}', ${b.start}, ${b.end}, this)" title="Bu blokni tinglash">🔊</button>${retranscribeBtn}
       </div>
       <textarea readonly id="block-orig-${videoId}-${i}">${escapeHtml(b.original_text)}</textarea>
       <textarea id="block-text-${videoId}-${i}" oninput="markBlockChanged('${videoId}', ${i})">${escapeHtml(b.translation_text)}</textarea>
     </div>`;
+}
+
+function playBlockRangeAudio(videoId, start, end, btnEl) {
+  const url = `${API_BASE}/api/videos/${videoId}/audio-range?start=${start}&end=${end}`;
+  const original = btnEl.textContent;
+  btnEl.textContent = '…';
+  btnEl.disabled = true;
+  const audio = new Audio(url);
+  const reset = () => { btnEl.textContent = original; btnEl.disabled = false; };
+  audio.addEventListener('playing', () => { btnEl.textContent = '⏸'; });
+  audio.addEventListener('ended', reset);
+  audio.addEventListener('error', () => { reset(); alert("Audio yuklab bo'lmadi."); });
+  audio.play().catch(e => { reset(); alert('Xato: ' + e.message); });
 }
 
 function markBlockChanged(videoId, i) {
@@ -2385,21 +2408,27 @@ async function submitRetryModal() {
   }
 }
 
+async function refreshBlockEditorRows(videoId) {
+  const rowsEl = document.getElementById(`blockEditorRows-${videoId}`);
+  if (!rowsEl) return; // "Tahrirlash va audio" paneli hozir ochiq emas
+  try {
+    blockEditorData = await apiFetch(`/api/videos/${videoId}/translation/blocks`);
+    rowsEl.innerHTML = blockEditorData.map((b, i) => renderBlockRow(videoId, b, i)).join('');
+  } catch (e) { /* panel keyinroq qayta ochilganda o'zi yangilanadi */ }
+}
+
 function applyRetranscribeSegmentResult(videoId, index, r, btnEl) {
   if (transcriptBlockEditorData[index]) {
     transcriptBlockEditorData[index].text = r.text;
     const ta = document.getElementById(`t-block-text-${videoId}-${index}`);
     if (ta) { ta.value = r.text; markTranscriptBlockChanged(videoId, index); }
   }
-  if (blockEditorData[index]) {
-    blockEditorData[index].original_text = r.text;
-    const origTa = document.getElementById(`block-orig-${videoId}-${index}`);
-    if (origTa) origTa.value = r.text;
-    if (r.translation_cleared) {
-      blockEditorData[index].translation_text = '';
-      const trTa = document.getElementById(`block-text-${videoId}-${index}`);
-      if (trTa) { trTa.value = ''; markBlockChanged(videoId, index); }
-    }
+  if (r.invalidated_blocks) {
+    // Bu original segmentni qamrab olgan yakuniy tarjima blok(lar)i tozalandi -
+    // blok chegaralari original indeks bilan bir xil bo'lmasligi mumkin, shuning
+    // uchun bitta qatorni "nuqta bilan" yangilash o'rniga jadval to'liq
+    // yangilanadi (agar hozir ochiq bo'lsa).
+    refreshBlockEditorRows(videoId);
   }
   const chunkSegTa = document.getElementById(`c-seg-text-${videoId}-${index}`);
   if (chunkSegTa) chunkSegTa.value = r.text;
