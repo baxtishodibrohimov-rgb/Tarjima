@@ -248,6 +248,10 @@ async def pwa_service_worker():
 # ---------------------------------------------------------------------------
 
 def video_public(v: dict) -> dict:
+    primary_tts_provider = None
+    if v["tts_job_id"]:
+        pj = db.fetchone("SELECT provider FROM tts_jobs WHERE id = ?", (v["tts_job_id"],))
+        primary_tts_provider = pj["provider"] if pj else None
     return {
         "id": v["id"], "original_name": v["original_name"], "file_size": v["file_size"],
         "duration": v["duration"], "status": v["status"], "blocked_reason": v["blocked_reason"],
@@ -266,6 +270,12 @@ def video_public(v: dict) -> dict:
         "has_thumbnail": bool(v["thumbnail_path"]),
         "flagged_issues_count": len(json.loads(v["flagged_issues"])) if v["flagged_issues"] else 0,
         "created_at": v["created_at"], "updated_at": v["updated_at"],
+        "primary_tts_provider": primary_tts_provider,
+        # Video 'completed' bo'lgach ikkinchi provayder bilan yaratilgan
+        # qo'shimcha audio/video track(lar) - odatda bo'sh ro'yxat.
+        "audio_tracks": [dict(r) for r in db.fetchall(
+            "SELECT provider, audio_status, final_video_status, error FROM audio_tracks WHERE video_id = ?",
+            (v["id"],))] if v["status"] == "completed" else [],
     }
 
 
@@ -902,6 +912,53 @@ async def create_audio_endpoint(
     return {"ok": True, "tts_job_id": job_id}
 
 
+@app.get("/api/videos/{video_id}/tracks")
+async def video_tracks_endpoint(video_id: str):
+    """Video 'completed' bo'lgach ikkinchi provayder bilan yaratilgan
+    qo'shimcha audio/video track(lar)ini qaytaradi (frontend pleyer va
+    Botga yuborish tanlovi uchun)."""
+    v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    if not v:
+        raise HTTPException(404, "Video topilmadi.")
+    rows = db.fetchall("SELECT provider, audio_status, final_video_status, error, updated_at "
+                        "FROM audio_tracks WHERE video_id = ? ORDER BY created_at ASC", (video_id,))
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/videos/{video_id}/audio/track")
+async def create_audio_track_endpoint(
+    video_id: str,
+    provider: str = Form(...),
+    voice: str = Form(""),
+    mood: str = Form(""),
+    speed: float = Form(1.0),
+    instructions: str = Form(""),
+    aisha_key: str = Form(""),
+    stretch_to_fit: bool = Form(True),
+    skip_empty: bool = Form(False),
+):
+    """Asosiy video 'completed' bo'lgach, IKKINCHI provayder bilan qo'shimcha
+    audio+video yaratishni boshlaydi - asosiy natijaga tegmaydi."""
+    v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    if not v:
+        raise HTTPException(404, "Video topilmadi.")
+    segments = _json_or_empty(v["translation_segments"])
+    empty_indices = [i for i, s in enumerate(segments) if not (s.get("text") or "").strip()]
+    if empty_indices and not skip_empty:
+        raise HTTPException(409, {"kind": "empty_segments", "count": len(empty_indices),
+                                   "indices": [i + 1 for i in empty_indices[:20]]})
+    if provider == "aisha" and not aisha_key.strip():
+        raise HTTPException(400, "Aisha API kalit kiritilmagan.")
+    if provider == "openai" and not keys_manager.has_any_active_key():
+        raise HTTPException(400, "Ishlaydigan OpenAI API kalit topilmadi. Avval API kalit qo'shing.")
+    try:
+        job_id = worker.start_secondary_track(video_id, provider, voice, mood, speed, instructions,
+                                               aisha_key.strip(), stretch_to_fit)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    return {"ok": True, "tts_job_id": job_id}
+
+
 @app.post("/api/videos/{video_id}/render")
 async def render_endpoint(video_id: str):
     v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
@@ -954,12 +1011,29 @@ async def _send_video_file_to_telegram(video_id: str, video_path: str, title: st
 
 
 @app.post("/api/videos/{video_id}/send-to-bot")
-async def send_to_bot_endpoint(video_id: str, request: Request):
+async def send_to_bot_endpoint(video_id: str, request: Request, provider: str = None):
+    """provider berilmasa (eski, oddiy holat) - asosiy yakuniy video yuboriladi,
+    xuddi avvalgidek. provider='aisha'/'openai' berilsa - shu QO'SHIMCHA track
+    videosi yuboriladi (video 'completed' bo'lgach ikkinchi provayder bilan
+    yaratilgan bo'lsa)."""
     v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
     if not v:
         raise HTTPException(404, "Video topilmadi.")
-    if v["status"] != "completed" or not v["final_video_path"]:
+    if v["status"] != "completed":
         raise HTTPException(400, "Avval yakuniy video tayyor bo'lishi kerak.")
+
+    video_path = v["final_video_path"]
+    title_suffix = ""
+    if provider:
+        track = db.fetchone("SELECT * FROM audio_tracks WHERE video_id = ? AND provider = ?",
+                             (video_id, provider))
+        if not track or track["final_video_status"] != "ready" or not track["final_video_path"]:
+            raise HTTPException(400, "Bu provayder uchun yakuniy video hali tayyor emas.")
+        video_path = track["final_video_path"]
+        title_suffix = f" ({provider})"
+    if not video_path:
+        raise HTTPException(400, "Avval yakuniy video tayyor bo'lishi kerak.")
+
     idea_flow_ok = bool(DARSLIK_API_KEY and IDEA_FLOW_URL)
     telegram_ok = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
     if not idea_flow_ok and not telegram_ok:
@@ -968,11 +1042,13 @@ async def send_to_bot_endpoint(video_id: str, request: Request):
 
     if idea_flow_ok:
         download_url = f"{str(request.base_url).rstrip('/')}/api/videos/{video_id}/final-download"
+        if provider:
+            download_url += f"?provider={provider}"
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 f"{IDEA_FLOW_URL.rstrip('/')}/api/public/darslik/videos",
                 headers={"X-Darslik-Api-Key": DARSLIK_API_KEY, "Content-Type": "application/json"},
-                json={"title": v["original_name"], "url": download_url},
+                json={"title": v["original_name"] + title_suffix, "url": download_url},
                 timeout=30,
             )
         if resp.status_code >= 400:
@@ -982,7 +1058,7 @@ async def send_to_bot_endpoint(video_id: str, request: Request):
     if telegram_ok:
         db.execute("UPDATE videos SET telegram_send_status = 'sending', telegram_send_error = NULL WHERE id = ?",
                    (video_id,))
-        asyncio.create_task(_send_video_file_to_telegram(video_id, v["final_video_path"], v["original_name"]))
+        asyncio.create_task(_send_video_file_to_telegram(video_id, video_path, v["original_name"] + title_suffix))
 
     return {"ok": True}
 
@@ -1582,11 +1658,19 @@ async def video_results(video_id: str):
 
 
 @app.get("/api/videos/{video_id}/final-download")
-async def download_final_video(video_id: str, request: Request):
+async def download_final_video(video_id: str, request: Request, provider: str = None):
     v = _ensure_video(video_id)
-    if not v["final_video_path"] or not Path(v["final_video_path"]).exists():
+    video_path = v["final_video_path"]
+    if provider:
+        track = db.fetchone(
+            "SELECT final_video_path, final_video_status FROM audio_tracks WHERE video_id = ? AND provider = ?",
+            (video_id, provider))
+        if not track or track["final_video_status"] != "ready" or not track["final_video_path"]:
+            raise HTTPException(404, "Bu provayder uchun yakuniy video topilmadi.")
+        video_path = track["final_video_path"]
+    if not video_path or not Path(video_path).exists():
         raise HTTPException(404, "Yakuniy video topilmadi.")
-    return range_file_response(request, Path(v["final_video_path"]), "video/mp4")
+    return range_file_response(request, Path(video_path), "video/mp4")
 
 
 @app.get("/api/videos/{video_id}/original-stream")
@@ -1611,13 +1695,19 @@ async def subtitles_original_vtt(video_id: str):
 
 
 @app.get("/api/videos/{video_id}/subtitles/uz.vtt")
-async def subtitles_uz_vtt(video_id: str):
+async def subtitles_uz_vtt(video_id: str, provider: str = None):
     # "uz" video treki - freeze bo'lsa - kadr kutib turishi bilan cho'zilgan yakuniy
     # videodir, shuning uchun mos keladigan subtitr ham freeze bilan moslashtirilgan
     # variant (vtt_uz_final) bo'lishi kerak, agar u mavjud bo'lsa. "Original" trek
     # hech qachon freeze bilan o'zgartirilmaydi, shu sabab uning subtitri doim manba
     # (vtt_original) bo'lib qoladi - subtitles_original_vtt bunga tegilmagan.
-    r = _result_by_kind(video_id, "vtt_uz_final") or _result_by_kind(video_id, "vtt_uz")
+    # provider berilsa - qo'shimcha (video 'completed' bo'lgach ikkinchi provayder
+    # bilan yaratilgan) trekning O'ZINING freeze bilan moslashtirilgan varianti
+    # ishlatiladi (uning freeze nuqtalari asosiy trekdan farq qilishi mumkin).
+    if provider:
+        r = _result_by_kind(video_id, f"vtt_uz_final_{provider}") or _result_by_kind(video_id, "vtt_uz")
+    else:
+        r = _result_by_kind(video_id, "vtt_uz_final") or _result_by_kind(video_id, "vtt_uz")
     if not r or not Path(r["path"]).exists():
         raise HTTPException(404, "O'zbekcha subtitr topilmadi.")
     return FileResponse(r["path"], media_type="text/vtt")

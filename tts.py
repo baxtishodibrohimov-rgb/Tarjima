@@ -147,15 +147,16 @@ async def openai_tts_generate_one(client: httpx.AsyncClient, text: str, voice: s
 
 def create_job(title: str, provider: str, segments: list, voice: str = "", mood: str = "",
                speed: float = 1.0, instructions: str = "", aisha_key: str = "",
-               stretch_to_fit: bool = True, video_id: str = None) -> str:
+               stretch_to_fit: bool = True, video_id: str = None, for_track: bool = False) -> str:
     job_id = db.new_id()
     aisha_enc = keys_manager.encrypt_raw(aisha_key) if aisha_key else None
     db.execute(
         """INSERT INTO tts_jobs (id, title, provider, voice, mood, speed, instructions,
-           aisha_key_encrypted, stretch_to_fit, status, total_segments, completed_segments, created_at, video_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?)""",
+           aisha_key_encrypted, stretch_to_fit, status, total_segments, completed_segments, created_at, video_id,
+           for_track)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?)""",
         (job_id, title or "TTS ishi", provider, voice, mood, speed, instructions,
-         aisha_enc, 1 if stretch_to_fit else 0, len(segments), db.now(), video_id),
+         aisha_enc, 1 if stretch_to_fit else 0, len(segments), db.now(), video_id, 1 if for_track else 0),
     )
     for i, seg in enumerate(segments):
         # Matni bo'sh bo'lak - foydalanuvchi ataylab "tarjima qilmayman, o'tkazib

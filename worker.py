@@ -36,6 +36,10 @@ from storage import (CHUNKS_DIR, RESULTS_DIR, MAX_WHISPER_CONCURRENCY,
 SEGMENT_QUEUE: asyncio.Queue = asyncio.Queue()
 TRANSCRIBE_QUEUE: asyncio.Queue = asyncio.Queue()
 RENDER_QUEUE: asyncio.Queue = asyncio.Queue()
+# (video_id, provider) juftliklarini qabul qiladi - video 'completed' bo'lgach
+# qo'shimcha provayder bilan yaratilgan track uchun (asosiy RENDER_QUEUE'dan
+# ALOHIDA, chunki u faqat video_id oladi va asosiy videoni yangilaydi).
+TRACK_RENDER_QUEUE: asyncio.Queue = asyncio.Queue()
 
 PAUSE_FLAGS: dict = {}
 CANCEL_FLAGS: dict = {}
@@ -1205,60 +1209,70 @@ def enqueue_render(video_id: str) -> bool:
     return True
 
 
+async def _mux_render_core(video: dict, audio_path: Path, freeze_points: list, out_path: Path,
+                            tmp_out_path: Path, log_prefix: str = ""):
+    """Umumiy render yadrosi: audio_path + freeze_points asosida video["path"]dan
+    yakuniy videoni tmp_out_path'ga yig'adi, muvaffaqiyatli bo'lsa out_path'ga
+    ATOMIK ko'chiradi (shuning uchun jarayon o'rtada xato bilan to'xtasa ham,
+    avvalgi sog'lom yakuniy video hech qachon yarim buzilgan holatda
+    qolmaydi/almashtirilmaydi). Ham asosiy render_video(), ham video
+    'completed' bo'lgach qo'shimcha provayder bilan yaratiladigan
+    render_track_video() shu bitta yadroni ishlatadi - ikkalasida ham bir xil
+    xavfsizlik va freeze/-t mantig'i qo'llanadi."""
+    video_id = video["id"]
+    if not audio_path or not audio_path.exists():
+        raise RuntimeError("Audio fayl topilmadi. Avval audio yarating.")
+    audio_duration = transcription.get_duration_seconds(audio_path)
+    if audio_duration < 1.0:
+        raise RuntimeError(
+            f"Audio fayl bo'sh yoki juda qisqa ({audio_duration:.2f}s). Audio faylni qayta yarating."
+        )
+    tmp_out_path.unlink(missing_ok=True)
+
+    active_freeze_points = [f for f in freeze_points if f.get("duration", 0) > 0.05]
+    if active_freeze_points:
+        log(video_id, f"{log_prefix}Video yig'ilmoqda: {len(active_freeze_points)} ta joyda audio uzunroq, "
+                       f"video shu nuqtalarda kutib turadi.")
+    else:
+        log(video_id, f"{log_prefix}Video va audio ffmpeg orqali birlashtirilmoqda (fayl hajmiga qarab bir necha "
+                       f"daqiqa vaqt olishi mumkin)...")
+    freeze_work_dir = CHUNKS_DIR / video_id / f"freeze_work_{tmp_out_path.stem}"
+
+    # Yakuniy fayl aniq shu davomiylikda chiqishi kerak: asl video davomiyligi +
+    # freeze'lar yig'indisi. Bu "-shortest" o'rniga "-t" bilan ishlatiladi -
+    # qisqaroq audio videoni kesib qo'ymaydi, va ortiqcha uzunlikdan ham himoya qiladi.
+    video_duration = float(video["duration"] or 0) or transcription.get_duration_seconds(Path(video["path"]))
+    target_duration = None
+    if video_duration and video_duration > 0:
+        target_duration = video_duration + transcription.total_freeze_duration(active_freeze_points)
+        log(video_id, f"{log_prefix}DEBUG render: video_duration={video_duration:.3f}s "
+                       f"freeze_total={transcription.total_freeze_duration(active_freeze_points):.3f}s "
+                       f"target_duration={target_duration:.3f}s")
+
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(
+        None, transcription.mux_video_audio_with_freezes,
+        Path(video["path"]), audio_path, tmp_out_path, freeze_points, freeze_work_dir, target_duration)
+
+    tmp_out_path.replace(out_path)  # atomik ko'chirish - endigina yakuniy video hisoblanadi
+
+
 async def render_video(video_id: str):
     video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
     if not video:
         return
     tmp_out_path = None
     try:
-        if not video["audio_path"] or not Path(video["audio_path"]).exists():
-            raise RuntimeError("Audio fayl topilmadi. Avval audio yarating.")
-        audio_duration = transcription.get_duration_seconds(Path(video["audio_path"]))
-        if audio_duration < 1.0:
-            raise RuntimeError(
-                f"Audio fayl bo'sh yoki juda qisqa ({audio_duration:.2f}s). "
-                f"'Audio' bosqichida audio faylni qayta yarating."
-            )
         out_dir = RESULTS_DIR / video_id
         out_dir.mkdir(parents=True, exist_ok=True)
         base = safe_name(Path(video["original_name"]).stem) or "video"
         out_path = out_dir / f"{base}_yakuniy.mp4"
-        # Avval VAQTINCHALIK faylga yig'iladi - ffmpeg muvaffaqiyatli tugab,
-        # natija tekshirilgandan keyingina yakuniy joyga ko'chiriladi. Shu bilan
-        # qayta yig'ish (masalan "Videoni qayta yig'ish") o'rtada xato bilan
-        # to'xtasa ham, avvalgi sog'lom yakuniy video hech qachon yarim
-        # buzilgan holatda qolmaydi/almashtirilmaydi.
         tmp_out_path = out_dir / f"{base}_yakuniy.rendering.mp4"
-        tmp_out_path.unlink(missing_ok=True)
 
         freeze_points = json.loads(video["freeze_points"]) if video["freeze_points"] else []
-        active_freeze_points = [f for f in freeze_points if f.get("duration", 0) > 0.05]
-        if active_freeze_points:
-            log(video_id, f"Video yig'ilmoqda: {len(active_freeze_points)} ta joyda audio uzunroq, "
-                           f"video shu nuqtalarda kutib turadi.")
-        else:
-            log(video_id, "Video va audio ffmpeg orqali birlashtirilmoqda (fayl hajmiga qarab bir necha "
-                           "daqiqa vaqt olishi mumkin)...")
-        freeze_work_dir = CHUNKS_DIR / video_id / "freeze_work"
+        audio_path = Path(video["audio_path"]) if video["audio_path"] else None
+        await _mux_render_core(video, audio_path, freeze_points, out_path, tmp_out_path)
 
-        # Yakuniy fayl aniq shu davomiylikda chiqishi kerak: asl video davomiyligi +
-        # freeze'lar yig'indisi. Bu "-shortest" o'rniga "-t" bilan ishlatiladi -
-        # qisqaroq audio videoni kesib qo'ymaydi, va ortiqcha uzunlikdan ham himoya qiladi.
-        video_duration = float(video["duration"] or 0) or transcription.get_duration_seconds(Path(video["path"]))
-        target_duration = None
-        if video_duration and video_duration > 0:
-            target_duration = video_duration + transcription.total_freeze_duration(active_freeze_points)
-            log(video_id, f"DEBUG render: video_duration={video_duration:.3f}s "
-                           f"freeze_total={transcription.total_freeze_duration(active_freeze_points):.3f}s "
-                           f"target_duration={target_duration:.3f}s")
-
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(
-            None, transcription.mux_video_audio_with_freezes,
-            Path(video["path"]), Path(video["audio_path"]), tmp_out_path, freeze_points, freeze_work_dir,
-            target_duration)
-
-        tmp_out_path.replace(out_path)  # atomik ko'chirish - endigina yakuniy video hisoblanadi
         _update_video(video_id, status="completed", blocked_reason=None, final_video_status="ready",
                       final_video_path=str(out_path), message="Yakuniy video tayyor.", error=None)
         log(video_id, "Yakuniy video tayyor.")
@@ -1291,6 +1305,12 @@ def sync_video_from_tts_job(job_id: str):
     eski (allaqachon almashtirilgan) ish yangi natijani bosib qo'yishi mumkin edi."""
     job = db.fetchone("SELECT * FROM tts_jobs WHERE id = ?", (job_id,))
     if not job or not job["video_id"]:
+        return
+    if job["for_track"]:
+        # Bu asosiy (primary) audio EMAS - video 'completed' bo'lgach ikkinchi
+        # provayder bilan qo'shimcha yaratilgan track. videos.* (asosiy)
+        # maydonlarga UMUMAN tegilmaydi - faqat audio_tracks jadvali yangilanadi.
+        _sync_audio_track_from_job(job)
         return
     video_id = job["video_id"]
     video = db.fetchone("SELECT tts_job_id FROM videos WHERE id = ?", (video_id,))
@@ -1337,6 +1357,184 @@ def sync_video_from_tts_job(job_id: str):
 
 
 # ---------------------------------------------------------------------------
+#     QO'SHIMCHA AUDIO/VIDEO TRACK (video 'completed' bo'lgach IKKINCHI
+#     provayder bilan yaratiladi - asosiy natijaga UMUMAN tegmaydi)
+# ---------------------------------------------------------------------------
+
+PROVIDER_LABELS = {"aisha": "Aisha", "openai": "OpenAI"}
+
+
+def write_track_final_subtitles(video_id: str, provider: str, freeze_points: list):
+    """write_final_subtitles() bilan bir xil mantiq, lekin QO'SHIMCHA track
+    uchun - natija fayllari alohida 'kind' bilan saqlanadi (masalan
+    'vtt_uz_final_openai'), asosiy natijalarga tegilmaydi."""
+    srt_kind = f"srt_uz_final_{provider}"
+    vtt_kind = f"vtt_uz_final_{provider}"
+    db.execute("DELETE FROM results WHERE video_id = ? AND kind IN (?, ?)", (video_id, srt_kind, vtt_kind))
+    active = [f for f in (freeze_points or []) if f.get("duration", 0) > 0.05]
+    if not active:
+        return
+    video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    if not video:
+        return
+    translation_segments = json.loads(video["translation_segments"] or "[]")
+    if not translation_segments:
+        return
+    adjusted = transcription.apply_freeze_to_segments(translation_segments, active)
+    srt_text = transcription.build_srt(adjusted)
+    vtt_text = transcription.build_vtt(adjusted)
+    out_dir = RESULTS_DIR / video_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    base = safe_name(Path(video["original_name"]).stem) or "natija"
+    srt_path = out_dir / f"{base}.uz.final.{provider}.srt"
+    vtt_path = out_dir / f"{base}.uz.final.{provider}.vtt"
+    srt_path.write_text(srt_text, encoding="utf-8")
+    vtt_path.write_text(vtt_text, encoding="utf-8")
+    for kind, path in ((srt_kind, srt_path), (vtt_kind, vtt_path)):
+        db.execute(
+            "INSERT INTO results (id, video_id, kind, filename, path, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (db.new_id(), video_id, kind, path.name, str(path), db.now()))
+
+
+def start_secondary_track(video_id: str, provider: str, voice: str = "", mood: str = "", speed: float = 1.0,
+                           instructions: str = "", aisha_key: str = "", stretch_to_fit: bool = True) -> str:
+    """Video 'completed' bo'lgach, IKKINCHI provayder bilan qo'shimcha
+    audio+video yaratishni boshlaydi - asosiy (birinchi) natijaga UMUMAN
+    tegmaydi (videos.* maydonlar o'zgarishsiz qoladi)."""
+    video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    if not video:
+        raise ValueError("Video topilmadi.")
+    if video["status"] != "completed":
+        raise ValueError("Avval asosiy video tayyor bo'lishi kerak.")
+    primary_job = (db.fetchone("SELECT provider FROM tts_jobs WHERE id = ?", (video["tts_job_id"],))
+                   if video["tts_job_id"] else None)
+    if primary_job and primary_job["provider"] == provider:
+        raise ValueError("Bu provayder bilan asosiy audio allaqachon shu video uchun ishlatilgan.")
+    existing_track = db.fetchone("SELECT * FROM audio_tracks WHERE video_id = ? AND provider = ?",
+                                  (video_id, provider))
+    if existing_track and existing_track["audio_status"] == "generating":
+        raise ValueError("Bu provayder uchun audio hozir allaqachon yaratilmoqda.")
+    segments = json.loads(video["translation_segments"] or "[]")
+    if not segments:
+        raise ValueError("Tarjima segmentlari topilmadi.")
+
+    import tts
+    job_id = tts.create_job(video["original_name"], provider, segments, voice, mood, speed, instructions,
+                             aisha_key, stretch_to_fit, video_id=video_id, for_track=True)
+    now = db.now()
+    if existing_track:
+        db.execute("UPDATE audio_tracks SET tts_job_id = ?, audio_status = 'generating', audio_path = NULL, "
+                   "final_video_path = NULL, final_video_status = 'none', freeze_points = NULL, error = NULL, "
+                   "updated_at = ? WHERE id = ?", (job_id, now, existing_track["id"]))
+    else:
+        db.execute(
+            "INSERT INTO audio_tracks (id, video_id, provider, tts_job_id, audio_status, final_video_status, "
+            "created_at, updated_at) VALUES (?, ?, ?, ?, 'generating', 'none', ?, ?)",
+            (db.new_id(), video_id, provider, job_id, now, now))
+    log(video_id, f"Qo'shimcha audio ({PROVIDER_LABELS.get(provider, provider)}) yaratish boshlandi.")
+    return job_id
+
+
+def _sync_audio_track_from_job(job: dict):
+    """Qo'shimcha (video 'completed' bo'lgach ikkinchi provayder bilan
+    yaratilgan) TTS ish holati o'zgarganda audio_tracks jadvalini yangilaydi -
+    asosiy videos.* maydonlarga UMUMAN tegmaydi."""
+    video_id = job["video_id"]
+    track = db.fetchone("SELECT * FROM audio_tracks WHERE video_id = ? AND provider = ?",
+                         (video_id, job["provider"]))
+    if not track or track["tts_job_id"] != job["id"]:
+        log(video_id, f"Eski qo'shimcha audio ish ({job['id']}) tugadi, lekin track endi boshqa ishga "
+                       f"bog'langan - e'tiborsiz qoldirildi.")
+        return
+    label = PROVIDER_LABELS.get(job["provider"], job["provider"])
+    if job["status"] == "completed":
+        freeze_points = []
+        if job["freeze_points"]:
+            try:
+                freeze_points = json.loads(job["freeze_points"])
+            except Exception:
+                pass
+        db.execute("UPDATE audio_tracks SET audio_status = 'ready', audio_path = ?, freeze_points = ?, "
+                   "error = NULL, updated_at = ? WHERE id = ?",
+                   (job["result_path"], job["freeze_points"], db.now(), track["id"]))
+        write_track_final_subtitles(video_id, job["provider"], freeze_points)
+        log(video_id, f"[{label}] Qo'shimcha audio tayyor.")
+        full_video = db.fetchone("SELECT path FROM videos WHERE id = ?", (video_id,))
+        if full_video and full_video["path"] and Path(full_video["path"]).exists() and job["result_path"]:
+            enqueue_track_render(video_id, job["provider"])
+        else:
+            db.execute("UPDATE audio_tracks SET final_video_status = 'error', error = ?, updated_at = ? "
+                       "WHERE id = ?", ("Original video fayli topilmadi.", db.now(), track["id"]))
+    elif job["status"] == "paused_api_key":
+        db.execute("UPDATE audio_tracks SET audio_status = 'error', error = ?, updated_at = ? WHERE id = ?",
+                   ("Ishlaydigan OpenAI API kalit topilmadi.", db.now(), track["id"]))
+        log(video_id, f"[{label}] Qo'shimcha audio: API kalit topilmadi.")
+    elif job["status"] == "error":
+        db.execute("UPDATE audio_tracks SET audio_status = 'error', error = ?, updated_at = ? WHERE id = ?",
+                   (job["error"] or "", db.now(), track["id"]))
+        log(video_id, f"[{label}] Qo'shimcha audio yaratishda xato: {job['error']}")
+    elif job["status"] == "cancelled":
+        db.execute("UPDATE audio_tracks SET audio_status = 'error', error = ?, updated_at = ? WHERE id = ?",
+                   ("Bekor qilindi.", db.now(), track["id"]))
+
+
+def enqueue_track_render(video_id: str, provider: str) -> bool:
+    """Qo'shimcha (track) yakuniy videoni yig'ish navbatiga qo'yadi. ALLAQACHON
+    shu track uchun render ketayotgan bo'lsa, qayta navbatga qo'ymaydi va
+    False qaytaradi - parallel ikkita render'ning oldini olish uchun."""
+    track = db.fetchone("SELECT * FROM audio_tracks WHERE video_id = ? AND provider = ?", (video_id, provider))
+    if not track:
+        return False
+    if track["final_video_status"] == "generating":
+        return False
+    db.execute("UPDATE audio_tracks SET final_video_status = 'generating', error = NULL, updated_at = ? "
+               "WHERE id = ?", (db.now(), track["id"]))
+    log(video_id, f"Qo'shimcha video ({PROVIDER_LABELS.get(provider, provider)}) yig'ish navbatga qo'yildi.")
+    TRACK_RENDER_QUEUE.put_nowait((video_id, provider))
+    return True
+
+
+async def render_track_video(video_id: str, provider: str):
+    track = db.fetchone("SELECT * FROM audio_tracks WHERE video_id = ? AND provider = ?", (video_id, provider))
+    video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    if not track or not video:
+        return
+    label = PROVIDER_LABELS.get(provider, provider)
+    tmp_out_path = None
+    try:
+        out_dir = RESULTS_DIR / video_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+        base = safe_name(Path(video["original_name"]).stem) or "video"
+        out_path = out_dir / f"{base}_yakuniy_{provider}.mp4"
+        tmp_out_path = out_dir / f"{base}_yakuniy_{provider}.rendering.mp4"
+
+        freeze_points = json.loads(track["freeze_points"]) if track["freeze_points"] else []
+        audio_path = Path(track["audio_path"]) if track["audio_path"] else None
+        await _mux_render_core(video, audio_path, freeze_points, out_path, tmp_out_path, log_prefix=f"[{label}] ")
+
+        db.execute("UPDATE audio_tracks SET final_video_status = 'ready', final_video_path = ?, error = NULL, "
+                   "updated_at = ? WHERE id = ?", (str(out_path), db.now(), track["id"]))
+        log(video_id, f"[{label}] Qo'shimcha yakuniy video tayyor.")
+    except Exception as e:
+        if tmp_out_path:
+            tmp_out_path.unlink(missing_ok=True)
+        db.execute("UPDATE audio_tracks SET final_video_status = 'error', error = ?, updated_at = ? WHERE id = ?",
+                   (str(e), db.now(), track["id"]))
+        log(video_id, f"XATO ([{label}] qo'shimcha render): {e}\n{traceback.format_exc()[-400:]}")
+
+
+async def track_render_consumer():
+    while True:
+        video_id, provider = await TRACK_RENDER_QUEUE.get()
+        try:
+            await render_track_video(video_id, provider)
+        except Exception as e:
+            log(video_id, f"XATO ([{provider}] track render consumer): {e}\n{traceback.format_exc()[-500:]}")
+        finally:
+            TRACK_RENDER_QUEUE.task_done()
+
+
+# ---------------------------------------------------------------------------
 #                          SERVER RESTART - QAYTA TIKLASH
 # ---------------------------------------------------------------------------
 
@@ -1365,10 +1563,17 @@ async def recover_and_start():
         log(v["id"], "Server qayta ishga tushdi - video yig'ish qayta boshlanadi.")
         RENDER_QUEUE.put_nowait(v["id"])
 
+    interrupted_track_render = db.fetchall(
+        "SELECT video_id, provider FROM audio_tracks WHERE final_video_status = 'generating'")
+    for t in interrupted_track_render:
+        log(t["video_id"], f"Server qayta ishga tushdi - [{t['provider']}] qo'shimcha video yig'ish qayta boshlanadi.")
+        TRACK_RENDER_QUEUE.put_nowait((t["video_id"], t["provider"]))
+
     for _ in range(MAX_ACTIVE_VIDEO_JOBS):
         asyncio.create_task(segment_consumer())
         asyncio.create_task(transcribe_consumer())
         asyncio.create_task(render_consumer())
+        asyncio.create_task(track_render_consumer())
 
     import tts
     await tts.recover_and_start()

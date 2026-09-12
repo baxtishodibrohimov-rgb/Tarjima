@@ -161,6 +161,27 @@ def init_db():
                 created_at TEXT
             );
 
+            -- Asosiy (birinchi yaratilgan) audio/video har doim videos jadvalining
+            -- o'zidagi eski ustunlarda (tts_job_id/audio_path/final_video_path/...)
+            -- saqlanadi - ESKI VIDEOLAR VA MAVJUD KOD SHU BILAN ISHLASHDA DAVOM ETADI.
+            -- Bu jadval FAQAT video 'completed' bo'lgach, IKKINCHI provayder bilan
+            -- QO'SHIMCHA yaratilgan audio/video uchun (masalan asosiysi Aisha bilan
+            -- qilingan bo'lsa, shu yerda OpenAI varianti saqlanadi, yoki aksincha).
+            CREATE TABLE IF NOT EXISTS audio_tracks (
+                id TEXT PRIMARY KEY,
+                video_id TEXT,
+                provider TEXT,
+                tts_job_id TEXT,
+                audio_path TEXT,
+                audio_status TEXT DEFAULT 'none',
+                final_video_path TEXT,
+                final_video_status TEXT DEFAULT 'none',
+                freeze_points TEXT,
+                error TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            );
+
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT
@@ -201,6 +222,7 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_results_video ON results(video_id);
             CREATE INDEX IF NOT EXISTS idx_ttsseg_job ON tts_segments(job_id);
             CREATE INDEX IF NOT EXISTS idx_costs_video ON costs(video_id);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_audio_tracks_video_provider ON audio_tracks(video_id, provider);
             """
         )
     _migrate_columns()
@@ -246,6 +268,11 @@ _UPLOAD_NEW_COLUMNS = {
 _TTS_JOB_NEW_COLUMNS = {
     "video_id": "TEXT",
     "freeze_points": "TEXT",
+    # 1 = bu ish asosiy (primary) audio EMAS, balki video 'completed' bo'lgach
+    # ikkinchi provayder bilan QO'SHIMCHA yaratilgan track uchun - shuning uchun
+    # tugagach videos.* (asosiy) maydonlarga tegilmaydi, faqat audio_tracks
+    # jadvali yangilanadi.
+    "for_track": "INTEGER DEFAULT 0",
 }
 _API_KEY_NEW_COLUMNS = {
     "provider": "TEXT DEFAULT 'openai'",

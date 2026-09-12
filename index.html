@@ -2510,7 +2510,64 @@ function toggleAudioProviderUI(id) {
   document.getElementById('audioOpenaiFields-' + id).style.display = provider === 'openai' ? 'block' : 'none';
 }
 
-let _pendingAudioSubmit = null; // { id, form } - "bo'sh bo'lak" tanlovi kutilayotganda
+const PROVIDER_LABEL = { aisha: 'Aisha', openai: 'OpenAI' };
+
+async function showTrackAudioForm(id, provider) {
+  const el = document.getElementById('track-audio-form-' + id);
+  if (!el) return;
+  if (el.innerHTML) { el.innerHTML = ''; return; }
+  let settings = {};
+  try { settings = await apiFetch('/api/settings'); } catch (e) {}
+  const savedAishaKey = localStorage.getItem('aisha_api_key') || '';
+  let fieldsHtml;
+  if (provider === 'aisha') {
+    fieldsHtml = `
+      <input type="password" id="trackAudioAishaKey-${id}" placeholder="Aisha API kalit" value="${escapeHtml(savedAishaKey)}">
+      <div class="grid2" style="margin-top:8px;">
+        <div><label class="field">Kayfiyat</label><select id="trackAudioMood-${id}">
+          <option value="Neutral">Neutral</option><option value="Cheerful">Cheerful</option>
+          <option value="Happy">Happy</option><option value="Sad">Sad</option>
+        </select></div>
+        <div><label class="field">Tezlik</label><input type="text" id="trackAudioSpeed-${id}" value="${escapeHtml(settings.aisha_default_speed || '1.0')}"></div>
+      </div>`;
+  } else {
+    fieldsHtml = `
+      <label class="field">Ovoz</label>
+      <select id="trackAudioVoice-${id}">
+        <option value="alloy">alloy</option><option value="echo">echo</option><option value="fable">fable</option>
+        <option value="onyx">onyx</option><option value="nova">nova</option><option value="shimmer">shimmer</option>
+      </select>`;
+  }
+  el.innerHTML = `
+    <div class="card" style="margin-top:10px; background:var(--work);">
+      <h3 style="margin-top:0;">${PROVIDER_LABEL[provider] || provider} bilan qo'shimcha audio</h3>
+      ${fieldsHtml}
+      <div class="save-hint"><label><input type="checkbox" id="trackAudioStretch-${id}" ${settings.default_stretch_to_fit !== 'false' ? 'checked' : ''}> Kerak bo'lgandagina siqish</label></div>
+      <div class="row"><button class="action" onclick="submitTrackAudioJob('${id}', '${provider}')">Yaratish</button></div>
+      <div class="status" id="trackAudioFormStatus-${id}"></div>
+    </div>`;
+  if (provider === 'aisha') document.getElementById('trackAudioMood-' + id).value = settings.aisha_default_mood || 'Neutral';
+}
+
+async function submitTrackAudioJob(id, provider) {
+  const stretch = document.getElementById('trackAudioStretch-' + id).checked;
+  const form = new FormData();
+  form.append('provider', provider);
+  form.append('stretch_to_fit', String(stretch));
+  if (provider === 'aisha') {
+    const key = document.getElementById('trackAudioAishaKey-' + id).value.trim();
+    if (!key) { setStatus('trackAudioFormStatus-' + id, 'Aisha API kalitni kiriting.', 'err'); return; }
+    localStorage.setItem('aisha_api_key', key);
+    form.append('aisha_key', key);
+    form.append('mood', document.getElementById('trackAudioMood-' + id).value);
+    form.append('speed', document.getElementById('trackAudioSpeed-' + id).value || '1.0');
+  } else {
+    form.append('voice', document.getElementById('trackAudioVoice-' + id).value);
+  }
+  await startAudioJob(id, form, `${API_BASE}/api/videos/${id}/audio/track`);
+}
+
+let _pendingAudioSubmit = null; // { id, form, url } - "bo'sh bo'lak" tanlovi kutilayotganda
 
 async function submitAudioJob(id) {
   const provider = document.getElementById('audioProvider-' + id).value;
@@ -2531,14 +2588,16 @@ async function submitAudioJob(id) {
   await startAudioJob(id, form);
 }
 
-async function startAudioJob(id, form) {
+async function startAudioJob(id, form, url) {
+  url = url || `${API_BASE}/api/videos/${id}/audio`;
+  const statusElId = url.includes('/audio/track') ? 'trackAudioFormStatus-' + id : 'audioFormStatus-' + id;
   try {
-    const resp = await fetch(`${API_BASE}/api/videos/${id}/audio`, { method: 'POST', body: form });
+    const resp = await fetch(url, { method: 'POST', body: form });
     if (resp.status === 409) {
       const body = await resp.json().catch(() => ({}));
       const detail = body.detail || {};
       if (detail.kind === 'empty_segments') {
-        _pendingAudioSubmit = { id, form };
+        _pendingAudioSubmit = { id, form, url };
         document.getElementById('emptySegModalText').textContent =
           `${detail.count} ta bo'lakda tarjima matni yo'q (masalan, bo'lak: ${(detail.indices || []).join(', ')}${detail.count > (detail.indices || []).length ? '...' : ''}). Nima qilamiz?`;
         setStatus('emptySegModalStatus', '', '');
@@ -2551,20 +2610,20 @@ async function startAudioJob(id, form) {
       try { const j = await resp.json(); if (j.detail) msg = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail); } catch (e) {}
       throw new Error(msg);
     }
-    setStatus('audioFormStatus-' + id, 'Audio yaratish boshlandi.', 'ok');
+    setStatus(statusElId, 'Audio yaratish boshlandi.', 'ok');
     loadVideoDetail(id);
   } catch (e) {
-    setStatus('audioFormStatus-' + id, 'Xato: ' + e.message, 'err');
+    setStatus(statusElId, 'Xato: ' + e.message, 'err');
   }
 }
 
 async function emptySegSkipAndRetry() {
   if (!_pendingAudioSubmit) return;
-  const { id, form } = _pendingAudioSubmit;
+  const { id, form, url } = _pendingAudioSubmit;
   _pendingAudioSubmit = null;
   form.append('skip_empty', 'true');
   closeModal('emptySegModal');
-  await startAudioJob(id, form);
+  await startAudioJob(id, form, url);
 }
 
 async function emptySegFillAndRetry(provider) {
@@ -2625,7 +2684,9 @@ function renderRenderStage(v) {
           <label>Audio:
             <select id="audioTrackSel-${v.id}" onchange="switchAudioTrack('${v.id}')">
               <option value="original">Original</option>
-              <option value="uz" selected>O'zbekcha</option>
+              <option value="uz" selected>O'zbekcha${v.primary_tts_provider ? ' (' + (PROVIDER_LABEL[v.primary_tts_provider] || v.primary_tts_provider) + ')' : ''}</option>
+              ${(v.audio_tracks || []).filter(t => t.final_video_status === 'ready').map(t =>
+                `<option value="uz_${t.provider}">O'zbekcha (${PROVIDER_LABEL[t.provider] || t.provider})</option>`).join('')}
             </select>
           </label>
           <label>Subtitr:
@@ -2652,8 +2713,43 @@ function renderRenderStage(v) {
         </div>
         <div class="status" id="telegramStatus-${v.id}"></div>
       </div>`;
+    body += renderAudioTracksPanel(v);
   }
   return `<div class="stage ${before ? 'dim' : ''}"><div class="stage-head"><h3>5. Yakuniy video</h3>${badge}</div>${body}</div>`;
+}
+
+function renderAudioTracksPanel(v) {
+  const primary = v.primary_tts_provider;
+  const otherProvider = primary === 'aisha' ? 'openai' : (primary === 'openai' ? 'aisha' : null);
+  if (!otherProvider) return '';
+  const tracks = v.audio_tracks || [];
+  const t = tracks.find(x => x.provider === otherProvider);
+  let inner;
+  if (!t) {
+    inner = `<p class="hint">Asosiy audio ${PROVIDER_LABEL[primary] || primary} bilan yaratilgan. ${PROVIDER_LABEL[otherProvider]} bilan ham qo'shimcha audio/video yaratishingiz mumkin - ikkalasi ham saqlanadi, keyin yuqoridagi "Audio" tanlovidan xohlaganini tanlashingiz mumkin.</p>
+      <div class="row"><button class="secondary" onclick="showTrackAudioForm('${v.id}', '${otherProvider}')">${PROVIDER_LABEL[otherProvider]} bilan yaratish</button></div>
+      <div id="track-audio-form-${v.id}"></div>`;
+  } else if (t.audio_status === 'generating' || t.final_video_status === 'generating') {
+    inner = `<p class="hint">⏳ ${PROVIDER_LABEL[otherProvider]} bilan audio/video yaratilmoqda...</p>`;
+  } else if (t.final_video_status === 'ready') {
+    inner = `<p class="status ok">✅ ${PROVIDER_LABEL[otherProvider]} bilan video tayyor - "Audio" tanlovidan tanlab ko'rishingiz yoki alohida yuklab olishingiz mumkin.</p>
+      <div class="row">
+        <a class="small-btn" style="text-decoration:none; display:inline-block;" href="${API_BASE}/api/videos/${v.id}/final-download?provider=${otherProvider}">${PROVIDER_LABEL[otherProvider]} videoni yuklab olish</a>
+      </div>
+      <div class="row" id="telegramTrackRow-${v.id}-${otherProvider}">
+        ${telegramTrackButtonHtml(v, otherProvider)}
+      </div>
+      <div class="status" id="telegramTrackStatus-${v.id}-${otherProvider}"></div>`;
+  } else {
+    inner = `<p class="status err">Xato: ${escapeHtml(t.error || '')}</p>
+      <div class="row"><button class="secondary" onclick="showTrackAudioForm('${v.id}', '${otherProvider}')">Qayta urinish</button></div>
+      <div id="track-audio-form-${v.id}"></div>`;
+  }
+  return `<div class="stage" style="margin-top:10px;"><div class="stage-head"><h3>Qo'shimcha audio/video (${PROVIDER_LABEL[otherProvider]})</h3></div>${inner}</div>`;
+}
+
+function telegramTrackButtonHtml(v, provider) {
+  return `<button class="small-btn" id="telegramTrackBtn-${v.id}-${provider}" onclick="sendToBot('${v.id}', '${provider}')">${PROVIDER_LABEL[provider]} videosini botga yuborish</button>`;
 }
 
 function telegramButtonHtml(v) {
@@ -2672,16 +2768,20 @@ function telegramButtonHtml(v) {
   return parts.join(' ');
 }
 
-async function sendToBot(videoId) {
-  const btn = document.getElementById('telegramBtn-' + videoId);
-  setStatus('telegramStatus-' + videoId, '', '');
+async function sendToBot(videoId, provider) {
+  const btnId = provider ? `telegramTrackBtn-${videoId}-${provider}` : 'telegramBtn-' + videoId;
+  const statusId = provider ? `telegramTrackStatus-${videoId}-${provider}` : 'telegramStatus-' + videoId;
+  const btn = document.getElementById(btnId);
+  setStatus(statusId, '', '');
+  const originalText = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = 'Yuborilmoqda...'; }
   try {
-    await apiFetch(`/api/videos/${videoId}/send-to-bot`, { method: 'POST' });
+    const url = provider ? `/api/videos/${videoId}/send-to-bot?provider=${provider}` : `/api/videos/${videoId}/send-to-bot`;
+    await apiFetch(url, { method: 'POST' });
     if (currentDetailVideoId === videoId) loadVideoDetail(videoId);
   } catch (e) {
-    setStatus('telegramStatus-' + videoId, 'Xato: ' + e.message, 'err');
-    if (btn) { btn.disabled = false; btn.textContent = 'Botga yuborish'; }
+    setStatus(statusId, 'Xato: ' + e.message, 'err');
+    if (btn) { btn.disabled = false; btn.textContent = originalText || 'Botga yuborish'; }
   }
 }
 
@@ -2700,7 +2800,23 @@ function switchAudioTrack(videoId) {
   if (!player) return;
   const wasPlaying = !player.paused;
   const savedTime = player.currentTime;
-  const targetUrl = sel.value === 'original' ? player.dataset.origUrl : player.dataset.uzUrl;
+  const val = sel.value; // 'original' | 'uz' | 'uz_<provider>' (qo'shimcha track)
+  let targetUrl, subUrl;
+  if (val === 'original') {
+    targetUrl = player.dataset.origUrl;
+    subUrl = `${API_BASE}/api/videos/${videoId}/subtitles/uz.vtt`;
+  } else if (val.startsWith('uz_')) {
+    // Qo'shimcha track - o'zining freeze bilan moslashtirilgan subtitri boshqacha
+    // bo'lishi mumkin (uning audio uzunligi asosiy trekdan farq qiladi).
+    const provider = val.slice(3);
+    targetUrl = `${API_BASE}/api/videos/${videoId}/final-download?provider=${provider}`;
+    subUrl = `${API_BASE}/api/videos/${videoId}/subtitles/uz.vtt?provider=${provider}`;
+  } else {
+    targetUrl = player.dataset.uzUrl;
+    subUrl = `${API_BASE}/api/videos/${videoId}/subtitles/uz.vtt`;
+  }
+  const uzTrack = document.getElementById('track-uz-' + videoId);
+  if (uzTrack) uzTrack.setAttribute('src', subUrl);
   const onReady = () => {
     player.currentTime = savedTime;
     if (wasPlaying) player.play();
