@@ -262,6 +262,7 @@ def video_public(v: dict) -> dict:
         "translation_status": v["translation_status"], "translation_source": v["translation_source"],
         "audio_status": v["audio_status"], "final_video_status": v["final_video_status"],
         "cost_total": v["cost_total"] or 0,
+        "cost_total_som": v["cost_total_som"] or 0,
         "has_thumbnail": bool(v["thumbnail_path"]),
         "flagged_issues_count": len(json.loads(v["flagged_issues"])) if v["flagged_issues"] else 0,
         "created_at": v["created_at"], "updated_at": v["updated_at"],
@@ -1801,15 +1802,24 @@ async def get_costs():
     week_start = time.strftime("%Y-%m-%dT00:00:00", time.gmtime(now - 6 * 86400))
     month_start = time.strftime("%Y-%m-%dT00:00:00", time.gmtime(now - 29 * 86400))
 
+    # amount_usd (dollar) va amount_som (Aisha, so'm) ikki xil valyuta -
+    # ARALASHTIRILMAYDI, alohida-alohida yig'indi qilinadi.
     def total_since(since):
-        r = db.fetchone("SELECT COALESCE(SUM(amount_usd),0) s FROM costs WHERE created_at >= ?", (since,))
-        return round(r["s"], 4)
+        r = db.fetchone(
+            "SELECT COALESCE(SUM(amount_usd),0) usd, COALESCE(SUM(amount_som),0) som "
+            "FROM costs WHERE created_at >= ?", (since,))
+        return {"usd": round(r["usd"], 4), "som": round(r["som"], 2)}
 
+    # "tts" - eski (migratsiyadan oldingi) OpenAI TTS yozuvlari, "tts_openai" bilan
+    # birga hisoblanadi (moslik uchun; Aisha'ning eski "tts" yozuvlari doim $0 edi,
+    # shuning uchun bu yerga qo'shilishi hech narsani buzmaydi).
     per_video = db.fetchall(
         """SELECT v.id, v.original_name, COALESCE(SUM(c.amount_usd),0) as total,
+           COALESCE(SUM(c.amount_som),0) as total_som,
            SUM(CASE WHEN c.kind='transcription' THEN c.amount_usd ELSE 0 END) as transcription,
            SUM(CASE WHEN c.kind='translation' THEN c.amount_usd ELSE 0 END) as translation,
-           SUM(CASE WHEN c.kind='tts' THEN c.amount_usd ELSE 0 END) as tts
+           SUM(CASE WHEN c.kind IN ('tts_openai','tts') THEN c.amount_usd ELSE 0 END) as tts_openai,
+           SUM(CASE WHEN c.kind='tts_aisha' THEN c.amount_som ELSE 0 END) as tts_aisha_som
            FROM videos v LEFT JOIN costs c ON c.video_id = v.id
            GROUP BY v.id ORDER BY v.created_at DESC""")
     return {
@@ -1823,7 +1833,7 @@ async def get_costs():
 
 @app.get("/api/videos/{video_id}/costs")
 async def get_video_costs(video_id: str):
-    return db.fetchall("SELECT kind, amount_usd, detail, created_at FROM costs "
+    return db.fetchall("SELECT kind, amount_usd, amount_som, detail, created_at FROM costs "
                         "WHERE video_id = ? ORDER BY created_at ASC", (video_id,))
 
 

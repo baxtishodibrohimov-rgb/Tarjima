@@ -40,13 +40,12 @@ CANCEL_FLAGS: dict = {}
 UZBEK_CHARS_PER_SECOND = 14.0
 MAX_TTS_SPEED = float(os.environ.get("MAX_AUDIO_SPEEDUP", "1.15"))
 
-# Aisha TTS narxi - har bir belgi (harf) uchun 1 so'm. Xarajatlar jadvali
-# (costs.amount_usd) doim USD'da saqlanadi, shuning uchun so'm narxi shu
-# yerda joriy AQSH dollari kursi bo'yicha USD'ga aylantiriladi. Ikkalasi ham
-# environment variable orqali sozlanishi mumkin (narx yoki kurs o'zgarsa,
-# kodni o'zgartirmasdan yangilash uchun).
+# Aisha TTS narxi - har bir belgi (harf) uchun 1 so'm. Dollarga
+# AYLANTIRILMAYDI (kurs vaqt o'tishi bilan eskirib, noto'g'ri ko'rsatishi
+# mumkin edi) - to'g'ridan-to'g'ri so'mda hisoblanib, alohida ustunda
+# (costs.amount_som) saqlanadi. Narx environment variable orqali sozlanishi
+# mumkin.
 AISHA_SOM_PER_CHAR = float(os.environ.get("AISHA_SOM_PER_CHAR", "1.0"))
-UZS_PER_USD = float(os.environ.get("UZS_PER_USD", "11768"))
 
 
 def _update_job(job_id: str, **fields):
@@ -281,15 +280,13 @@ async def _process_segment(client, job, seg, lock, ctx, out_dir):
             if not from_cache:
                 if provider == "aisha":
                     chars = len(seg["text"][:1000])
-                    som_cost = chars * AISHA_SOM_PER_CHAR
-                    usd_cost = round(som_cost / UZS_PER_USD, 6) if UZS_PER_USD > 0 else 0
-                    db.add_cost(job["video_id"], "tts", usd_cost,
-                                 detail=f"Aisha TTS, segment {seg['seg_index']+1}, ~{chars} belgi "
-                                        f"(~{som_cost:.0f} so'm)")
+                    som_cost = round(chars * AISHA_SOM_PER_CHAR, 2)
+                    db.add_cost(job["video_id"], "tts_aisha", amount_usd=0, amount_som=som_cost,
+                                 detail=f"Aisha TTS, segment {seg['seg_index']+1}, ~{chars} belgi")
                 else:
                     chars = len(seg["text"][:2000])
                     cost = round((chars / 1000) * 0.015, 6)
-                    db.add_cost(job["video_id"], "tts", cost,
+                    db.add_cost(job["video_id"], "tts_openai", cost,
                                  detail=f"OpenAI TTS, segment {seg['seg_index']+1}, ~{chars} belgi")
         if provider != "aisha":
             keys_manager.mark_result(kid, True)

@@ -629,7 +629,7 @@
       <div><label class="field">Jami</label><div class="status ok" id="costAll">—</div></div>
     </div>
     <table id="costTable" style="margin-top:14px;">
-      <thead><tr><th>Video</th><th>Transkripsiya</th><th>Tarjima</th><th>Audio</th><th>Jami</th></tr></thead>
+      <thead><tr><th>Video</th><th>Transkripsiya</th><th>Tarjima</th><th>Aisha TTS</th><th>OpenAI TTS</th><th>Jami</th></tr></thead>
       <tbody id="costTableBody"></tbody>
     </table>
   </div>
@@ -854,6 +854,11 @@ function fmtBytes(n) {
 function fmtUsd(n) {
   n = n || 0;
   return '$' + n.toFixed(n < 1 ? 4 : 2);
+}
+
+function fmtSom(n) {
+  n = n || 0;
+  return Math.round(n).toLocaleString('ru-RU') + " so'm";
 }
 
 function parseTimeField(text) {
@@ -1792,7 +1797,7 @@ function renderOverviewPanel(v) {
       <div class="fact-row"><div class="fact-k">Bo'laklar</div><div class="fact-v mono">${v.chunk_count || 0}</div></div>
       <div class="fact-row"><div class="fact-k">Matn</div><div class="fact-v">${escapeHtml(matnHolati)}</div></div>
       <div class="fact-row"><div class="fact-k">Tarjima</div><div class="fact-v" style="color:var(--accent)">${escapeHtml(tarjimaHolati)}</div></div>
-      <div class="fact-row"><div class="fact-k">Xarajat</div><div class="fact-v mono">${fmtUsd(v.cost_total)}</div></div>
+      <div class="fact-row"><div class="fact-k">Xarajat</div><div class="fact-v mono">${fmtUsd(v.cost_total)}${v.cost_total_som ? ' + ' + fmtSom(v.cost_total_som) : ''}</div></div>
     </div>
     <div class="panel">
       <div class="ov-tabs"><span class="ov-tab active">Original / Tarjima</span></div>
@@ -3045,17 +3050,23 @@ async function loadJobsPanel() {
 /* ============================================================ */
 /*  XARAJATLAR                                                    */
 /* ============================================================ */
+function fmtUsdSom(period) {
+  const usdPart = fmtUsd(period.usd);
+  return period.som ? `${usdPart} + ${fmtSom(period.som)}` : usdPart;
+}
+
 async function loadCosts() {
   try {
     const c = await apiFetch('/api/costs');
-    document.getElementById('costToday').textContent = fmtUsd(c.today);
-    document.getElementById('costWeek').textContent = fmtUsd(c.week);
-    document.getElementById('costMonth').textContent = fmtUsd(c.month);
-    document.getElementById('costAll').textContent = fmtUsd(c.all_time);
+    document.getElementById('costToday').textContent = fmtUsdSom(c.today);
+    document.getElementById('costWeek').textContent = fmtUsdSom(c.week);
+    document.getElementById('costMonth').textContent = fmtUsdSom(c.month);
+    document.getElementById('costAll').textContent = fmtUsdSom(c.all_time);
     const body = document.getElementById('costTableBody');
     body.innerHTML = c.per_video.map(r => `
       <tr><td>${escapeHtml(r.original_name)}</td><td>${fmtUsd(r.transcription)}</td>
-      <td>${fmtUsd(r.translation)}</td><td>${fmtUsd(r.tts)}</td><td>${fmtUsd(r.total)}</td></tr>`).join('');
+      <td>${fmtUsd(r.translation)}</td><td>${fmtSom(r.tts_aisha_som)}</td><td>${fmtUsd(r.tts_openai)}</td>
+      <td>${fmtUsd(r.total)}${r.total_som ? ' + ' + fmtSom(r.total_som) : ''}</td></tr>`).join('');
   } catch (e) {}
 }
 

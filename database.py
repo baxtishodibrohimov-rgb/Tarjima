@@ -226,6 +226,7 @@ _VIDEO_NEW_COLUMNS = {
     "final_video_path": "TEXT",
     "final_video_status": "TEXT DEFAULT 'none'",
     "cost_total": "REAL DEFAULT 0",
+    "cost_total_som": "REAL DEFAULT 0",
     "started_at": "TEXT",
     "flagged_issues": "TEXT",
     "topic_group": "TEXT",
@@ -251,6 +252,13 @@ _API_KEY_NEW_COLUMNS = {
 }
 _CLOUD_FILE_NEW_COLUMNS = {
     "thumbnail_path": "TEXT",
+}
+_COSTS_NEW_COLUMNS = {
+    # Aisha TTS narxi so'mda beriladi (dollarga aylantirilmaydi - kurs
+    # o'zgarib turishi mumkin, shuning uchun o'z valyutasida saqlanadi).
+    # amount_usd ustuni bo'sh (0) qoladi - shunda umumiy $ summasi (cost_total)
+    # buzilmaydi.
+    "amount_som": "REAL DEFAULT 0",
 }
 _CHUNK_NEW_COLUMNS = {
     # NULL = bo'lak uchun alohida til belgilanmagan (videoning umumiy tilidan foydalaniladi),
@@ -288,6 +296,10 @@ def _migrate_columns():
         for col, decl in _CHUNK_NEW_COLUMNS.items():
             if col not in existing_chunks:
                 c.execute(f"ALTER TABLE chunks ADD COLUMN {col} {decl}")
+        existing_costs = {row[1] for row in c.execute("PRAGMA table_info(costs)").fetchall()}
+        for col, decl in _COSTS_NEW_COLUMNS.items():
+            if col not in existing_costs:
+                c.execute(f"ALTER TABLE costs ADD COLUMN {col} {decl}")
 
 
 # ---------------------------------------------------------------------------
@@ -332,13 +344,19 @@ def get_logs(video_id: str, limit: int = 300):
     )[::-1]
 
 
-def add_cost(video_id: str, kind: str, amount_usd: float, detail: str = ""):
+def add_cost(video_id: str, kind: str, amount_usd: float, detail: str = "", amount_som: float = 0):
+    """amount_usd - AQSH dollarida (OpenAI, Claude va h.k.). amount_som - o'zbek
+    so'mida (masalan Aisha TTS) - ikkalasi turli valyuta, shuning uchun
+    ARALASHTIRILMAYDI: har biri o'z ustunida (va videoning o'z cost_total/
+    cost_total_som ustunida) alohida yig'iladi."""
     execute(
-        "INSERT INTO costs (id, video_id, kind, amount_usd, detail, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (new_id(), video_id, kind, amount_usd, detail, now()),
+        "INSERT INTO costs (id, video_id, kind, amount_usd, amount_som, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (new_id(), video_id, kind, amount_usd, amount_som, detail, now()),
     )
     if video_id:
-        execute("UPDATE videos SET cost_total = COALESCE(cost_total, 0) + ? WHERE id = ?", (amount_usd, video_id))
+        execute("UPDATE videos SET cost_total = COALESCE(cost_total, 0) + ?, "
+                "cost_total_som = COALESCE(cost_total_som, 0) + ? WHERE id = ?",
+                (amount_usd, amount_som, video_id))
 
 
 def get_setting(key: str, default=None):
