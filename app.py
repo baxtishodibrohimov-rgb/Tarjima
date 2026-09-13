@@ -265,6 +265,8 @@ def video_public(v: dict) -> dict:
         "transcript_approved": bool(v["transcript_approved"]),
         "translation_status": v["translation_status"], "translation_source": v["translation_source"],
         "audio_status": v["audio_status"], "final_video_status": v["final_video_status"],
+        "subtitled_video_status": v["subtitled_video_status"] or "none",
+        "subtitled_video_error": v["subtitled_video_error"],
         "cost_total": v["cost_total"] or 0,
         "cost_total_som": v["cost_total_som"] or 0,
         "has_thumbnail": bool(v["thumbnail_path"]),
@@ -274,7 +276,8 @@ def video_public(v: dict) -> dict:
         # Video 'completed' bo'lgach ikkinchi provayder bilan yaratilgan
         # qo'shimcha audio/video track(lar) - odatda bo'sh ro'yxat.
         "audio_tracks": [dict(r) for r in db.fetchall(
-            "SELECT provider, audio_status, final_video_status, error FROM audio_tracks WHERE video_id = ?",
+            "SELECT provider, audio_status, final_video_status, subtitled_video_status, "
+            "subtitled_video_error, error FROM audio_tracks WHERE video_id = ?",
             (v["id"],))] if v["status"] == "completed" else [],
     }
 
@@ -973,8 +976,9 @@ async def video_tracks_endpoint(video_id: str):
     v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
     if not v:
         raise HTTPException(404, "Video topilmadi.")
-    rows = db.fetchall("SELECT provider, audio_status, final_video_status, error, updated_at "
-                        "FROM audio_tracks WHERE video_id = ? ORDER BY created_at ASC", (video_id,))
+    rows = db.fetchall("SELECT provider, audio_status, final_video_status, subtitled_video_status, "
+                        "subtitled_video_error, error, updated_at FROM audio_tracks WHERE video_id = ? "
+                        "ORDER BY created_at ASC", (video_id,))
     return [dict(r) for r in rows]
 
 
@@ -1024,6 +1028,49 @@ async def render_endpoint(video_id: str):
     return {"ok": True}
 
 
+@app.post("/api/videos/{video_id}/subtitle-burn")
+async def subtitle_burn_endpoint(video_id: str, provider: str = Form(None)):
+    """Yakuniy o'zbekcha videoga subtitr "kuydiradi" (hardsub) - ixtiyoriy,
+    asosiy (provider=None) yoki qo'shimcha provayder treki uchun. Eski
+    (avvaldan 'completed') videolar uchun ham, yangilari uchun ham bir xil
+    ishlaydi - faqat video 'completed' va tegishli yakuniy video tayyor
+    bo'lishi shart. Asosiy/qo'shimcha final_video_path'larga tegmaydi -
+    YANGI, alohida fayl yaratiladi."""
+    v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    if not v:
+        raise HTTPException(404, "Video topilmadi.")
+    if v["status"] != "completed":
+        raise HTTPException(400, "Avval yakuniy video tayyor bo'lishi kerak.")
+    if provider:
+        track = db.fetchone("SELECT * FROM audio_tracks WHERE video_id = ? AND provider = ?", (video_id, provider))
+        if not track or track["final_video_status"] != "ready" or not track["final_video_path"]:
+            raise HTTPException(400, "Bu provayder uchun yakuniy video hali tayyor emas.")
+    elif not v["final_video_path"]:
+        raise HTTPException(400, "Yakuniy video topilmadi.")
+    if not worker.enqueue_subtitle_burn(video_id, provider or None):
+        raise HTTPException(409, "Subtitrli video allaqachon yaratilmoqda.")
+    return {"ok": True}
+
+
+@app.get("/api/videos/{video_id}/subtitled-download")
+async def download_subtitled_video(video_id: str, request: Request, provider: str = None):
+    v = _ensure_video(video_id)
+    if provider:
+        track = db.fetchone(
+            "SELECT subtitled_video_path, subtitled_video_status FROM audio_tracks WHERE video_id = ? AND provider = ?",
+            (video_id, provider))
+        if not track or track["subtitled_video_status"] != "ready" or not track["subtitled_video_path"]:
+            raise HTTPException(404, "Bu provayder uchun subtitrli video topilmadi.")
+        video_path = track["subtitled_video_path"]
+    else:
+        if v["subtitled_video_status"] != "ready" or not v["subtitled_video_path"]:
+            raise HTTPException(404, "Subtitrli video topilmadi.")
+        video_path = v["subtitled_video_path"]
+    if not video_path or not Path(video_path).exists():
+        raise HTTPException(404, "Subtitrli video topilmadi.")
+    return range_file_response(request, Path(video_path), "video/mp4")
+
+
 async def _send_video_file_to_telegram(video_id: str, video_path: str, title: str):
     """Videoning o'zini (havola emas) mahalliy Bot API server orqali Telegram'ga
     yuboradi - bu 2 GB gacha ruxsat beradi (oddiy api.telegram.org 50 MB bilan
@@ -1064,18 +1111,19 @@ async def _send_video_file_to_telegram(video_id: str, video_path: str, title: st
 
 
 @app.post("/api/videos/{video_id}/send-to-bot")
-async def send_to_bot_endpoint(video_id: str, request: Request, provider: str = None):
+async def send_to_bot_endpoint(video_id: str, request: Request, provider: str = None, subtitled: bool = False):
     """provider berilmasa (eski, oddiy holat) - asosiy yakuniy video yuboriladi,
     xuddi avvalgidek. provider='aisha'/'openai' berilsa - shu QO'SHIMCHA track
     videosi yuboriladi (video 'completed' bo'lgach ikkinchi provayder bilan
-    yaratilgan bo'lsa)."""
+    yaratilgan bo'lsa). subtitled=true berilsa - subtitr "kuydirilgan" (hardsub)
+    variant yuboriladi (asosiy yoki tanlangan provayder treki uchun, qaysi
+    tayyor bo'lsa)."""
     v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
     if not v:
         raise HTTPException(404, "Video topilmadi.")
     if v["status"] != "completed":
         raise HTTPException(400, "Avval yakuniy video tayyor bo'lishi kerak.")
 
-    video_path = v["final_video_path"]
     title_suffix = ""
     if provider:
         track = db.fetchone("SELECT * FROM audio_tracks WHERE video_id = ? AND provider = ?",
@@ -1084,6 +1132,18 @@ async def send_to_bot_endpoint(video_id: str, request: Request, provider: str = 
             raise HTTPException(400, "Bu provayder uchun yakuniy video hali tayyor emas.")
         video_path = track["final_video_path"]
         title_suffix = f" ({provider})"
+        if subtitled:
+            if track["subtitled_video_status"] != "ready" or not track["subtitled_video_path"]:
+                raise HTTPException(400, "Bu provayder uchun subtitrli video hali tayyor emas.")
+            video_path = track["subtitled_video_path"]
+            title_suffix += " [subtitrli]"
+    else:
+        video_path = v["final_video_path"]
+        if subtitled:
+            if v["subtitled_video_status"] != "ready" or not v["subtitled_video_path"]:
+                raise HTTPException(400, "Subtitrli video hali tayyor emas.")
+            video_path = v["subtitled_video_path"]
+            title_suffix = " [subtitrli]"
     if not video_path:
         raise HTTPException(400, "Avval yakuniy video tayyor bo'lishi kerak.")
 
@@ -1094,7 +1154,8 @@ async def send_to_bot_endpoint(video_id: str, request: Request, provider: str = 
                                   "TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID environment variable'lari kiritilmagan).")
 
     if idea_flow_ok:
-        download_url = f"{str(request.base_url).rstrip('/')}/api/videos/{video_id}/final-download"
+        endpoint = "subtitled-download" if subtitled else "final-download"
+        download_url = f"{str(request.base_url).rstrip('/')}/api/videos/{video_id}/{endpoint}"
         if provider:
             download_url += f"?provider={provider}"
         async with httpx.AsyncClient() as client:

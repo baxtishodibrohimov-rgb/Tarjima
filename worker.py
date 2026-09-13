@@ -40,6 +40,10 @@ RENDER_QUEUE: asyncio.Queue = asyncio.Queue()
 # qo'shimcha provayder bilan yaratilgan track uchun (asosiy RENDER_QUEUE'dan
 # ALOHIDA, chunki u faqat video_id oladi va asosiy videoni yangilaydi).
 TRACK_RENDER_QUEUE: asyncio.Queue = asyncio.Queue()
+# (video_id, provider) juftliklarini qabul qiladi - provider=None bo'lsa
+# ASOSIY yakuniy videoga, aks holda shu provayderning QO'SHIMCHA trekiga
+# subtitr "kuydirish" (hardsub) so'ralgan.
+SUBTITLE_BURN_QUEUE: asyncio.Queue = asyncio.Queue()
 
 PAUSE_FLAGS: dict = {}
 CANCEL_FLAGS: dict = {}
@@ -1658,6 +1662,125 @@ async def track_render_consumer():
 
 
 # ---------------------------------------------------------------------------
+#     SUBTITR "KUYDIRISH" (HARDSUB) - ixtiyoriy, video 'completed' bo'lgach
+#     (asosiy yoki qo'shimcha provayder treki uchun) foydalanuvchi so'rovi
+#     bilan yaratiladi. Asosiy/qo'shimcha final_video_path'larga UMUMAN
+#     tegmaydi - YANGI, alohida fayl yaratiladi. Shu sababli ESKI (avval
+#     yaratilgan) videolar uchun ham, YANGI videolar uchun ham bir xil
+#     ishlaydi - faqat 'completed' va yakuniy video tayyor bo'lishi shart.
+# ---------------------------------------------------------------------------
+
+def _pick_final_srt_path(video_id: str, provider: str = None):
+    """Berilgan video (yoki uning provider treki)ning YAKUNIY (render qilingan
+    videoning haqiqiy vaqt chizig'iga mos) o'zbekcha SRT faylini tanlaydi:
+    avval freeze-moslashtirilgan 'final' variantni (freeze nuqtalari bo'lgan
+    bo'lsa), topilmasa oddiy (source vaqtli) variantni - freeze bo'lmagan
+    bo'lsa ular baribir bir xil vaqt chizig'ida bo'ladi."""
+    final_kind = f"srt_uz_final_{provider}" if provider else "srt_uz_final"
+    row = db.fetchone(
+        "SELECT path FROM results WHERE video_id = ? AND kind = ? ORDER BY created_at DESC LIMIT 1",
+        (video_id, final_kind))
+    if not row:
+        row = db.fetchone(
+            "SELECT path FROM results WHERE video_id = ? AND kind = 'srt_uz' ORDER BY created_at DESC LIMIT 1",
+            (video_id,))
+    return row["path"] if row else None
+
+
+def enqueue_subtitle_burn(video_id: str, provider: str = None) -> bool:
+    """Subtitr kuydirishni navbatga qo'yadi. Allaqachon 'generating' bo'lsa
+    yoki manba video hali tayyor bo'lmasa - qayta qo'ymaydi (idempotent)."""
+    video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    if not video or video["status"] != "completed":
+        return False
+    if provider:
+        track = db.fetchone("SELECT * FROM audio_tracks WHERE video_id = ? AND provider = ?", (video_id, provider))
+        if not track or track["final_video_status"] != "ready" or not track["final_video_path"]:
+            return False
+        if track["subtitled_video_status"] == "generating":
+            return False
+        db.execute("UPDATE audio_tracks SET subtitled_video_status = 'generating', subtitled_video_error = NULL, "
+                   "updated_at = ? WHERE id = ?", (db.now(), track["id"]))
+    else:
+        if video["final_video_status"] != "ready" or not video["final_video_path"]:
+            return False
+        if video["subtitled_video_status"] == "generating":
+            return False
+        _update_video(video_id, subtitled_video_status="generating", subtitled_video_error=None)
+    label = f" ([{PROVIDER_LABELS.get(provider, provider)}])" if provider else ""
+    log(video_id, f"Subtitrli video{label} yaratish navbatga qo'yildi.")
+    SUBTITLE_BURN_QUEUE.put_nowait((video_id, provider))
+    return True
+
+
+async def burn_subtitles_job(video_id: str, provider: str = None):
+    video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    if not video:
+        return
+    track = None
+    if provider:
+        track = db.fetchone("SELECT * FROM audio_tracks WHERE video_id = ? AND provider = ?", (video_id, provider))
+        if not track:
+            return
+    label = f"[{PROVIDER_LABELS.get(provider, provider)}] " if provider else ""
+    source_path = Path(track["final_video_path"]) if track else Path(video["final_video_path"])
+    srt_path_str = _pick_final_srt_path(video_id, provider)
+
+    def _fail(msg: str):
+        if track:
+            db.execute("UPDATE audio_tracks SET subtitled_video_status = 'error', subtitled_video_error = ?, "
+                       "updated_at = ? WHERE id = ?", (msg, db.now(), track["id"]))
+        else:
+            _update_video(video_id, subtitled_video_status="error", subtitled_video_error=msg)
+        log(video_id, f"XATO ({label}subtitr kuydirish): {msg}")
+
+    if not srt_path_str or not Path(srt_path_str).exists():
+        _fail("O'zbekcha subtitr (SRT) fayli topilmadi - avval yakuniy video tayyor bo'lishi kerak.")
+        return
+    if not source_path.exists():
+        _fail("Manba (subtitrsiz) yakuniy video fayli topilmadi.")
+        return
+
+    tmp_out_path = None
+    try:
+        out_dir = RESULTS_DIR / video_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+        base = safe_name(Path(video["original_name"]).stem) or "video"
+        suffix = f"_{provider}" if provider else ""
+        out_path = out_dir / f"{base}_yakuniy_subtitrli{suffix}.mp4"
+        tmp_out_path = out_dir / f"{base}_yakuniy_subtitrli{suffix}.rendering.mp4"
+
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None, transcription.burn_subtitles_into_video, source_path, Path(srt_path_str), tmp_out_path)
+        tmp_out_path.replace(out_path)
+
+        if track:
+            db.execute("UPDATE audio_tracks SET subtitled_video_status = 'ready', subtitled_video_path = ?, "
+                       "subtitled_video_error = NULL, updated_at = ? WHERE id = ?",
+                       (str(out_path), db.now(), track["id"]))
+        else:
+            _update_video(video_id, subtitled_video_status="ready", subtitled_video_path=str(out_path),
+                           subtitled_video_error=None)
+        log(video_id, f"{label}Subtitrli video tayyor.")
+    except Exception as e:
+        if tmp_out_path:
+            tmp_out_path.unlink(missing_ok=True)
+        _fail(str(e))
+
+
+async def subtitle_burn_consumer():
+    while True:
+        video_id, provider = await SUBTITLE_BURN_QUEUE.get()
+        try:
+            await burn_subtitles_job(video_id, provider)
+        except Exception as e:
+            log(video_id, f"XATO (subtitle burn consumer): {e}\n{traceback.format_exc()[-500:]}")
+        finally:
+            SUBTITLE_BURN_QUEUE.task_done()
+
+
+# ---------------------------------------------------------------------------
 #                          SERVER RESTART - QAYTA TIKLASH
 # ---------------------------------------------------------------------------
 
@@ -1692,11 +1815,23 @@ async def recover_and_start():
         log(t["video_id"], f"Server qayta ishga tushdi - [{t['provider']}] qo'shimcha video yig'ish qayta boshlanadi.")
         TRACK_RENDER_QUEUE.put_nowait((t["video_id"], t["provider"]))
 
+    interrupted_subtitle_burn = db.fetchall(
+        "SELECT id FROM videos WHERE subtitled_video_status = 'generating'")
+    for v in interrupted_subtitle_burn:
+        log(v["id"], "Server qayta ishga tushdi - subtitrli video yaratish qayta boshlanadi.")
+        SUBTITLE_BURN_QUEUE.put_nowait((v["id"], None))
+    interrupted_track_subtitle_burn = db.fetchall(
+        "SELECT video_id, provider FROM audio_tracks WHERE subtitled_video_status = 'generating'")
+    for t in interrupted_track_subtitle_burn:
+        log(t["video_id"], f"Server qayta ishga tushdi - [{t['provider']}] subtitrli video yaratish qayta boshlanadi.")
+        SUBTITLE_BURN_QUEUE.put_nowait((t["video_id"], t["provider"]))
+
     for _ in range(MAX_ACTIVE_VIDEO_JOBS):
         asyncio.create_task(segment_consumer())
         asyncio.create_task(transcribe_consumer())
         asyncio.create_task(render_consumer())
         asyncio.create_task(track_render_consumer())
+        asyncio.create_task(subtitle_burn_consumer())
 
     import tts
     await tts.recover_and_start()

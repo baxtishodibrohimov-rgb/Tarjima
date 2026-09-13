@@ -2741,10 +2741,74 @@ function renderRenderStage(v) {
           ${telegramButtonHtml(v)}
         </div>
         <div class="status" id="telegramStatus-${v.id}"></div>
-      </div>`;
+      </div>
+      ${renderSubtitleBurnPanel(v.id, null, v.subtitled_video_status, v.subtitled_video_error)}`;
     body += renderAudioTracksPanel(v);
   }
   return `<div class="stage ${before ? 'dim' : ''}"><div class="stage-head"><h3>5. Yakuniy video</h3>${badge}</div>${body}</div>`;
+}
+
+function renderSubtitleBurnPanel(videoId, provider, status, errorMsg) {
+  // Ixtiyoriy: yakuniy o'zbekcha videoga o'zbekcha subtitrni "kuydirib" (hardsub)
+  // yozib, ALOHIDA yangi fayl yaratadi - asosiy/qo'shimcha yakuniy videoga
+  // tegmaydi. Eski (avvaldan tayyor) va yangi videolar uchun bir xil ishlaydi.
+  const label = provider ? ` (${PROVIDER_LABEL[provider] || provider})` : '';
+  const qs = provider ? `?provider=${provider}` : '';
+  const btnId = provider ? `subBurnBtn-${videoId}-${provider}` : `subBurnBtn-${videoId}`;
+  const statusId = provider ? `subBurnStatus-${videoId}-${provider}` : `subBurnStatus-${videoId}`;
+  const providerArg = provider ? `'${provider}'` : 'null';
+  let inner;
+  if (status === 'ready') {
+    inner = `
+      <p class="status ok">✅ Subtitrli video${label} tayyor.</p>
+      <div class="row">
+        <a class="small-btn" style="text-decoration:none; display:inline-block;" href="${API_BASE}/api/videos/${videoId}/subtitled-download${qs}">Subtitrli videoni yuklab olish</a>
+        <button class="small-btn" id="${btnId}" onclick="burnSubtitles('${videoId}', ${providerArg})">Qayta yaratish</button>
+        <button class="small-btn" onclick="sendSubtitledToBot('${videoId}', ${providerArg}, this)">Botga yuborish (subtitrli)</button>
+      </div>`;
+  } else if (status === 'generating') {
+    inner = `<p class="hint">⏳ Subtitrli video${label} yaratilmoqda...</p>`;
+  } else if (status === 'error') {
+    inner = `
+      <p class="status err">Subtitr kuydirishda xato: ${escapeHtml(errorMsg || '')}</p>
+      <div class="row"><button class="small-btn" id="${btnId}" onclick="burnSubtitles('${videoId}', ${providerArg})">Qayta urinish</button></div>`;
+  } else {
+    inner = `
+      <p class="hint">Ixtiyoriy: o'zbekcha subtitrni video piksellariga "kuydirib" (hardsub) yozib, alohida fayl sifatida yaratish mumkin - istalgan joyda (Telegram, telefon, boshqa pleyer) ko'rinadi. Asosiy videoga tegilmaydi.</p>
+      <div class="row"><button class="secondary" id="${btnId}" onclick="burnSubtitles('${videoId}', ${providerArg})">Subtitr bilan video yaratish</button></div>`;
+  }
+  return `<div class="stage" style="margin-top:10px;"><div class="stage-head"><h3>Subtitrli video${label}</h3></div>${inner}<div class="status" id="${statusId}"></div></div>`;
+}
+
+async function burnSubtitles(videoId, provider) {
+  const btnId = provider ? `subBurnBtn-${videoId}-${provider}` : `subBurnBtn-${videoId}`;
+  const statusId = provider ? `subBurnStatus-${videoId}-${provider}` : `subBurnStatus-${videoId}`;
+  const btn = document.getElementById(btnId);
+  setStatus(statusId, '', '');
+  if (btn) btn.disabled = true;
+  try {
+    const form = new FormData();
+    if (provider) form.append('provider', provider);
+    await apiFetch(`/api/videos/${videoId}/subtitle-burn`, { method: 'POST', body: form });
+    if (currentDetailVideoId === videoId) loadVideoDetail(videoId);
+  } catch (e) {
+    setStatus(statusId, 'Xato: ' + e.message, 'err');
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function sendSubtitledToBot(videoId, provider, btnEl) {
+  const original = btnEl ? btnEl.textContent : '';
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = 'Yuborilmoqda...'; }
+  try {
+    const url = `/api/videos/${videoId}/send-to-bot?subtitled=true` + (provider ? `&provider=${provider}` : '');
+    await apiFetch(url, { method: 'POST' });
+    if (currentDetailVideoId === videoId) loadVideoDetail(videoId);
+  } catch (e) {
+    alert('Xato: ' + e.message);
+  } finally {
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = original; }
+  }
 }
 
 function renderAudioTracksPanel(v) {
@@ -2768,7 +2832,8 @@ function renderAudioTracksPanel(v) {
       <div class="row" id="telegramTrackRow-${v.id}-${otherProvider}">
         ${telegramTrackButtonHtml(v, otherProvider)}
       </div>
-      <div class="status" id="telegramTrackStatus-${v.id}-${otherProvider}"></div>`;
+      <div class="status" id="telegramTrackStatus-${v.id}-${otherProvider}"></div>
+      ${renderSubtitleBurnPanel(v.id, otherProvider, t.subtitled_video_status, t.subtitled_video_error)}`;
   } else {
     inner = `<p class="status err">Xato: ${escapeHtml(t.error || '')}</p>
       <div class="row"><button class="secondary" onclick="showTrackAudioForm('${v.id}', '${otherProvider}')">Qayta urinish</button></div>

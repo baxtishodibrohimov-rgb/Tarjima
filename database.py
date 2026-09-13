@@ -260,6 +260,13 @@ _VIDEO_NEW_COLUMNS = {
     "kind": "TEXT DEFAULT 'pipeline'",
     "split_total_parts": "INTEGER DEFAULT 0",
     "split_parts_sent": "INTEGER DEFAULT 0",
+    # Asosiy yakuniy videoga subtitr "kuydirilgan" (hardsub) nusxasi - ixtiyoriy,
+    # foydalanuvchi so'rasa yaratiladi, asosiy final_video_path'ga UMUMAN tegmaydi.
+    # Xatosi ham ALOHIDA ustunda (umumiy `error` maydonini "band" qilib
+    # qo'ymaslik uchun - u asosiy quvur xatolari uchun ishlatiladi).
+    "subtitled_video_status": "TEXT DEFAULT 'none'",
+    "subtitled_video_path": "TEXT",
+    "subtitled_video_error": "TEXT",
 }
 _UPLOAD_NEW_COLUMNS = {
     "kind": "TEXT DEFAULT 'pipeline'",
@@ -286,6 +293,15 @@ _COSTS_NEW_COLUMNS = {
     # amount_usd ustuni bo'sh (0) qoladi - shunda umumiy $ summasi (cost_total)
     # buzilmaydi.
     "amount_som": "REAL DEFAULT 0",
+}
+_AUDIO_TRACK_NEW_COLUMNS = {
+    # Shu (ikkinchi provayder) trekning yakuniy videosiga subtitr "kuydirilgan"
+    # (hardsub) nusxasi - ixtiyoriy, final_video_path'ga tegmaydi. Xatosi
+    # ALOHIDA ustunda - trekning umumiy `error`sini (audio/render xatosi
+    # uchun ishlatiladi) "bosib qo'ymasligi" uchun.
+    "subtitled_video_status": "TEXT DEFAULT 'none'",
+    "subtitled_video_path": "TEXT",
+    "subtitled_video_error": "TEXT",
 }
 _CHUNK_NEW_COLUMNS = {
     # NULL = bo'lak uchun alohida til belgilanmagan (videoning umumiy tilidan foydalaniladi),
@@ -327,6 +343,10 @@ def _migrate_columns():
         for col, decl in _COSTS_NEW_COLUMNS.items():
             if col not in existing_costs:
                 c.execute(f"ALTER TABLE costs ADD COLUMN {col} {decl}")
+        existing_tracks = {row[1] for row in c.execute("PRAGMA table_info(audio_tracks)").fetchall()}
+        for col, decl in _AUDIO_TRACK_NEW_COLUMNS.items():
+            if col not in existing_tracks:
+                c.execute(f"ALTER TABLE audio_tracks ADD COLUMN {col} {decl}")
 
 
 # ---------------------------------------------------------------------------

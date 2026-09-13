@@ -199,6 +199,49 @@ def mux_video_audio(video_path: Path, audio_path: Path, out_path: Path, target_d
         )
 
 
+# Subtitr "kuydirish" (hardsub) uchun standart stil - ekranning pastida,
+# oq matn, qalin qora kontur (har qanday video foni ustida o'qilishi uchun).
+SUBTITLE_BURN_STYLE = (
+    "FontSize=22,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
+    "BorderStyle=1,Outline=2,Shadow=1,Alignment=2,MarginV=36"
+)
+
+
+def build_subtitle_burn_cmd(video_path: Path, srt_path: Path, out_path: Path) -> list:
+    """ffmpeg buyrug'ini quradi. `subtitles=` filtri argumentidagi maxsus
+    belgilar (masalan ':') bilan bog'liq escaping muammosidan qochish uchun,
+    SRT fayli NISBIY (faqat fayl nomi) ko'rsatiladi - shuning uchun bu buyruq
+    albatta cwd=srt_path.parent bilan ishga tushirilishi SHART
+    (burn_subtitles_into_video shuni qiladi)."""
+    return [
+        ffmpeg_exe(), "-y", "-i", str(video_path),
+        "-vf", f"subtitles={srt_path.name}:force_style='{SUBTITLE_BURN_STYLE}'",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+        "-c:a", "copy",
+        str(out_path),
+    ]
+
+
+def burn_subtitles_into_video(video_path: Path, srt_path: Path, out_path: Path):
+    """Berilgan SRT faylini video piksellariga "kuydiradi" (hardsub) - asl
+    video o'zgarishsiz qoladi, faqat YANGI fayl yaratiladi. Video qayta
+    kodlanadi (subtitr filtri shuni talab qiladi), audio esa o'zgarishsiz
+    ko'chiriladi (-c:a copy)."""
+    cmd = build_subtitle_burn_cmd(video_path, srt_path, out_path)
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="ignore",
+                               timeout=FFMPEG_TIMEOUT, cwd=str(srt_path.parent))
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            f"ffmpeg (subtitr kuydirish) {FFMPEG_TIMEOUT // 60} daqiqadan ortiq davom etdi va to'xtatildi. "
+            f"Qayta urinib ko'ring."
+        )
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg xatosi (subtitr kuydirish): {(proc.stdout or '')[-2000:]}")
+    if not out_path.exists() or out_path.stat().st_size < 1024:
+        raise RuntimeError("Subtitrli video fayli yaratilmadi yoki bo'sh.")
+
+
 def _run_ffmpeg(cmd: list, description: str):
     try:
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="ignore",
