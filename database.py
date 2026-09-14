@@ -187,6 +187,23 @@ def init_db():
                 value TEXT
             );
 
+            -- Freeze-point ustuvorlik zanjirining ENG OXIRGI, zaxira chorasi -
+            -- TTS tezligi (tag/avtomatik, 0.85-1.20) VA audio birlashtirishdagi
+            -- qayta namunalash (shu chegara ichida) IKKALASI HAM yetmagan
+            -- (kam uchraydigan) holatlarda yoziladi - qanchalik tez-tez
+            -- ishlatilayotganini kuzatish uchun (agar ko'p bo'lsa, 0.85-1.20
+            -- chegarasi qayta ko'rib chiqilishi kerak degani).
+            CREATE TABLE IF NOT EXISTS freeze_point_events (
+                id TEXT PRIMARY KEY,
+                video_id TEXT,
+                tts_job_id TEXT,
+                seg_index INTEGER,
+                source_time REAL,
+                duration REAL,
+                applied_speed REAL,
+                created_at TEXT
+            );
+
             CREATE TABLE IF NOT EXISTS folders (
                 id TEXT PRIMARY KEY,
                 name TEXT,
@@ -307,10 +324,17 @@ _TTS_SEGMENT_NEW_COLUMNS = {
     # Tashqi tayyorlangan SRT (parse_srt_direct) timestamp qatoridan o'qilgan
     # ixtiyoriy [speed:fast]/[speed:slow] belgisi - "fast"/"slow"/NULL (oddiy).
     "speed_tag": "TEXT",
-    # Tezlik moslashtirilgandan keyin ham audio blok vaqt oralig'iga sig'may
-    # qolsa (freeze-point baribir hal qiladi, lekin ko'rib chiqish uchun
-    # belgilanadi) - 1 = sig'madi, 0 = sig'di/tekshirilmadi.
+    # YAKUNIY (freeze-point ham hisobga olingan) holatda audio blok vaqt
+    # oralig'iga sig'MADIMI - 1 = freeze-point haqiqatan ishga tushdi (ya'ni
+    # TTS tezligi + qayta namunalash 0.85-1.20 byudjeti ikkalasi ham
+    # yetmadi), 0 = sig'di. merge_job()da, freeze-point aniq ishga tushgan
+    # paytda belgilanadi - shuning uchun aniq (soxta signal bermaydi).
     "duration_overflow": "INTEGER DEFAULT 0",
+    # TTS'ga so'ralgan yakuniy "speed" qiymati (tag/avtomatik moslashuvdan
+    # keyin, 0.85-1.20 chegarasida) - audio birlashtirish bosqichi shuni
+    # bilib, qolgan "joy"ni hisoblab qayta namunalaydi (ikkala bosqich
+    # BIRGALIKDA hech qachon 1.20dan oshmasligi uchun).
+    "applied_speed": "REAL",
 }
 _CHUNK_NEW_COLUMNS = {
     # NULL = bo'lak uchun alohida til belgilanmagan (videoning umumiy tilidan foydalaniladi),

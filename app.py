@@ -477,6 +477,28 @@ async def restart_stage_endpoint(video_id: str, stage: str, _=Depends(check_admi
     return {"ok": True}
 
 
+@app.get("/api/admin/freeze-point-stats")
+async def freeze_point_stats(days: int = 30, _=Depends(check_admin)):
+    """Freeze-point mexanizmi (ustuvorlik zanjirining ENG OXIRGI, zaxira
+    chorasi) qanchalik tez-tez ishga tushayotganini ko'rsatadi - agar ko'p
+    bo'lsa, 0.85-1.20 tezlik byudjeti (SPEED_HARD_MIN/MAX) qayta ko'rib
+    chiqilishi kerak degani."""
+    since = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - max(days, 0) * 86400))
+    events = db.fetchall(
+        "SELECT * FROM freeze_point_events WHERE created_at >= ? ORDER BY created_at DESC LIMIT 500",
+        (since,))
+    # tts_segments'da created_at ustuni yo'q, shuning uchun umumiy nisbat
+    # (freeze chastotasi) uchun jami tayyor segmentlar soni taqriban olinadi.
+    total_completed_segments = db.fetchone(
+        "SELECT COUNT(*) c FROM tts_segments WHERE status = 'completed'")["c"]
+    return {
+        "since": since, "days": days,
+        "freeze_event_count": len(events),
+        "total_completed_segments": total_completed_segments,
+        "events": [dict(e) for e in events[:100]],
+    }
+
+
 @app.post("/api/videos/{video_id}/segment")
 async def segment_video_endpoint(video_id: str):
     v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))

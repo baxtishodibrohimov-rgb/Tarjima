@@ -34,11 +34,8 @@ PAUSE_FLAGS: dict = {}
 CANCEL_FLAGS: dict = {}
 
 # TTS'ga yuborishdan OLDIN, matn uzunligiga qarab tezlikni moslashtirish uchun
-# (audio yaratilgach ffmpeg bilan siqishdan ko'ra tabiiyroq eshitiladi). Bundan
-# ortiq tezlashtirish endi UMUMAN qilinmaydi - o'rniga video "kutib turadi"
-# (freeze-frame, transcription.mux_video_audio_with_freezes orqali).
+# (audio yaratilgach ffmpeg bilan siqishdan ko'ra tabiiyroq eshitiladi).
 UZBEK_CHARS_PER_SECOND = 14.0
-MAX_TTS_SPEED = float(os.environ.get("MAX_AUDIO_SPEEDUP", "1.15"))
 
 # Aisha TTS narxi - har bir belgi (harf) uchun 1 so'm. Dollarga
 # AYLANTIRILMAYDI (kurs vaqt o'tishi bilan eskirib, noto'g'ri ko'rsatishi
@@ -72,18 +69,25 @@ def estimate_speech_duration(text: str, chars_per_second: float = UZBEK_CHARS_PE
     return length / chars_per_second
 
 
-# Tashqi SRT'dagi [speed:fast]/[speed:slow] belgisidan kelgan boshlang'ich
-# tezliklar va ularning QATTIQ (universal) chegarasi - bu MAX_TTS_SPEED
-# (tegsiz bloklar uchun avtomatik xavfsizlik chegarasi)dan ALOHIDA, chunki
-# teg mavjud bo'lganda MASTER instruksiya (tarjima tili modeli) allaqachon
-# aniq signal bergan bo'ladi.
+# USTUVORLIK ZANJIRI - butun audio tezligini moslashtirish quvuri shu YAGONA
+# 0.85-1.20 "byudjet" atrofida quriladi (ikkita alohida chegara endi bitta):
+#   1) TTS'ga so'raladigan boshlang'ich tezlik - [speed:fast]/[speed:slow]
+#      tegidan (1.12/0.92) yoki teg yo'q bo'lsa 1.0 (yoki Aisha uchun job
+#      sozlamasi) - compute_segment_speed() shu yerda ishlatiladi;
+#   2) Agar HAQIQIY sintez qilingan audio baribir blok vaqtiga sig'masa,
+#      audio birlashtirish bosqichida (merge_job -> _merge_segments_pure_python)
+#      RAW audio qayta namunalanadi (resample) - lekin 1-bosqichda
+#      ALLAQACHON ishlatilgan tezlikni hisobga olib, JAMI (ikkala bosqich
+#      birgalikda) tezlik hech qachon SPEED_HARD_MAX'dan oshmaydi;
+#   3) Faqat shundan keyin ham sig'masa - freeze-point (video "kutib turadi"),
+#      ENG OXIRGI, kam uchraydigan zaxira chora sifatida.
 SPEED_TAG_BASE = {"fast": 1.12, "slow": 0.92}
-SPEED_TAG_HARD_MIN = 0.85
-SPEED_TAG_HARD_MAX = 1.20
+SPEED_HARD_MIN = 0.85
+SPEED_HARD_MAX = 1.20
 
 
 def compute_segment_speed(text: str, available_seconds: float, base_speed: float = 1.0,
-                           max_speed: float = MAX_TTS_SPEED, min_speed: float = 1.0):
+                           max_speed: float = SPEED_HARD_MAX, min_speed: float = 1.0):
     """Segment matnini mavjud vaqt oralig'iga sig'dirish uchun TTS'ga yuboriladigan
     'speed' qiymatini oldindan hisoblaydi. `min_speed` - natijaviy tezlik hech
     qachon shundan past bo'lmaydi (standart 1.0 - ya'ni sekinlashtirilmaydi;
@@ -239,22 +243,22 @@ async def _process_segment(client, job, seg, lock, ctx, out_dir):
         return
     provider = job["provider"]
 
-    # TTS'ga yuborishdan oldin, matn uzunligiga qarab tezlikni moslashtiraymiz
-    # (o'z vaqt oynasiga tabiiy tarzda sig'ishi uchun, keyinroq sun'iy siqishdan ko'ra tabiiyroq eshitiladi).
-    # Agar bu blokda tashqi SRT'dan kelgan [speed:fast]/[speed:slow] belgisi bo'lsa,
-    # u USTUVOR - boshlang'ich tezlik sifatida ishlatiladi (0.92/1.12), lekin matn
-    # baribir sig'may qolsa, xavfsizlik uchun tezlik yana oshiriladi (hozirgidek),
-    # faqat endi umumiy QATTIQ chegara 0.85-1.20 bilan (job sozlamasidagi
-    # MAX_TTS_SPEED'dan alohida - teg aniq signal bergan holat uchun).
+    # 1-BOSQICH (ustuvorlik zanjiri boshi): TTS'ga yuborishdan oldin, matn
+    # uzunligiga qarab tezlikni moslashtiramiz. Agar bu blokda tashqi SRT'dan
+    # kelgan [speed:fast]/[speed:slow] belgisi bo'lsa, u boshlang'ich tezlik
+    # sifatida ishlatiladi (1.12/0.92); bo'lmasa - Aisha uchun job sozlamasi
+    # (orqaga moslik), OpenAI uchun 1.0. Matn baribir sig'may qolsa, tezlik
+    # SPEED_HARD_MIN-SPEED_HARD_MAX (0.85-1.20) YAGONA byudjeti ichida
+    # oshiriladi - bu byudjet 2-bosqich (audio birlashtirishdagi qayta
+    # namunalash) bilan BIRGALIKDA taqsimlanadi (pastda, merge_job'da).
     available = (seg["end_sec"] or 0) - (seg["start_sec"] or 0)
     speed_tag = seg["speed_tag"] if "speed_tag" in seg.keys() else None
     if speed_tag in SPEED_TAG_BASE:
-        seg_speed, _likely_overflow = compute_segment_speed(
-            seg["text"], available, base_speed=SPEED_TAG_BASE[speed_tag],
-            max_speed=SPEED_TAG_HARD_MAX, min_speed=SPEED_TAG_HARD_MIN)
+        base_speed = SPEED_TAG_BASE[speed_tag]
     else:
         base_speed = float(job["speed"] or 1.0) if provider == "aisha" else 1.0
-        seg_speed, _likely_overflow = compute_segment_speed(seg["text"], available, base_speed=base_speed)
+    seg_speed, _likely_overflow = compute_segment_speed(
+        seg["text"], available, base_speed=base_speed, max_speed=SPEED_HARD_MAX, min_speed=SPEED_HARD_MIN)
 
     if provider == "aisha":
         raw = keys_manager.decrypt_raw(job["aisha_key_encrypted"]) if job["aisha_key_encrypted"] else ""
@@ -299,16 +303,20 @@ async def _process_segment(client, job, seg, lock, ctx, out_dir):
         seg_path = out_dir / f"seg_{seg['seg_index']:05d}.{ext}"
         seg_path.write_bytes(audio_bytes)
 
-        # Tezlik moslashtirilgandan keyin ham audio blok vaqt oralig'iga sig'ganini
-        # tekshiramiz (§3.5) - SIG'MASA AUDIOGA TEGILMAYDI (freeze-point mexanizmi
-        # baribir video tomonidan "kutib turish" bilan hal qiladi), faqat keyinroq
-        # ko'rib chiqish uchun belgilanadi.
-        actual_duration = _wav_duration_seconds(seg_path)
-        duration_overflow = 1 if (available > 0 and actual_duration > available + 0.05) else 0
+        # 1-bosqichda TTS'ga aynan qanday tezlik so'ralgani saqlanadi - audio
+        # birlashtirish bosqichi (2-bosqich, merge_job) buni bilib, qolgan
+        # "joy"ni (SPEED_HARD_MAX gacha) hisoblab qayta namunalaydi.
+        # MUHIM: bu yerda "sig'dimi-yo'qmi" tekshirilmaydi - buni faqat
+        # merge_job (haqiqiy, YAKUNIY holatni bilgan yagona joy) hal qiladi.
+        applied_speed = key_params.get("speed", seg_speed)
 
         async with lock:
+            # duration_overflow bu yerda 0ga qaytariladi - u faqat merge_job
+            # freeze-point'ni HAQIQATAN ishga tushirganda qayta 1ga o'rnatiladi
+            # (pastda, merge_job/_merge_segments_pure_python'da).
             db.execute("UPDATE tts_segments SET status = 'completed', audio_path = ?, cache_key = ?, "
-                       "duration_overflow = ? WHERE id = ?", (str(seg_path), key, duration_overflow, seg["id"]))
+                       "applied_speed = ?, duration_overflow = 0 WHERE id = ?",
+                       (str(seg_path), key, applied_speed, seg["id"]))
             done = db.fetchone(
                 "SELECT COUNT(*) c FROM tts_segments WHERE job_id = ? AND status IN ('completed', 'skipped')",
                 (job["id"],))["c"]
@@ -431,7 +439,7 @@ async def merge_job(job_id: str):
     try:
         freeze_points = await loop.run_in_executor(
             None, _merge_segments_pure_python, ok_segs, out_path, bool(job["stretch_to_fit"]),
-            video_duration, 1.2, job_id)
+            video_duration, job_id, job["video_id"])
         _update_job(job_id, status="completed", finished_at=db.now(), result_path=str(out_path), error=None,
                     freeze_points=json.dumps(freeze_points, ensure_ascii=False))
         if freeze_points:
@@ -465,18 +473,6 @@ def _read_wav_file(path: Path):
     return nchannels, sampwidth, framerate, raw
 
 
-def _wav_duration_seconds(path: Path) -> float:
-    """WAV faylning davomiyligini (soniyada) faqat sarlavhasidan o'qiydi -
-    to'liq audio ma'lumotini xotiraga yuklamasdan (tezlik moslashtirilgandan
-    keyin ham blok vaqt oralig'iga sig'ganini tekshirish uchun)."""
-    try:
-        with wave.open(str(path), "rb") as wf:
-            framerate = wf.getframerate() or 1
-            return wf.getnframes() / float(framerate)
-    except Exception:
-        return 0.0
-
-
 def _resample_raw(raw: bytes, nchannels: int, sampwidth: int, target_frame_count: int) -> bytes:
     """Oddiy chiziqli interpolatsiya orqali audio uzunligini target_frame_count'ga
     moslaydi (tezlik/pitch bir xilda o'zgaradi)."""
@@ -505,16 +501,26 @@ def _resample_raw(raw: bytes, nchannels: int, sampwidth: int, target_frame_count
 
 
 def _merge_segments_pure_python(ok_segs: list, out_path: Path, stretch_to_fit: bool,
-                                 video_duration: float = 0.0, max_rate: float = 1.2, job_id: str = None):
+                                 video_duration: float = 0.0, job_id: str = None, video_id: str = None):
     """Har bir bo'lak WAV faylini o'qib, bitta katta jim buferga joylaydi.
 
-    Audio har doim TABIIY tezlikda o'qiladi. Agar bo'lak o'ziga ajratilgan
-    vaqtga sig'masa:
-      - Avval yengil tezlashtirish sinaladi (max_rate gacha, standart 1.2x -
-        bu deyarli sezilmaydi);
-      - Agar shundan keyin ham sig'masa, ortiqcha qism uchun "muzlatish
-        nuqtasi" qaytariladi - buni video render bosqichi asl videoga
-        qo'llab, o'sha joyda kadrni bir necha soniya "kutib turadi".
+    USTUVORLIK ZANJIRI (freeze-point ENG OXIRGI, zaxira chora): 1-bosqichda
+    (tts._process_segment) TTS'ning o'ziga allaqachon [speed:fast]/[speed:slow]
+    tegidan yoki avtomatik moslashuvdan kelgan tezlik so'ralgan (p["applied_speed"]
+    - 0.85-1.20 oralig'ida). Agar audio baribir sig'masa:
+      - 2-BOSQICH: shu YERDA, RAW audio qayta namunalanadi (resample) - lekin
+        1-bosqichda ALLAQACHON ishlatilgan tezlikni hisobga olib, faqat
+        SPEED_HARD_MAX (1.20) gacha QOLGAN "joy" ishlatiladi (rate_cap =
+        SPEED_HARD_MAX / applied_speed) - ikkala bosqich BIRGALIKDA hech
+        qachon 1.20dan oshmaydi;
+      - 3-BOSQICH (ENG OXIRGI): agar shundan keyin ham sig'masa, ortiqcha
+        qism uchun "muzlatish nuqtasi" qaytariladi - buni video render
+        bosqichi asl videoga qo'llab, o'sha joyda kadrni bir necha soniya
+        "kutib turadi". Bu KAM UCHRAYDIGAN zaxira chora bo'lishi kerak -
+        har safar ishga tushganda alohida log yoziladi va
+        freeze_point_events jadvaliga qayd etiladi (qanchalik tez-tez
+        ishlatilayotganini kuzatish uchun - ko'p bo'lsa, 0.85-1.20
+        byudjeti qayta ko'rib chiqilishi kerak degani).
 
     MUHIM: har bir bo'lakning "mavjud vaqti" (natural_gap) HAR DOIM shu
     bo'lakning O'ZINING end_sec - start_sec farqi bilan hisoblanadi - keyingi
@@ -543,7 +549,7 @@ def _merge_segments_pure_python(ok_segs: list, out_path: Path, stretch_to_fit: b
     typecode = _TYPECODE_BY_WIDTH.get(sampwidth, "h")
 
     # 1-o'tish: har bir bo'lak uchun moslashtirilgan (surilgan) boshlanish vaqtini,
-    # kerak bo'lsa yengil tezlashtirishni (<=max_rate) va "muzlatish nuqtalari"ni hisoblaymiz.
+    # kerak bo'lsa qolgan "joy" ichida tezlashtirishni va "muzlatish nuqtalari"ni hisoblaymiz.
     freeze_points = []
     adjusted = []
     for idx, p in enumerate(parsed):
@@ -557,7 +563,11 @@ def _merge_segments_pure_python(ok_segs: list, out_path: Path, stretch_to_fit: b
         effective_duration = orig_duration
         freeze_added = 0.0
         if stretch_to_fit and natural_gap > 0 and orig_duration > natural_gap:
-            rate = min(orig_duration / natural_gap, max_rate)
+            applied_speed = p["applied_speed"] if p.get("applied_speed") else 1.0
+            # 1-bosqich allaqachon ishlatgan "joy"ni ayirib, qolganini hisoblaymiz -
+            # hech qachon 1.0dan past bo'lmaydi (bu yerda hech qachon sekinlashtirilmaydi).
+            rate_cap = max(SPEED_HARD_MAX / applied_speed, 1.0)
+            rate = min(orig_duration / natural_gap, rate_cap)
             if rate > 1.001:
                 target_frame_count = max(int(round(orig_frame_count / rate)), 1)
                 raw = _resample_raw(raw, p["nchannels"], p["sampwidth"], target_frame_count)
@@ -565,9 +575,27 @@ def _merge_segments_pure_python(ok_segs: list, out_path: Path, stretch_to_fit: b
                 effective_duration = orig_frame_count / p["framerate"] if p["framerate"] else 0
 
             if effective_duration > natural_gap + 0.01:
+                # 3-BOSQICH: 1 va 2-bosqich (jami 0.85-1.20 byudjeti) ham
+                # yetmadi - ENG OXIRGI zaxira chora sifatida freeze-point.
                 overflow = round(effective_duration - natural_gap, 3)
                 freeze_points.append({"time": round(p["end_sec"], 3), "duration": overflow})
                 freeze_added = overflow
+                total_speed = round(applied_speed * min(rate, rate_cap), 4)
+                if job_id:
+                    db.log_line(
+                        job_id,
+                        f"FREEZE-POINT ISHGA TUSHDI: {p['seg_index'] + 1}-segment "
+                        f"({p['start_sec']:.2f}-{p['end_sec']:.2f}s) {overflow:.2f}s sig'madi - "
+                        f"1-2-bosqich tezligi jami {total_speed}x (0.85-1.20 byudjeti yetarli bo'lmadi)."
+                    )
+                    db.execute(
+                        "UPDATE tts_segments SET duration_overflow = 1 WHERE job_id = ? AND seg_index = ?",
+                        (job_id, p["seg_index"]))
+                    db.execute(
+                        "INSERT INTO freeze_point_events (id, video_id, tts_job_id, seg_index, source_time, "
+                        "duration, applied_speed, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (db.new_id(), video_id, job_id, p["seg_index"], round(p["end_sec"], 3), overflow,
+                         total_speed, db.now()))
 
         adjusted.append({**p, "raw": raw, "adjusted_start": adjusted_start, "orig_duration": effective_duration})
 
