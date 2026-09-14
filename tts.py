@@ -72,11 +72,24 @@ def estimate_speech_duration(text: str, chars_per_second: float = UZBEK_CHARS_PE
     return length / chars_per_second
 
 
+# Tashqi SRT'dagi [speed:fast]/[speed:slow] belgisidan kelgan boshlang'ich
+# tezliklar va ularning QATTIQ (universal) chegarasi - bu MAX_TTS_SPEED
+# (tegsiz bloklar uchun avtomatik xavfsizlik chegarasi)dan ALOHIDA, chunki
+# teg mavjud bo'lganda MASTER instruksiya (tarjima tili modeli) allaqachon
+# aniq signal bergan bo'ladi.
+SPEED_TAG_BASE = {"fast": 1.12, "slow": 0.92}
+SPEED_TAG_HARD_MIN = 0.85
+SPEED_TAG_HARD_MAX = 1.20
+
+
 def compute_segment_speed(text: str, available_seconds: float, base_speed: float = 1.0,
-                           max_speed: float = MAX_TTS_SPEED):
+                           max_speed: float = MAX_TTS_SPEED, min_speed: float = 1.0):
     """Segment matnini mavjud vaqt oralig'iga sig'dirish uchun TTS'ga yuboriladigan
-    'speed' qiymatini oldindan hisoblaydi. Qaytaradi: (speed, ehtimol_sig'maydi: bool)."""
-    base_speed = max(base_speed, 1.0)
+    'speed' qiymatini oldindan hisoblaydi. `min_speed` - natijaviy tezlik hech
+    qachon shundan past bo'lmaydi (standart 1.0 - ya'ni sekinlashtirilmaydi;
+    [speed:slow] tegi kelganda chaqiruvchi buni pastga tushiradi, masalan 0.85gacha).
+    Qaytaradi: (speed, matn tezlashtirilgandan keyin ham sig'maydimi: bool)."""
+    base_speed = max(base_speed, min_speed)
     if not available_seconds or available_seconds <= 0:
         return base_speed, False
     needed = estimate_speech_duration(text)
@@ -164,10 +177,14 @@ def create_job(title: str, provider: str, segments: list, voice: str = "", mood:
         # audioda shu joyda jim (silence) qoladi (merge_job faqat 'completed'
         # bo'laklarni ishlatadi).
         status = "skipped" if not (seg["text"] or "").strip() else "pending"
+        # Tashqi tayyorlangan SRT'dan (translation.parse_srt_direct) kelgan
+        # ixtiyoriy [speed:fast]/[speed:slow] belgisi - bo'lsa, shu blok uchun
+        # TTS audio tezligini moslashtirishda ishlatiladi (compute_segment_speed).
+        speed_tag = seg.get("speed_tag") if seg.get("speed_tag") in ("fast", "slow") else None
         db.execute(
-            """INSERT INTO tts_segments (id, job_id, seg_index, start_sec, end_sec, text, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (db.new_id(), job_id, i, seg["start"], seg["end"], seg["text"], status),
+            """INSERT INTO tts_segments (id, job_id, seg_index, start_sec, end_sec, text, status, speed_tag)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (db.new_id(), job_id, i, seg["start"], seg["end"], seg["text"], status, speed_tag),
         )
     skipped_count = sum(1 for seg in segments if not (seg["text"] or "").strip())
     if skipped_count:
@@ -223,10 +240,21 @@ async def _process_segment(client, job, seg, lock, ctx, out_dir):
     provider = job["provider"]
 
     # TTS'ga yuborishdan oldin, matn uzunligiga qarab tezlikni moslashtiraymiz
-    # (o'z vaqt oynasiga tabiiy tarzda sig'ishi uchun, keyinroq sun'iy siqishdan ko'ra tabiiyroq eshitiladi)
+    # (o'z vaqt oynasiga tabiiy tarzda sig'ishi uchun, keyinroq sun'iy siqishdan ko'ra tabiiyroq eshitiladi).
+    # Agar bu blokda tashqi SRT'dan kelgan [speed:fast]/[speed:slow] belgisi bo'lsa,
+    # u USTUVOR - boshlang'ich tezlik sifatida ishlatiladi (0.92/1.12), lekin matn
+    # baribir sig'may qolsa, xavfsizlik uchun tezlik yana oshiriladi (hozirgidek),
+    # faqat endi umumiy QATTIQ chegara 0.85-1.20 bilan (job sozlamasidagi
+    # MAX_TTS_SPEED'dan alohida - teg aniq signal bergan holat uchun).
     available = (seg["end_sec"] or 0) - (seg["start_sec"] or 0)
-    base_speed = float(job["speed"] or 1.0) if provider == "aisha" else 1.0
-    seg_speed, _likely_overflow = compute_segment_speed(seg["text"], available, base_speed=base_speed)
+    speed_tag = seg["speed_tag"] if "speed_tag" in seg.keys() else None
+    if speed_tag in SPEED_TAG_BASE:
+        seg_speed, _likely_overflow = compute_segment_speed(
+            seg["text"], available, base_speed=SPEED_TAG_BASE[speed_tag],
+            max_speed=SPEED_TAG_HARD_MAX, min_speed=SPEED_TAG_HARD_MIN)
+    else:
+        base_speed = float(job["speed"] or 1.0) if provider == "aisha" else 1.0
+        seg_speed, _likely_overflow = compute_segment_speed(seg["text"], available, base_speed=base_speed)
 
     if provider == "aisha":
         raw = keys_manager.decrypt_raw(job["aisha_key_encrypted"]) if job["aisha_key_encrypted"] else ""
@@ -270,9 +298,17 @@ async def _process_segment(client, job, seg, lock, ctx, out_dir):
             from_cache = False
         seg_path = out_dir / f"seg_{seg['seg_index']:05d}.{ext}"
         seg_path.write_bytes(audio_bytes)
+
+        # Tezlik moslashtirilgandan keyin ham audio blok vaqt oralig'iga sig'ganini
+        # tekshiramiz (§3.5) - SIG'MASA AUDIOGA TEGILMAYDI (freeze-point mexanizmi
+        # baribir video tomonidan "kutib turish" bilan hal qiladi), faqat keyinroq
+        # ko'rib chiqish uchun belgilanadi.
+        actual_duration = _wav_duration_seconds(seg_path)
+        duration_overflow = 1 if (available > 0 and actual_duration > available + 0.05) else 0
+
         async with lock:
-            db.execute("UPDATE tts_segments SET status = 'completed', audio_path = ?, cache_key = ? WHERE id = ?",
-                       (str(seg_path), key, seg["id"]))
+            db.execute("UPDATE tts_segments SET status = 'completed', audio_path = ?, cache_key = ?, "
+                       "duration_overflow = ? WHERE id = ?", (str(seg_path), key, duration_overflow, seg["id"]))
             done = db.fetchone(
                 "SELECT COUNT(*) c FROM tts_segments WHERE job_id = ? AND status IN ('completed', 'skipped')",
                 (job["id"],))["c"]
@@ -427,6 +463,18 @@ def _read_wav_file(path: Path):
         nframes = wf.getnframes()
         raw = wf.readframes(nframes)
     return nchannels, sampwidth, framerate, raw
+
+
+def _wav_duration_seconds(path: Path) -> float:
+    """WAV faylning davomiyligini (soniyada) faqat sarlavhasidan o'qiydi -
+    to'liq audio ma'lumotini xotiraga yuklamasdan (tezlik moslashtirilgandan
+    keyin ham blok vaqt oralig'iga sig'ganini tekshirish uchun)."""
+    try:
+        with wave.open(str(path), "rb") as wf:
+            framerate = wf.getframerate() or 1
+            return wf.getnframes() / float(framerate)
+    except Exception:
+        return 0.0
 
 
 def _resample_raw(raw: bytes, nchannels: int, sampwidth: int, target_frame_count: int) -> bytes:

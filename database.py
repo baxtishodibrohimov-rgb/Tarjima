@@ -303,6 +303,15 @@ _AUDIO_TRACK_NEW_COLUMNS = {
     "subtitled_video_path": "TEXT",
     "subtitled_video_error": "TEXT",
 }
+_TTS_SEGMENT_NEW_COLUMNS = {
+    # Tashqi tayyorlangan SRT (parse_srt_direct) timestamp qatoridan o'qilgan
+    # ixtiyoriy [speed:fast]/[speed:slow] belgisi - "fast"/"slow"/NULL (oddiy).
+    "speed_tag": "TEXT",
+    # Tezlik moslashtirilgandan keyin ham audio blok vaqt oralig'iga sig'may
+    # qolsa (freeze-point baribir hal qiladi, lekin ko'rib chiqish uchun
+    # belgilanadi) - 1 = sig'madi, 0 = sig'di/tekshirilmadi.
+    "duration_overflow": "INTEGER DEFAULT 0",
+}
 _CHUNK_NEW_COLUMNS = {
     # NULL = bo'lak uchun alohida til belgilanmagan (videoning umumiy tilidan foydalaniladi),
     # "" = bu bo'lak uchun ataylab "avtomatik aniqlash" tanlangan, "xx" = aniq til kodi.
@@ -347,6 +356,10 @@ def _migrate_columns():
         for col, decl in _AUDIO_TRACK_NEW_COLUMNS.items():
             if col not in existing_tracks:
                 c.execute(f"ALTER TABLE audio_tracks ADD COLUMN {col} {decl}")
+        existing_tts_segments = {row[1] for row in c.execute("PRAGMA table_info(tts_segments)").fetchall()}
+        for col, decl in _TTS_SEGMENT_NEW_COLUMNS.items():
+            if col not in existing_tts_segments:
+                c.execute(f"ALTER TABLE tts_segments ADD COLUMN {col} {decl}")
 
 
 # ---------------------------------------------------------------------------

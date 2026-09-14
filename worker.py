@@ -931,7 +931,8 @@ def _invalidate_translation_blocks_covering(video_id: str, source_index: int) ->
         # qayta sintez qilinib ketishi mumkin edi.
         db.execute(
             f"UPDATE tts_segments SET status = 'pending', audio_path = NULL, cache_key = NULL, error = NULL, "
-            f"text = '' WHERE job_id = ? AND status = 'completed' AND seg_index IN ({placeholders})",
+            f"duration_overflow = 0, text = '' "
+            f"WHERE job_id = ? AND status = 'completed' AND seg_index IN ({placeholders})",
             (video["tts_job_id"], *invalidated_final_indices),
         )
     return len(invalidated_final_indices)
@@ -1255,9 +1256,13 @@ def get_translation_blocks(video_id: str) -> list:
     translations = json.loads(video["translation_segments"] or "[]")
     audio_status_by_index = {}
     if video["tts_job_id"]:
-        segs = db.fetchall("SELECT seg_index, status, error FROM tts_segments WHERE job_id = ?",
+        segs = db.fetchall("SELECT seg_index, status, error, duration_overflow FROM tts_segments WHERE job_id = ?",
                             (video["tts_job_id"],))
-        audio_status_by_index = {s["seg_index"]: {"status": s["status"], "error": s["error"]} for s in segs}
+        audio_status_by_index = {
+            s["seg_index"]: {"status": s["status"], "error": s["error"],
+                              "duration_overflow": bool(s["duration_overflow"])}
+            for s in segs
+        }
     blocks = []
     for i, block in enumerate(translations):
         src = block.get("source_indices")
@@ -1270,6 +1275,9 @@ def get_translation_blocks(video_id: str) -> list:
             "index": i, "source_indices": src,
             "start": block.get("start"), "end": block.get("end"),
             "original_text": original_text, "translation_text": block.get("text") or "",
+            # Tashqi SRT'dan (parse_srt_direct) kelgan ixtiyoriy tezlik belgisi -
+            # "fast"/"slow"/None (oddiy). Faqat ko'rsatish uchun, bu yerda o'zgartirilmaydi.
+            "speed_tag": block.get("speed_tag"),
             "audio": audio_status_by_index.get(i),
         })
     return blocks
@@ -1304,7 +1312,7 @@ def apply_block_edits(video_id: str, new_texts: list):
     if video["tts_job_id"]:
         for i in changed_indices:
             db.execute("UPDATE tts_segments SET text = ?, status = 'pending', audio_path = NULL, "
-                       "cache_key = NULL, error = NULL WHERE job_id = ? AND seg_index = ?",
+                       "cache_key = NULL, error = NULL, duration_overflow = 0 WHERE job_id = ? AND seg_index = ?",
                        (new_texts[i], video["tts_job_id"], i))
         db.execute("UPDATE tts_jobs SET status = 'queued', error = NULL WHERE id = ?", (video["tts_job_id"],))
         _update_video(video_id, status="audio_processing", blocked_reason=None, audio_status="generating",

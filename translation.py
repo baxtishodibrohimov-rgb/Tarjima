@@ -251,10 +251,18 @@ def parse_manual_translation(content: str, expected_segments: list) -> list:
     return texts
 
 
+SPEED_TAG_RE = re.compile(r"\[speed:(fast|slow)\]", re.IGNORECASE)
+
+
 def parse_srt_direct(content: str) -> list:
     """Tayyor SRT faylini o'z vaqt belgilari bilan to'g'ridan-to'g'ri o'qiydi
     (original transkripsiya bo'laklar soniga bog'liq emas). Foydalanuvchi
-    o'zi tayyorlagan o'zbekcha SRT faylini shu ko'rinishda yuklashi mumkin."""
+    o'zi tayyorlagan o'zbekcha SRT faylini shu ko'rinishda yuklashi mumkin.
+
+    Timestamp qatorida (matn qatorida EMAS) ixtiyoriy `[speed:fast]` yoki
+    `[speed:slow]` belgisi bo'lsa, u o'qilib segmentning "speed_tag" maydoniga
+    yoziladi (TTS audio tezligini moslashtirish uchun - §tts.py) - matnga
+    hech qanday ta'sir qilmaydi, belgi timestamp qatoridan olib tashlanadi."""
     normalized = content.replace("\r\n", "\n").replace("\r", "\n").strip()
     time_re = re.compile(r"(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})[,.](\d{3})")
     blocks = re.split(r"\n\s*\n", normalized)
@@ -274,7 +282,11 @@ def parse_srt_direct(content: str) -> list:
         end = g[4] * 3600 + g[5] * 60 + g[6] + g[7] / 1000
         text = " ".join(lines[idx + 1:]).strip()
         if text:
-            segments.append({"start": start, "end": end, "text": text})
+            seg = {"start": start, "end": end, "text": text}
+            tag_m = SPEED_TAG_RE.search(lines[idx])
+            if tag_m:
+                seg["speed_tag"] = tag_m.group(1).lower()
+            segments.append(seg)
     if not segments:
         raise ValueError("SRT faylida to'g'ri formatdagi bloklar topilmadi.")
     return segments

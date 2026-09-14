@@ -2212,11 +2212,19 @@ function renderBlockRow(videoId, b, i) {
   const mergedNote = isMerged
     ? `<div class="hint" style="font-size:10px; line-height:1.3; margin-top:2px;">${srcIndices.length} segment birlashgan</div>`
     : '';
+  // Tashqi SRT'dan kelgan [speed:fast]/[speed:slow] belgisi - faqat ko'rsatish
+  // uchun (audio tezligini yaratish paytida serverda hisobga olinadi).
+  const speedBadge = b.speed_tag === 'fast' ? '<span title="Tez (speed:fast)">🏃</span>'
+    : b.speed_tag === 'slow' ? '<span title="Sekin (speed:slow)">🐢</span>' : '';
+  // Tezlik moslashtirilgandan keyin ham audio blok vaqtiga sig'may qolgan bo'lsa
+  // (freeze-point baribir hal qiladi, lekin diqqat uchun) - ogohlantirish belgisi.
+  const overflowBadge = (b.audio && b.audio.duration_overflow)
+    ? '<span title="Audio tezlashtirilgandan keyin ham blok vaqtiga sig\'madi - video shu joyda \'kutib turadi\'">⚠️</span>' : '';
   const retranscribeBtn = isMerged ? '' : `
         <button class="small-btn" style="margin-top:2px; font-size:10.5px; padding:2px 6px;" onclick="retranscribeSegment('${videoId}', ${srcIndices[0]}, this)" title="Original matnni Whisper'ga qayta yuborib yangilaydi, tarjimasi tozalanadi">🔁</button>`;
   return `
     <div class="block-editor-row" id="block-row-${videoId}-${i}">
-      <div class="bidx">${i + 1} ${audioLabel}${mergedNote}<br>
+      <div class="bidx">${i + 1} ${audioLabel}${speedBadge}${overflowBadge}${mergedNote}<br>
         <button class="small-btn" style="margin-top:4px; font-size:10.5px; padding:2px 6px;" onclick="playBlockRangeAudio('${videoId}', ${b.start}, ${b.end}, this)" title="Bu blokni tinglash">🔊</button>${retranscribeBtn}
       </div>
       <textarea readonly id="block-orig-${videoId}-${i}">${escapeHtml(b.original_text)}</textarea>
