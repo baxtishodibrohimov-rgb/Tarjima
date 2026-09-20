@@ -1656,11 +1656,20 @@ function videoStatusInfo(v) {
 /* ============================================================ */
 let currentDetailVideoId = null;
 let currentDetailVideoStatus = null;
+// Video 'band' (blocked_reason mavjud) bo'lsa - fon jarayoni FAOL EMAS,
+// foydalanuvchi harakatini kutmoqda (masalan "Video yig'ishda xato").
+// Shunday holatda 4 soniyalik avtomatik yangilanishni to'xtatamiz (xuddi
+// 'completed' kabi) - aks holda hech narsa o'zgarmasa ham butun panel
+// har safar qayta chizilib, foydalanuvchini bezovta qiladi (skroll/fokus
+// tiklanadi, "Qayta urinish" tugmasi bosilayotganda ham vaqti-vaqti bilan
+// yo'qolib-paydo bo'lib turadi).
+let currentDetailVideoBlockedReason = null;
 
 function openVideoDetail(id) {
   switchPage('page-videos');
   currentDetailVideoId = id;
   currentDetailVideoStatus = null;
+  currentDetailVideoBlockedReason = null;
   document.getElementById('videosGridView').style.display = 'none';
   document.getElementById('videoDetailView').style.display = 'block';
   document.getElementById('videosFab').style.display = 'none';
@@ -1670,6 +1679,7 @@ function openVideoDetail(id) {
 function closeVideoDetail() {
   currentDetailVideoId = null;
   currentDetailVideoStatus = null;
+  currentDetailVideoBlockedReason = null;
   document.getElementById('videoDetailView').style.display = 'none';
   document.getElementById('videosGridView').style.display = 'block';
   document.getElementById('videosFab').style.display = 'flex';
@@ -1680,6 +1690,7 @@ async function loadVideoDetail(id) {
   try {
     const v = await apiFetch(`/api/videos/${id}`);
     currentDetailVideoStatus = v.status;
+    currentDetailVideoBlockedReason = v.blocked_reason || null;
     currentDetailVideoLanguage = v.language || '';
     document.getElementById('videoDetailContent').innerHTML = renderVideoDetail(v);
     if (v.status === 'completed') initPlayer(id);
@@ -2494,7 +2505,8 @@ function renderAudioStage(v) {
   } else {
     if (v.audio_status === 'error' || v.blocked_reason === 'api_key') {
       badge = stageStatusBadge(v.blocked_reason === 'api_key' ? 'API kalit kerak' : 'Xato', 'error');
-      body = `<div class="row" style="margin-top:0;">
+      body = `${(v.error || v.message) ? `<p class="status err">${escapeHtml(v.error || v.message)}</p>` : ''}
+      <div class="row" style="margin-top:0;">
         ${v.tts_job_id ? `<button class="action" onclick="resumeAudioJob('${v.tts_job_id}')">Davom ettirish</button>` : ''}
       </div>`;
     }
@@ -2702,7 +2714,8 @@ function renderRenderStage(v) {
     body = `<p class="hint">Server original video va audioni birlashtirmoqda...</p>`;
   } else if (v.status === 'video_rendering' && v.blocked_reason) {
     badge = stageStatusBadge('Xato', 'error');
-    body = `<button class="action" onclick="renderVideo('${v.id}')">Qayta urinish</button>`;
+    body = `${(v.error || v.message) ? `<p class="status err">${escapeHtml(v.error || v.message)}</p>` : ''}
+      <button class="action" onclick="renderVideo('${v.id}')">Qayta urinish</button>`;
   } else if (v.status === 'completed') {
     badge = stageStatusBadge('✅ Tayyor', 'done');
     const uzUrl = `${API_BASE}/api/videos/${v.id}/final-download`;
@@ -3344,7 +3357,8 @@ window.addEventListener('DOMContentLoaded', () => {
         '[id^="block-editor-"], [id^="translate-form-"], [id^="audio-form-"], [id^="transcript-block-editor-"]'
       )).some(el => el.innerHTML.trim() !== '');
       if (currentDetailVideoId) {
-        if (currentDetailVideoStatus !== 'completed' && !anyPanelOpen) loadVideoDetail(currentDetailVideoId);
+        if (currentDetailVideoStatus !== 'completed' && !currentDetailVideoBlockedReason && !anyPanelOpen)
+          loadVideoDetail(currentDetailVideoId);
       } else loadVideos();
     } else if (id === 'page-transcribe') loadTranscribeList();
     else if (id === 'page-translate') {
