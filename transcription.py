@@ -291,7 +291,12 @@ def mux_video_audio_with_freezes(video_path: Path, audio_path: Path, out_path: P
     part_paths = []
     prev_time = 0.0
     for i, fp in enumerate(freeze_points):
-        t = min(fp["time"], total_duration)
+        # MUHIM: hech qachon videoning ANIQ oxiriga (yoki undan keyinga) "-ss"
+        # bilan sakramaymiz - ffmpeg ba'zan shu nuqtada xato bermay, lekin
+        # HECH QANDAY kadr ham chiqarmay qo'yishi mumkin (masalan oxirgi freeze
+        # nuqtasi video davomiyligiga to'g'ri kelib qolganda) - shuning uchun
+        # kichik xavfsizlik zaxirasi bilan orqaga suriladi.
+        t = min(fp["time"], max(total_duration - 0.05, 0))
         dur = fp["duration"]
         if t > prev_time:
             trim_path = work_dir / f"part_{i:03d}_trim.mp4"
@@ -306,6 +311,19 @@ def mux_video_audio_with_freezes(video_path: Path, audio_path: Path, out_path: P
         _run_ffmpeg([
             ffmpeg_exe(), "-y", "-ss", str(t), "-i", str(video_path), "-vframes", "1", str(frame_path),
         ], f"{i + 1}-qism (kadr olish)")
+        if not frame_path.exists() or frame_path.stat().st_size == 0:
+            # Yuqoridagi zaxira ham yetmasa (kamdan-kam) - yana biroz orqaga
+            # surib qayta urinamiz, aks holda keyingi qadam tushunarsiz
+            # "fayl topilmadi" xatosi bilan yiqilardi.
+            retry_t = max(t - 0.5, 0)
+            _run_ffmpeg([
+                ffmpeg_exe(), "-y", "-ss", str(retry_t), "-i", str(video_path), "-vframes", "1", str(frame_path),
+            ], f"{i + 1}-qism (kadr olish, qayta urinish)")
+            if not frame_path.exists() or frame_path.stat().st_size == 0:
+                raise RuntimeError(
+                    f"{i + 1}-qism uchun video kadrini olib bo'lmadi (vaqt: {t:.3f}s, video "
+                    f"davomiyligi: {total_duration:.3f}s)."
+                )
         freeze_path = work_dir / f"part_{i:03d}_freeze.mp4"
         _run_ffmpeg([
             ffmpeg_exe(), "-y", "-loop", "1", "-i", str(frame_path), "-t", str(dur),
