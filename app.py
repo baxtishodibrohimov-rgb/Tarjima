@@ -1043,7 +1043,11 @@ async def render_endpoint(video_id: str):
     v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
     if not v:
         raise HTTPException(404, "Video topilmadi.")
-    if v["status"] not in ("audio_ready", "completed") or not v["audio_path"]:
+    # "video_rendering" ham ruxsat etiladi - bu avvalgi urinish xato bilan
+    # to'xtagan holat ham bo'lishi mumkin ("Qayta urinish" tugmasi shu holatdan
+    # chaqiradi); ikkilanib ishga tushishning oldi enqueue_render() ichida
+    # (faol, blocked_reason'siz "video_rendering" bo'lsa) olinadi.
+    if v["status"] not in ("audio_ready", "completed", "video_rendering") or not v["audio_path"]:
         raise HTTPException(400, "Avval audio tayyor bo'lishi kerak.")
     if not worker.enqueue_render(video_id):
         raise HTTPException(409, "Video allaqachon yig'ilmoqda.")
