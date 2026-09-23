@@ -2825,9 +2825,19 @@ async function burnSubtitles(videoId, provider) {
   setStatus(statusId, '', '');
   if (btn) btn.disabled = true;
   try {
-    const form = new FormData();
-    if (provider) form.append('provider', provider);
-    await apiFetch(`/api/videos/${videoId}/subtitle-burn`, { method: 'POST', body: form });
+    // MUHIM: provider bo'lmaganda FormData'ni BO'SH holda yubormaymiz - brauzer
+    // 0 ta maydonli FormData uchun ham multipart/form-data body yaratadi
+    // (bo'sh, faqat boundary bilan), va bu ba'zan serverdagi multipart
+    // parserni "There was an error parsing the body" xatosi bilan yiqitadi.
+    // Body umuman yubormasak, server "provider" ni to'g'ridan-to'g'ri
+    // standart (None) qiymat bilan qabul qiladi.
+    const opts = { method: 'POST' };
+    if (provider) {
+      const form = new FormData();
+      form.append('provider', provider);
+      opts.body = form;
+    }
+    await apiFetch(`/api/videos/${videoId}/subtitle-burn`, opts);
     if (currentDetailVideoId === videoId) loadVideoDetail(videoId);
   } catch (e) {
     setStatus(statusId, 'Xato: ' + e.message, 'err');
