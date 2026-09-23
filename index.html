@@ -2501,6 +2501,7 @@ function renderAudioStage(v) {
       <div class="row"><a class="small-btn" style="text-decoration:none; display:inline-block;" href="${API_BASE}/api/tts/jobs/${v.tts_job_id}/download">Yuklab olish</a>
       <button class="secondary" onclick="showAudioForm('${v.id}')">Qayta yaratish</button>
       <button class="small-btn" onclick="restartFromStage('${v.id}', 'audio')">🔁 Qaytadan boshlash</button></div>
+      <div class="row"><button class="small-btn" onclick="remergeAudio('${v.id}', this)">🔧 Gaplar kesilgan/ustma-ust tushgan bo'lsa tuzatish (audio qayta yaratmasdan, pullik emas)</button></div>
       <div id="audio-form-${v.id}"></div>`;
   } else {
     if (v.audio_status === 'error' || v.blocked_reason === 'api_key') {
@@ -2698,6 +2699,22 @@ async function resumeAudioJob(ttsJobId) {
     await apiFetch(`/api/tts/jobs/${ttsJobId}/resume`, { method: 'POST' });
     if (currentDetailVideoId) loadVideoDetail(currentDetailVideoId);
   } catch (e) { alert('Xato: ' + e.message); }
+}
+
+async function remergeAudio(videoId, btnEl) {
+  if (!confirm("Audio TTS orqali qayta yaratilmaydi (xarajat yo'q) - faqat mavjud ovoz bo'laklari \"kerak bo'lgandagina siqish\" yoqilgan holda qayta birlashtiriladi va video qayta yig'iladi. Davom etilsinmi?")) return;
+  const original = btnEl ? btnEl.textContent : '';
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = 'Boshlanmoqda...'; }
+  try {
+    const form = new FormData();
+    form.append('stretch_to_fit', 'true');
+    await apiFetch(`/api/videos/${videoId}/audio/remerge`, { method: 'POST', body: form });
+    if (currentDetailVideoId === videoId) loadVideoDetail(videoId);
+  } catch (e) {
+    alert('Xato: ' + e.message);
+  } finally {
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = original; }
+  }
 }
 
 function renderRenderStage(v) {

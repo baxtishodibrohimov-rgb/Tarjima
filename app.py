@@ -1054,6 +1054,31 @@ async def render_endpoint(video_id: str):
     return {"ok": True}
 
 
+@app.post("/api/videos/{video_id}/audio/remerge")
+async def remerge_audio_endpoint(video_id: str, stretch_to_fit: bool = Form(True)):
+    """Audio segmentlarini TTS orqali QAYTA YARATMASDAN (hech qanday API xarajat
+    qilinmaydi), faqat ularni "kerak bo'lgandagina siqish" sozlamasi
+    o'zgartirilgan holda QAYTA BIRLASHTIRADI. Buni asosan avval
+    stretch_to_fit=false bilan yaratilgan, natijada segmentlar bir-birining
+    ustiga tushib (overlap) gaplar oxiri kesilib qolgan eski audiolarni,
+    pulsiz tuzatish uchun ishlatiladi. Segmentlarning audio fayllari diskda
+    saqlanib qolgani uchun bu ishlaydi - TTS ish tugagach ular tozalanmaydi."""
+    v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    if not v:
+        raise HTTPException(404, "Video topilmadi.")
+    if not v["tts_job_id"]:
+        raise HTTPException(400, "Bu video uchun audio ishi topilmadi.")
+    job = db.fetchone("SELECT * FROM tts_jobs WHERE id = ?", (v["tts_job_id"],))
+    if not job:
+        raise HTTPException(404, "Audio ishi topilmadi.")
+    if job["status"] not in ("completed", "error"):
+        raise HTTPException(409, "Audio ish hozir band (ishlamoqda yoki navbatda) - biroz kuting.")
+    db.execute("UPDATE tts_jobs SET stretch_to_fit = ? WHERE id = ?",
+               (1 if stretch_to_fit else 0, job["id"]))
+    tts.resume_job(job["id"])
+    return {"ok": True}
+
+
 @app.post("/api/videos/{video_id}/subtitle-burn")
 async def subtitle_burn_endpoint(video_id: str, provider: str = Form(None)):
     """Yakuniy o'zbekcha videoga subtitr "kuydiradi" (hardsub) - ixtiyoriy,
