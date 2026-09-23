@@ -312,18 +312,30 @@ def mux_video_audio_with_freezes(video_path: Path, audio_path: Path, out_path: P
             ffmpeg_exe(), "-y", "-ss", str(t), "-i", str(video_path), "-vframes", "1", str(frame_path),
         ], f"{i + 1}-qism (kadr olish)")
         if not frame_path.exists() or frame_path.stat().st_size == 0:
-            # Yuqoridagi zaxira ham yetmasa (kamdan-kam) - yana biroz orqaga
-            # surib qayta urinamiz, aks holda keyingi qadam tushunarsiz
-            # "fayl topilmadi" xatosi bilan yiqilardi.
-            retry_t = max(t - 0.5, 0)
-            _run_ffmpeg([
-                ffmpeg_exe(), "-y", "-ss", str(retry_t), "-i", str(video_path), "-vframes", "1", str(frame_path),
-            ], f"{i + 1}-qism (kadr olish, qayta urinish)")
-            if not frame_path.exists() or frame_path.stat().st_size == 0:
-                raise RuntimeError(
-                    f"{i + 1}-qism uchun video kadrini olib bo'lmadi (vaqt: {t:.3f}s, video "
-                    f"davomiyligi: {total_duration:.3f}s)."
-                )
+            # Ba'zi videolarda konteyner metama'lumotidagi "Duration:" haqiqiy
+            # oxirgi dekodlanadigan kadrdan sezilarli uzoqroq bo'lishi mumkin
+            # (masalan uzoq/qayta remux qilingan fayllarda) - shuning uchun
+            # tobora ko'proq orqaga surib bir necha marta qayta urinamiz.
+            for back in (0.5, 1.5, 3.0, 6.0, 10.0):
+                retry_t = max(t - back, 0)
+                _run_ffmpeg([
+                    ffmpeg_exe(), "-y", "-ss", str(retry_t), "-i", str(video_path), "-vframes", "1",
+                    str(frame_path),
+                ], f"{i + 1}-qism (kadr olish, qayta urinish -{back:g}s)")
+                if frame_path.exists() and frame_path.stat().st_size > 0:
+                    break
+            else:
+                # Orqaga surishlarning hech biri yordam bermadi - faylning
+                # haqiqiy oxiridan (EOF) hisoblab so'nggi urinish.
+                _run_ffmpeg([
+                    ffmpeg_exe(), "-y", "-sseof", "-3", "-i", str(video_path), "-vframes", "1",
+                    str(frame_path),
+                ], f"{i + 1}-qism (kadr olish, EOF'dan)")
+                if not frame_path.exists() or frame_path.stat().st_size == 0:
+                    raise RuntimeError(
+                        f"{i + 1}-qism uchun video kadrini olib bo'lmadi (vaqt: {t:.3f}s, video "
+                        f"davomiyligi: {total_duration:.3f}s)."
+                    )
         freeze_path = work_dir / f"part_{i:03d}_freeze.mp4"
         _run_ffmpeg([
             ffmpeg_exe(), "-y", "-loop", "1", "-i", str(frame_path), "-t", str(dur),
