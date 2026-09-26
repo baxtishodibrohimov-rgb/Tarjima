@@ -293,11 +293,27 @@ async def _process_segment(client, job, seg, lock, ctx, out_dir):
             audio_bytes = cpath.read_bytes()
             from_cache = True
         else:
-            if provider == "aisha":
-                audio_bytes = await aisha_generate_one(client, seg["text"], job["mood"], aisha_speed, raw)
-            else:
-                audio_bytes = await openai_tts_generate_one(
-                    client, seg["text"], job["voice"], raw, job["instructions"], speed=seg_speed)
+            # Vaqtinchalik xatolar (tarmoq uzilishi, "rate limit" va h.k.) uchun
+            # bir necha marta qayta urinamiz - aks holda 1000+ segmentli katta
+            # ishlarda BITTA vaqtinchalik muvaffaqiyatsizlik butun ishni
+            # to'xtatib qo'yardi (foydalanuvchi qo'lda "Davom ettirish"ni
+            # bosishiga to'g'ri kelardi).
+            last_err = None
+            for attempt in range(3):
+                try:
+                    if provider == "aisha":
+                        audio_bytes = await aisha_generate_one(client, seg["text"], job["mood"], aisha_speed, raw)
+                    else:
+                        audio_bytes = await openai_tts_generate_one(
+                            client, seg["text"], job["voice"], raw, job["instructions"], speed=seg_speed)
+                    last_err = None
+                    break
+                except Exception as retry_err:
+                    last_err = retry_err
+                    if attempt < 2:
+                        await asyncio.sleep(2 * (attempt + 1))
+            if last_err:
+                raise last_err
             cpath.write_bytes(audio_bytes)
             from_cache = False
         seg_path = out_dir / f"seg_{seg['seg_index']:05d}.{ext}"
@@ -340,6 +356,12 @@ async def _process_segment(client, job, seg, lock, ctx, out_dir):
             db.execute("UPDATE tts_segments SET status = 'error', error = ?, attempts = attempts + 1 WHERE id = ?",
                        (str(e)[:500], seg["id"]))
             db.log_line(job["id"], f"XATO (segment {seg['seg_index']+1}): {e}")
+        # MUHIM: kalit muvaffaqiyatsizligini QAYD ETAMIZ - aks holda
+        # get_next_active_key() bu kalitni "muammoli" deb bilmaydi va
+        # keyingi segmentlar ham xuddi shu (masalan "rate limit"ga uchragan)
+        # kalitga yuborilishda davom etadi, xatolar zanjirini kuchaytiradi.
+        if provider != "aisha":
+            keys_manager.mark_result(kid, False, str(e)[:500])
 
 
 async def run_tts_job(job_id: str):
