@@ -77,11 +77,6 @@
   .topbar { display:flex; align-items:center; gap:12px; padding:16px 28px; flex-wrap:wrap;
     border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--bg); z-index:12; }
   .topbar h1 { font-size:19px; margin:0; }
-  .topbar-title-group { display:flex; align-items:center; gap:10px; min-width:0; }
-  .topbar-back { display:none; width:38px; height:38px; border-radius:999px; border:1px solid var(--border);
-    background:var(--surface); color:var(--accent); align-items:center; justify-content:center; cursor:pointer;
-    font:600 20px/1 inherit; flex:none; box-shadow:var(--shadow); }
-  .topbar-back:hover { background:var(--accent-chip); }
   .topbar-actions { margin-left:auto; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
 
   .nav { display:flex; gap:8px; flex-wrap:wrap; }
@@ -231,17 +226,6 @@
   .step-label.dim { color:var(--muted); }
   .step-line { flex:1; min-width:18px; max-width:56px; height:1px; background:var(--accent-line); margin:0 10px; }
   .step-line.done { background:var(--accent); }
-  .workflow-nav { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; padding:10px; }
-  .workflow-tab { min-height:54px; border:1px solid transparent; border-radius:12px; background:transparent;
-    color:var(--muted); display:flex; align-items:center; gap:10px; padding:8px 12px; cursor:pointer;
-    font:500 13px/1.3 inherit; text-align:left; }
-  .workflow-tab:hover { background:var(--panel); color:var(--text); }
-  .workflow-tab.active { background:var(--accent-chip); border-color:var(--accent-line); color:var(--accent); }
-  .workflow-tab .step-dot { width:28px; height:28px; }
-  @media (max-width:700px) {
-    .workflow-nav { grid-template-columns:1fr; }
-    .workflow-tab { min-height:46px; }
-  }
   .stage.dim { opacity:.5; }
   .stage-head { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:6px; }
   .stage-head h3 { margin:0; font-size:15.5px; }
@@ -362,10 +346,7 @@
 
   <div class="main">
     <div class="topbar">
-      <div class="topbar-title-group">
-        <button class="topbar-back" id="videoBackButton" onclick="closeVideoDetail()" title="Kutubxonaga qaytish" aria-label="Kutubxonaga qaytish">&#8592;</button>
-        <h1 id="topbarTitle">Kutubxona</h1>
-      </div>
+      <h1 id="topbarTitle">Kutubxona</h1>
       <div class="topbar-actions">
         <button class="icon-btn" onclick="toggleHeaderSearch()" title="Video qidirish"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></button>
         <button class="icon-btn theme-toggle" id="themeToggleBtn" onclick="toggleTheme()" title="Mavzuni almashtirish">🌙</button>
@@ -551,6 +532,7 @@
   </div>
 
   <div id="videoDetailView" style="display:none;">
+    <button class="back-link" onclick="closeVideoDetail()">← Videolarga qaytish</button>
     <div id="videoDetailContent"></div>
   </div>
 
@@ -815,11 +797,6 @@ function switchPage(pageId) {
     'page-audio': 'Audio', 'page-merge': 'Birlashtirish' };
   const titleEl = document.getElementById('topbarTitle');
   if (titleEl && titles[pageId]) titleEl.textContent = titles[pageId];
-  const backBtn = document.getElementById('videoBackButton');
-  if (backBtn) {
-    const detailOpen = pageId === 'page-videos' && currentDetailVideoId;
-    backBtn.style.display = detailOpen ? 'flex' : 'none';
-  }
 }
 
 function switchTab(group, tabId) {
@@ -1679,8 +1656,6 @@ function videoStatusInfo(v) {
 /* ============================================================ */
 let currentDetailVideoId = null;
 let currentDetailVideoStatus = null;
-let currentDetailVideoData = null;
-let currentDetailSection = 'transcript';
 // Video 'band' (blocked_reason mavjud) bo'lsa - fon jarayoni FAOL EMAS,
 // foydalanuvchi harakatini kutmoqda (masalan "Video yig'ishda xato").
 // Shunday holatda 4 soniyalik avtomatik yangilanishni to'xtatamiz (xuddi
@@ -1694,33 +1669,26 @@ function openVideoDetail(id) {
   switchPage('page-videos');
   currentDetailVideoId = id;
   currentDetailVideoStatus = null;
-  currentDetailVideoData = null;
-  currentDetailSection = 'transcript';
   currentDetailVideoBlockedReason = null;
   document.getElementById('videosGridView').style.display = 'none';
   document.getElementById('videoDetailView').style.display = 'block';
   document.getElementById('videosFab').style.display = 'none';
-  document.getElementById('videoBackButton').style.display = 'flex';
   loadVideoDetail(id);
 }
 
 function closeVideoDetail() {
   currentDetailVideoId = null;
   currentDetailVideoStatus = null;
-  currentDetailVideoData = null;
-  currentDetailSection = 'transcript';
   currentDetailVideoBlockedReason = null;
   document.getElementById('videoDetailView').style.display = 'none';
   document.getElementById('videosGridView').style.display = 'block';
   document.getElementById('videosFab').style.display = 'flex';
-  document.getElementById('videoBackButton').style.display = 'none';
   loadVideos();
 }
 
 async function loadVideoDetail(id) {
   try {
     const v = await apiFetch(`/api/videos/${id}`);
-    currentDetailVideoData = v;
     currentDetailVideoStatus = v.status;
     currentDetailVideoBlockedReason = v.blocked_reason || null;
     currentDetailVideoLanguage = v.language || '';
@@ -1730,18 +1698,6 @@ async function loadVideoDetail(id) {
   } catch (e) {
     document.getElementById('videoDetailContent').innerHTML = `<p class="status err">Xato: ${escapeHtml(e.message)}</p>`;
   }
-}
-
-function showVideoSection(section) {
-  if (!['transcript', 'translation', 'audio'].includes(section)) return;
-  currentDetailSection = section;
-  if (!currentDetailVideoData) return;
-  document.getElementById('videoDetailContent').innerHTML = renderVideoDetail(currentDetailVideoData);
-  if (currentDetailSection === 'audio' && currentDetailVideoData.status === 'completed') {
-    initPlayer(currentDetailVideoData.id);
-  }
-  loadOverviewSegments(currentDetailVideoData);
-  window.scrollTo(0, 0);
 }
 
 /* Foydalanuvchi harakatidan keyin (masalan "Bo'laklarga bo'lish" yoki "Tasdiqlash"
@@ -1807,9 +1763,11 @@ function renderPipelineStepper(v) {
     'transcription_approved', 'translation_ready', 'audio_processing', 'audio_ready', 'video_rendering', 'completed'];
   const idx = order.indexOf(v.status);
   const stages = [
-    { from: 0, to: 5, section: 'transcript', label: 'Video → Matn' },
-    { from: 6, to: 6, section: 'translation', label: 'Matn → Tarjima' },
-    { from: 7, to: 10, section: 'audio', label: 'Matn → Audio' },
+    { from: 0, to: 2, label: 'Yuklash' },
+    { from: 3, to: 5, label: 'Matn' },
+    { from: 6, to: 6, label: 'Tarjima' },
+    { from: 7, to: 8, label: 'Audio' },
+    { from: 9, to: 10, label: 'Yakuniy video' },
   ];
   function state(stage) {
     if (v.status === 'completed') return 'done';
@@ -1820,12 +1778,14 @@ function renderPipelineStepper(v) {
   const parts = stages.map((s, i) => {
     const st = state(s);
     const dotContent = st === 'done' ? '✓' : String(i + 1);
-    return `<button class="workflow-tab ${currentDetailSection === s.section ? 'active' : ''}" onclick="showVideoSection('${s.section}')">
+    const stepHtml = `<span class="step">
       <span class="step-dot ${st}">${dotContent}</span>
       <span class="step-label ${st === 'todo' ? 'dim' : ''}">${escapeHtml(s.label)}</span>
-    </button>`;
+    </span>`;
+    const lineHtml = i < stages.length - 1 ? `<span class="step-line ${st === 'done' ? 'done' : ''}"></span>` : '';
+    return stepHtml + lineHtml;
   }).join('');
-  return `<div class="card workflow-nav" aria-label="Video ishlov bosqichlari">${parts}</div>`;
+  return `<div class="card stepper">${parts}</div>`;
 }
 
 function renderOverviewPanel(v) {
@@ -1873,17 +1833,13 @@ function renderVideoDetail(v) {
     </div>`;
 
   html += renderPipelineStepper(v);
-  if (currentDetailSection === 'transcript') {
-    html += renderOverviewPanel(v);
-    html += renderSegmentStage(v);
-    html += renderTranscriptStage(v);
-  } else if (currentDetailSection === 'translation') {
-    html += renderTranslationStage(v);
-  } else if (currentDetailSection === 'audio') {
-    html += renderAudioStage(v);
-    html += renderRenderStage(v);
-    html += renderFilesAndLog(v);
-  }
+  html += renderOverviewPanel(v);
+  html += renderSegmentStage(v);
+  html += renderTranscriptStage(v);
+  html += renderTranslationStage(v);
+  html += renderAudioStage(v);
+  html += renderRenderStage(v);
+  html += renderFilesAndLog(v);
 
   return html;
 }
@@ -1908,7 +1864,7 @@ function renderSegmentStage(v) {
   } else if (reached) {
     badge = stageStatusBadge(`${v.chunk_count} ta segment tayyor`, 'done');
   }
-  return `<div class="stage"><div class="stage-head"><h3>Video segmentlari</h3>${badge}</div>${body}</div>`;
+  return `<div class="stage"><div class="stage-head"><h3>1. Video segmentlari</h3>${badge}</div>${body}</div>`;
 }
 
 const ISSUE_LABELS = { repetition: 'Takrorlanish ehtimoli', no_speech: 'Nutq aniqlanmadi', low_confidence: 'Ishonchlilik past', wrong_language: 'Til chalkashgan' };
@@ -2089,7 +2045,7 @@ function renderTranscriptStage(v) {
       </div>
       <div id="transcript-block-editor-${v.id}"></div>`;
   }
-  return `<div class="stage ${before ? 'dim' : ''}"><div class="stage-head"><h3>Original matn</h3>${badge}</div>${body}</div>`;
+  return `<div class="stage ${before ? 'dim' : ''}"><div class="stage-head"><h3>2. Original matn</h3>${badge}</div>${body}</div>`;
 }
 
 function renderTranslationStage(v) {
@@ -2123,7 +2079,7 @@ function renderTranslationStage(v) {
       </div>
       <div id="translate-form-${v.id}"></div>`;
   }
-  return `<div class="stage ${before ? 'dim' : ''}"><div class="stage-head"><h3>O'zbekcha tarjima</h3>${badge}</div>${body}</div>`;
+  return `<div class="stage ${before ? 'dim' : ''}"><div class="stage-head"><h3>3. O'zbekcha tarjima</h3>${badge}</div>${body}</div>`;
 }
 
 function showTranslateForm(id) {
@@ -2558,7 +2514,7 @@ function renderAudioStage(v) {
     body += `<div id="audio-form-${v.id}"></div>
       <div class="row"><button class="secondary" onclick="showAudioForm('${v.id}')">${v.tts_job_id ? "Sozlamalarni ko'rish" : 'Audio sozlamalari'}</button></div>`;
   }
-  return `<div class="stage ${before ? 'dim' : ''}"><div class="stage-head"><h3>Audio</h3>${badge}</div>${body}</div>`;
+  return `<div class="stage ${before ? 'dim' : ''}"><div class="stage-head"><h3>4. Audio</h3>${badge}</div>${body}</div>`;
 }
 
 async function showAudioForm(id) {
@@ -2827,7 +2783,7 @@ function renderRenderStage(v) {
       ${renderSubtitleBurnPanel(v.id, null, v.subtitled_video_status, v.subtitled_video_error)}`;
     body += renderAudioTracksPanel(v);
   }
-  return `<div class="stage ${before ? 'dim' : ''}"><div class="stage-head"><h3>Yakuniy video</h3>${badge}</div>${body}</div>`;
+  return `<div class="stage ${before ? 'dim' : ''}"><div class="stage-head"><h3>5. Yakuniy video</h3>${badge}</div>${body}</div>`;
 }
 
 function renderSubtitleBurnPanel(videoId, provider, status, errorMsg) {
