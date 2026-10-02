@@ -40,6 +40,14 @@ RENDER_QUEUE: asyncio.Queue = asyncio.Queue()
 # qo'shimcha provayder bilan yaratilgan track uchun (asosiy RENDER_QUEUE'dan
 # ALOHIDA, chunki u faqat video_id oladi va asosiy videoni yangilaydi).
 TRACK_RENDER_QUEUE: asyncio.Queue = asyncio.Queue()
+# video_id'larni qabul qiladi - "Ruscha o'rganish" rejimi uchun (foydalanuvchi
+# qo'lda yuklagan Learning SRT asosida) yaratiladigan MUSTAQIL yakuniy video.
+# Provider juftligisiz, chunki learning_tracks video_id bo'yicha yagona.
+LEARNING_RENDER_QUEUE: asyncio.Queue = asyncio.Queue()
+# ("intro" | "export", video_id) - Learning intro va so'zlar kuydirilgan
+# yuklab olinadigan Learning videosi. Bitta consumer ketma-ket ishlaydi:
+# intro tugagach navbatga qo'yilgan eksport undan keyin bajariladi.
+LEARNING_EXTRA_QUEUE: asyncio.Queue = asyncio.Queue()
 # (video_id, provider) juftliklarini qabul qiladi - provider=None bo'lsa
 # ASOSIY yakuniy videoga, aks holda shu provayderning QO'SHIMCHA trekiga
 # subtitr "kuydirish" (hardsub) so'ralgan.
@@ -109,9 +117,19 @@ def restart_video(video_id: str):
                 "Audio hozir faol yaratilmoqda - qayta boshlashdan oldin avval uni bekor qiling "
                 "yoki tugashini kuting."
             )
+    learning = db.fetchone("SELECT tts_job_id FROM learning_tracks WHERE video_id = ?", (video_id,))
+    if learning and learning["tts_job_id"]:
+        learning_job = db.fetchone("SELECT status FROM tts_jobs WHERE id = ?", (learning["tts_job_id"],))
+        if learning_job and learning_job["status"] in ("running", "queued"):
+            raise ValueError(
+                "Learning audio hozir faol yaratilmoqda - loyihani qayta boshlashdan oldin "
+                "jarayon tugashini kuting."
+            )
 
     PAUSE_FLAGS.pop(video_id, None)
     CANCEL_FLAGS.pop(video_id, None)
+
+    cleanup_learning_track(video_id, delete_record=True)
 
     if video["tts_job_id"]:
         from storage import TTS_DIR
@@ -535,7 +553,7 @@ async def _process_one_chunk(client, video, chunk, lock, ctx):
     used_key_id = None
 
     for _ in range(10):
-        if not keys_manager.has_any_active_key():
+        if not keys_manager.has_any_active_key(owner_id=video["owner_id"]):
             async with lock:
                 db.execute("UPDATE chunks SET status = 'pending', updated_at = ? WHERE id = ?",
                            (db.now(), chunk["id"]))
@@ -544,7 +562,7 @@ async def _process_one_chunk(client, video, chunk, lock, ctx):
                 log(video["id"], "TO'XTATILDI: aktiv API kalit yo'q.")
                 ctx["stop"] = True
             return
-        kid, raw_key = keys_manager.get_next_active_key(exclude_ids=tried_key_ids)
+        kid, raw_key = keys_manager.get_next_active_key(exclude_ids=tried_key_ids, owner_id=video["owner_id"])
         if kid is None:
             async with lock:
                 db.execute("UPDATE chunks SET status = 'pending', updated_at = ? WHERE id = ?",
@@ -844,7 +862,7 @@ async def retranscribe_segment(video_id: str, index: int, language: str = None) 
     segments = json.loads(video["transcript_segments"] or "[]")
     if index < 0 or index >= len(segments):
         raise ValueError("Bunday segment mavjud emas.")
-    if not keys_manager.has_any_active_key():
+    if not keys_manager.has_any_active_key(owner_id=video["owner_id"]):
         raise ValueError("Ishlaydigan OpenAI API kalit topilmadi. Avval API kalit qo'shing.")
 
     effective_language = language if language is not None else (video["language"] or "")
@@ -859,7 +877,7 @@ async def retranscribe_segment(video_id: str, index: int, language: str = None) 
 
     prompt = transcription.build_prompt(effective_language, video["instruction"] or "",
                                          group=video["topic_group"] or None)
-    kid, raw_key = keys_manager.get_next_active_key()
+    kid, raw_key = keys_manager.get_next_active_key(owner_id=video["owner_id"])
     if not raw_key:
         clip_path.unlink(missing_ok=True)
         raise ValueError("Ishlaydigan OpenAI API kalit topilmadi.")
@@ -953,10 +971,11 @@ def replace_chunk_transcript(video_id: str, chunk_id: str, segments: list):
                    f"({len(segments)} ta qism).")
 
 
-def get_translation_memory_context() -> str:
+def get_translation_memory_context(owner_id: str) -> str:
     """Sozlamalarda saqlangan Instruksiya/Kontekst va xotiraga qo'shilgan barcha
     qoidalarni birlashtirib, tarjima so'roviga qo'shish uchun tayyorlaydi."""
-    notes = db.fetchall("SELECT content FROM translation_memory_notes ORDER BY created_at ASC")
+    notes = db.fetchall("SELECT content FROM translation_memory_notes WHERE owner_id = ? ORDER BY created_at ASC",
+                        (owner_id,))
     if not notes:
         return ""
     return "\n".join(f"- {n['content']}" for n in notes)
@@ -1003,14 +1022,14 @@ async def run_auto_translate(video_id: str, provider: str = "openai"):
         segments = json.loads(video["transcript_segments"] or "[]")
         if not segments:
             raise RuntimeError("Original matn segmentlari topilmadi.")
-        kid, raw = keys_manager.get_next_active_key(provider=provider)
+        kid, raw = keys_manager.get_next_active_key(provider=provider, owner_id=video["owner_id"])
         if not raw:
             provider_label = "Claude" if provider == "claude" else "OpenAI"
             raise RuntimeError(f"Ishlaydigan {provider_label} API kalit topilmadi. Avval API kalit qo'shing.")
 
-        instruction = db.get_setting("translation_instruction", "") or ""
-        context = db.get_setting("translation_context", "") or ""
-        memory_notes = get_translation_memory_context()
+        instruction = db.get_user_setting(video["owner_id"], "translation_instruction", "") or ""
+        context = db.get_user_setting(video["owner_id"], "translation_context", "") or ""
+        memory_notes = get_translation_memory_context(video["owner_id"])
         full_context = "\n\n".join(x for x in (context, memory_notes) if x)
 
         chunks = _chunk_original_segments(segments)
@@ -1081,14 +1100,14 @@ async def fill_empty_translations(video_id: str, provider: str = "openai"):
         if not empty_indices:
             _update_video(video_id, blocked_reason=None, message="Bo'sh bo'lak topilmadi.")
             return
-        kid, raw = keys_manager.get_next_active_key(provider=provider)
+        kid, raw = keys_manager.get_next_active_key(provider=provider, owner_id=video["owner_id"])
         if not raw:
             provider_label = "Claude" if provider == "claude" else "OpenAI"
             raise RuntimeError(f"Ishlaydigan {provider_label} API kalit topilmadi. Avval API kalit qo'shing.")
 
-        instruction = db.get_setting("translation_instruction", "") or ""
-        context = db.get_setting("translation_context", "") or ""
-        memory_notes = get_translation_memory_context()
+        instruction = db.get_user_setting(video["owner_id"], "translation_instruction", "") or ""
+        context = db.get_user_setting(video["owner_id"], "translation_context", "") or ""
+        memory_notes = get_translation_memory_context(video["owner_id"])
         full_context = "\n\n".join(x for x in (context, memory_notes) if x)
 
         pseudo_segments = []
@@ -1443,9 +1462,12 @@ def sync_video_from_tts_job(job_id: str):
         return
     if job["for_track"]:
         # Bu asosiy (primary) audio EMAS - video 'completed' bo'lgach ikkinchi
-        # provayder bilan qo'shimcha yaratilgan track. videos.* (asosiy)
-        # maydonlarga UMUMAN tegilmaydi - faqat audio_tracks jadvali yangilanadi.
-        _sync_audio_track_from_job(job)
+        # provayder bilan qo'shimcha yaratilgan track, YOKI "Ruscha o'rganish"
+        # treki. Ikkalasida ham videos.* (asosiy) maydonlarga UMUMAN tegilmaydi.
+        if job["is_learning"]:
+            _sync_learning_track_from_job(job)
+        else:
+            _sync_audio_track_from_job(job)
         return
     video_id = job["video_id"]
     video = db.fetchone("SELECT tts_job_id FROM videos WHERE id = ?", (video_id,))
@@ -1670,6 +1692,430 @@ async def track_render_consumer():
 
 
 # ---------------------------------------------------------------------------
+#     "RUSCHA O'RGANISH" (LEARNING) TREKI - foydalanuvchi qo'lda yuklagan
+#     tayyor Learning SRT asosida, MAVJUD TTS va render mexanizmi orqali
+#     yaratiladigan MUSTAQIL audio/video. Asosiy Uzbek pipeline'ga (videos.*)
+#     va audio_tracks jadvaliga UMUMAN tegmaydi - alohida learning_tracks
+#     jadvali va alohida LEARNING_RENDER_QUEUE ishlatiladi. Dastur bu yerda
+#     hech qanday SRT YARATMAYDI - faqat foydalanuvchi yuklagan faylni
+#     o'zgartirmasdan saqlaydi va o'qiydi.
+# ---------------------------------------------------------------------------
+
+def cleanup_learning_track(video_id: str, delete_record: bool = False):
+    """Learning trekining TTS job va hosila fayllarini xavfsiz tozalaydi.
+
+    ``delete_record=False`` yangi SRT yuklashdan oldingi hosilalarni olib
+    tashlaydi, lekin learning_tracks yozuvini saqlaydi. ``True`` esa video
+    butunlay o'chirilganda/restart qilinganda jadval yozuvini ham o'chiradi.
+    """
+    track = db.fetchone("SELECT * FROM learning_tracks WHERE video_id = ?", (video_id,))
+    if not track:
+        return
+    job_id = track["tts_job_id"]
+    if job_id:
+        from storage import TTS_DIR
+        import tts as tts_module
+        tts_module.PAUSE_FLAGS.pop(job_id, None)
+        tts_module.CANCEL_FLAGS[job_id] = True
+        db.execute("DELETE FROM tts_segments WHERE job_id = ?", (job_id,))
+        db.execute("DELETE FROM tts_jobs WHERE id = ?", (job_id,))
+        shutil.rmtree(TTS_DIR / job_id, ignore_errors=True)
+    for key in ("audio_path", "final_video_path", "export_video_path", "intro_video_path",
+                "subtitled_video_path"):
+        if track[key]:
+            Path(track[key]).unlink(missing_ok=True)
+    out_dir = RESULTS_DIR / video_id
+    shutil.rmtree(out_dir / "learning_intro_slides", ignore_errors=True)
+    if out_dir.exists():
+        for pattern in ("*.ru-learning.final.srt", "*.ru-learning.final.vtt",
+                        "*_yakuniy_learning.rendering.mp4"):
+            for path in out_dir.glob(pattern):
+                path.unlink(missing_ok=True)
+    db.execute("DELETE FROM results WHERE video_id = ? AND kind IN (?, ?)",
+               (video_id, "srt_ru_learning_final", "vtt_ru_learning_final"))
+    if delete_record:
+        db.execute("DELETE FROM learning_tracks WHERE video_id = ?", (video_id,))
+
+
+def apply_learning_srt(video_id: str, srt_text: str, filename: str, segment_count: int):
+    """Foydalanuvchi yuklagan Learning SRT'ni xom holda diskka yozadi va
+    learning_tracks jadvalini yangilaydi (UPSERT). Yangi SRT eski audio/video
+    bilan endi mos emasligi uchun ulardan qolgan eski natijalarni tozalaydi -
+    audio_tracks eski trekni tozalashdagi bilan bir xil mantiq."""
+    video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    if not video:
+        raise ValueError("Video topilmadi.")
+    # So'z teglari: xato bo'lsa (LearningSrtError) yuklash rad etiladi - hech narsa o'zgarmaydi.
+    blocks = translation.parse_learning_srt(srt_text)
+    warnings = translation.learning_srt_warnings(blocks)
+    existing = db.fetchone("SELECT * FROM learning_tracks WHERE video_id = ?", (video_id,))
+    if existing and existing["tts_job_id"]:
+        old_job = db.fetchone("SELECT status FROM tts_jobs WHERE id = ?", (existing["tts_job_id"],))
+        if old_job and old_job["status"] in ("queued", "running"):
+            raise ValueError("Learning audio hozir yaratilmoqda. Yangi SRT yuklashdan oldin jarayon tugashini kuting.")
+    if existing and "generating" in (existing["intro_status"], existing["export_status"]):
+        raise ValueError("Learning intro/video hozir yaratilmoqda. Yangi SRT yuklashdan oldin jarayon tugashini kuting.")
+    if existing:
+        cleanup_learning_track(video_id, delete_record=False)
+
+    out_dir = RESULTS_DIR / video_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    base = safe_name(Path(video["original_name"]).stem) or "video"
+    srt_path = out_dir / f"{base}.learning.srt"
+    srt_path.write_text(srt_text, encoding="utf-8")
+
+    now = db.now()
+    words_json = json.dumps(blocks, ensure_ascii=False)
+    warnings_json = json.dumps(warnings, ensure_ascii=False)
+    existing = db.fetchone("SELECT id FROM learning_tracks WHERE video_id = ?", (video_id,))
+    if existing:
+        db.execute(
+            "UPDATE learning_tracks SET srt_filename = ?, srt_path = ?, srt_status = 'uploaded', "
+            "segment_count = ?, tts_job_id = NULL, audio_path = NULL, audio_status = 'none', "
+            "freeze_points = NULL, final_video_path = NULL, final_video_status = 'none', error = NULL, "
+            "words_json = ?, warnings_json = ?, export_status = 'none', export_video_path = NULL, "
+            "export_with_intro = 0, export_error = NULL, intro_status = 'none', intro_progress = 0, "
+            "intro_message = NULL, intro_error = NULL, intro_duration = 0, intro_video_path = NULL, "
+            "intro_slides_json = NULL, subtitled_video_status = 'none', subtitled_video_path = NULL, "
+            "subtitled_video_error = NULL, updated_at = ? WHERE id = ?",
+            (filename, str(srt_path), segment_count, words_json, warnings_json, now, existing["id"]))
+    else:
+        db.execute(
+            "INSERT INTO learning_tracks (id, video_id, srt_filename, srt_path, srt_status, segment_count, "
+            "audio_status, final_video_status, words_json, warnings_json, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, 'uploaded', ?, 'none', 'none', ?, ?, ?, ?)",
+            (db.new_id(), video_id, filename, str(srt_path), segment_count, words_json, warnings_json, now, now))
+    lists = translation.learning_word_lists(blocks)
+    log(video_id, f"Learning SRT yuklandi: {filename} ({segment_count} ta bo'lak, {len(lists['new'])} ta yangi, "
+                  f"{len(lists['repeat'])} ta takror so'z, {len(warnings)} ta ogohlantirish).")
+
+
+def start_learning_track(video_id: str, provider: str, voice: str = "", mood: str = "", speed: float = 1.0,
+                          instructions: str = "", aisha_key: str = "", stretch_to_fit: bool = True) -> str:
+    """Yuklangan Learning SRT asosida, MAVJUD TTS mexanizmi orqali (tts.create_job)
+    mustaqil Learning audio yaratishni boshlaydi. Original video 'completed'
+    bo'lishi SHART EMAS - ikki yo'nalish (Uzbek/Learning) mustaqil ishlaydi."""
+    video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    if not video:
+        raise ValueError("Video topilmadi.")
+    track = db.fetchone("SELECT * FROM learning_tracks WHERE video_id = ?", (video_id,))
+    if not track or track["srt_status"] != "uploaded" or not track["srt_path"]:
+        raise ValueError("Avval Learning SRT faylni yuklang.")
+    if track["audio_status"] == "generating":
+        raise ValueError("Learning audio hozir allaqachon yaratilmoqda.")
+    if not video["path"] or not Path(video["path"]).exists():
+        raise ValueError("Original video fayli topilmadi.")
+    srt_file = Path(track["srt_path"])
+    if not srt_file.exists():
+        raise ValueError("Learning SRT fayli topilmadi. Qayta yuklang.")
+    segments = translation.parse_srt_direct(srt_file.read_text(encoding="utf-8"))
+
+    import tts
+    job_id = tts.create_job(video["original_name"] + " (Ruscha o'rganish)", provider, segments, voice, mood,
+                             speed, instructions, aisha_key, stretch_to_fit, video_id=video_id, for_track=True)
+    db.execute("UPDATE tts_jobs SET is_learning = 1 WHERE id = ?", (job_id,))
+    now = db.now()
+    db.execute(
+        "UPDATE learning_tracks SET provider = ?, voice = ?, mood = ?, speed = ?, instructions = ?, "
+        "stretch_to_fit = ?, tts_job_id = ?, audio_status = 'generating', audio_path = NULL, "
+        "final_video_path = NULL, final_video_status = 'none', freeze_points = NULL, error = NULL, "
+        "export_status = 'none', export_error = NULL, subtitled_video_status = 'none', "
+        "subtitled_video_path = NULL, subtitled_video_error = NULL, updated_at = ? WHERE video_id = ?",
+        (provider, voice, mood, speed, instructions, 1 if stretch_to_fit else 0, job_id, now, video_id))
+    log(video_id, f"Learning audio ({PROVIDER_LABELS.get(provider, provider)}) yaratish boshlandi.")
+    return job_id
+
+
+def write_learning_final_subtitles(video_id: str, freeze_points: list):
+    """write_track_final_subtitles() bilan bir xil mantiq, lekin manba matnni
+    video["translation_segments"]dan EMAS, foydalanuvchi yuklagan Learning
+    SRT'dan (har safar qayta o'qib, translation.parse_srt_direct bilan) oladi -
+    bitta manba-haqiqat (srt_path fayli), qo'shimcha sinxronizatsiya shart emas."""
+    srt_kind, vtt_kind = "srt_ru_learning_final", "vtt_ru_learning_final"
+    db.execute("DELETE FROM results WHERE video_id = ? AND kind IN (?, ?)", (video_id, srt_kind, vtt_kind))
+    active = [f for f in (freeze_points or []) if f.get("duration", 0) > 0.05]
+    if not active:
+        return
+    track = db.fetchone("SELECT * FROM learning_tracks WHERE video_id = ?", (video_id,))
+    if not track or not track["srt_path"] or not Path(track["srt_path"]).exists():
+        return
+    video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    if not video:
+        return
+    segments = translation.parse_srt_direct(Path(track["srt_path"]).read_text(encoding="utf-8"))
+    adjusted = transcription.apply_freeze_to_segments(segments, active)
+    srt_text = transcription.build_srt(adjusted)
+    vtt_text = transcription.build_vtt(adjusted)
+    out_dir = RESULTS_DIR / video_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    base = safe_name(Path(video["original_name"]).stem) or "natija"
+    srt_path = out_dir / f"{base}.ru-learning.final.srt"
+    vtt_path = out_dir / f"{base}.ru-learning.final.vtt"
+    srt_path.write_text(srt_text, encoding="utf-8")
+    vtt_path.write_text(vtt_text, encoding="utf-8")
+    for kind, path in ((srt_kind, srt_path), (vtt_kind, vtt_path)):
+        db.execute(
+            "INSERT INTO results (id, video_id, kind, filename, path, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (db.new_id(), video_id, kind, path.name, str(path), db.now()))
+
+
+def _sync_learning_track_from_job(job: dict):
+    """_sync_audio_track_from_job() bilan bir xil naqsh, farqi: audio_tracks
+    o'rniga learning_tracks (video_id bo'yicha, provider shart emas)."""
+    video_id = job["video_id"]
+    track = db.fetchone("SELECT * FROM learning_tracks WHERE video_id = ?", (video_id,))
+    if not track or track["tts_job_id"] != job["id"]:
+        log(video_id, f"Eski Learning audio ish ({job['id']}) tugadi, lekin track endi boshqa ishga "
+                       f"bog'langan - e'tiborsiz qoldirildi.")
+        return
+    if job["status"] == "completed":
+        freeze_points = []
+        if job["freeze_points"]:
+            try:
+                freeze_points = json.loads(job["freeze_points"])
+            except Exception:
+                pass
+        db.execute("UPDATE learning_tracks SET audio_status = 'ready', audio_path = ?, freeze_points = ?, "
+                   "error = NULL, updated_at = ? WHERE id = ?",
+                   (job["result_path"], job["freeze_points"], db.now(), track["id"]))
+        write_learning_final_subtitles(video_id, freeze_points)
+        log(video_id, "Learning audio tayyor.")
+        full_video = db.fetchone("SELECT path FROM videos WHERE id = ?", (video_id,))
+        if full_video and full_video["path"] and Path(full_video["path"]).exists() and job["result_path"]:
+            enqueue_learning_render(video_id)
+        else:
+            db.execute("UPDATE learning_tracks SET final_video_status = 'error', error = ?, updated_at = ? "
+                       "WHERE id = ?", ("Original video fayli topilmadi.", db.now(), track["id"]))
+    elif job["status"] == "paused_api_key":
+        db.execute("UPDATE learning_tracks SET audio_status = 'error', error = ?, updated_at = ? WHERE id = ?",
+                   ("Ishlaydigan OpenAI API kalit topilmadi.", db.now(), track["id"]))
+        log(video_id, "Learning audio: API kalit topilmadi.")
+    elif job["status"] == "error":
+        db.execute("UPDATE learning_tracks SET audio_status = 'error', error = ?, updated_at = ? WHERE id = ?",
+                   (job["error"] or "", db.now(), track["id"]))
+        log(video_id, f"Learning audio yaratishda xato: {job['error']}")
+    elif job["status"] == "cancelled":
+        db.execute("UPDATE learning_tracks SET audio_status = 'error', error = ?, updated_at = ? WHERE id = ?",
+                   ("Bekor qilindi.", db.now(), track["id"]))
+
+
+def enqueue_learning_render(video_id: str) -> bool:
+    """Learning yakuniy videoni yig'ish navbatiga qo'yadi. ALLAQACHON render
+    ketayotgan bo'lsa qayta navbatga qo'ymaydi va False qaytaradi."""
+    track = db.fetchone("SELECT * FROM learning_tracks WHERE video_id = ?", (video_id,))
+    if not track:
+        return False
+    if track["final_video_status"] == "generating":
+        return False
+    db.execute("UPDATE learning_tracks SET final_video_status = 'generating', error = NULL, updated_at = ? "
+               "WHERE id = ?", (db.now(), track["id"]))
+    log(video_id, "Learning video yig'ish navbatga qo'yildi.")
+    LEARNING_RENDER_QUEUE.put_nowait(video_id)
+    return True
+
+
+async def render_learning_video(video_id: str):
+    track = db.fetchone("SELECT * FROM learning_tracks WHERE video_id = ?", (video_id,))
+    video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    if not track or not video:
+        return
+    tmp_out_path = None
+    try:
+        out_dir = RESULTS_DIR / video_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+        base = safe_name(Path(video["original_name"]).stem) or "video"
+        out_path = out_dir / f"{base}_yakuniy_learning.mp4"
+        tmp_out_path = out_dir / f"{base}_yakuniy_learning.rendering.mp4"
+
+        freeze_points = json.loads(track["freeze_points"]) if track["freeze_points"] else []
+        audio_path = Path(track["audio_path"]) if track["audio_path"] else None
+        await _mux_render_core(video, audio_path, freeze_points, out_path, tmp_out_path,
+                                log_prefix="[Ruscha o'rganish] ")
+
+        db.execute("UPDATE learning_tracks SET final_video_status = 'ready', final_video_path = ?, error = NULL, "
+                   "updated_at = ? WHERE id = ?", (str(out_path), db.now(), track["id"]))
+        log(video_id, "Russian Learning yakuniy video tayyor.")
+        # Intro foydalanuvchidan alohida Aisha kaliti yoki qo'shimcha bosishni
+        # talab qilmaydi. Teglar bo'lsa OpenAI orqali avtomatik yaratiladi;
+        # intro tugagach run_learning_intro eksportni o'zi navbatga qo'yadi.
+        lists = translation.learning_word_lists(learning_blocks(track))
+        if lists["new"] or lists["repeat"]:
+            enqueue_learning_intro(video_id)
+        else:
+            enqueue_learning_export(video_id)
+    except Exception as e:
+        if tmp_out_path:
+            tmp_out_path.unlink(missing_ok=True)
+        db.execute("UPDATE learning_tracks SET final_video_status = 'error', error = ?, updated_at = ? "
+                   "WHERE id = ?", (str(e), db.now(), track["id"]))
+        log(video_id, f"XATO (Learning render): {e}\n{traceback.format_exc()[-400:]}")
+
+
+async def learning_render_consumer():
+    while True:
+        video_id = await LEARNING_RENDER_QUEUE.get()
+        try:
+            await render_learning_video(video_id)
+        except Exception as e:
+            log(video_id, f"XATO (Learning render consumer): {e}\n{traceback.format_exc()[-500:]}")
+        finally:
+            LEARNING_RENDER_QUEUE.task_done()
+
+
+# ---------------------------------------------------------------------------
+#     Learning: so'zlar kuydirilgan eksport (ASOS_learning.mp4) va intro
+#     (ASOS_intro.mp4). Toza, intro'siz Learning videosi (final_video_path)
+#     o'zgarmaydi - pleyer shuni "So'zlar" VTT treki bilan ko'rsatadi.
+# ---------------------------------------------------------------------------
+
+def learning_blocks(track: dict) -> list:
+    try:
+        return json.loads(track["words_json"]) if track and track["words_json"] else []
+    except ValueError:
+        return []
+
+
+def learning_freeze_points(track: dict) -> list:
+    try:
+        return json.loads(track["freeze_points"]) if track and track["freeze_points"] else []
+    except ValueError:
+        return []
+
+
+def learning_intro_offset(track: dict) -> float:
+    if track and track["intro_status"] == "ready" and track["intro_video_path"] \
+            and Path(track["intro_video_path"]).exists():
+        return float(track["intro_duration"] or 0)
+    return 0.0
+
+
+def enqueue_learning_export(video_id: str) -> bool:
+    track = db.fetchone("SELECT * FROM learning_tracks WHERE video_id = ?", (video_id,))
+    if not track or track["final_video_status"] != "ready":
+        return False
+    db.execute("UPDATE learning_tracks SET export_status = 'generating', export_error = NULL, updated_at = ? "
+               "WHERE id = ?", (db.now(), track["id"]))
+    LEARNING_EXTRA_QUEUE.put_nowait(("export", video_id))
+    return True
+
+
+def enqueue_learning_intro(video_id: str, strip_stress: bool = False) -> bool:
+    track = db.fetchone("SELECT * FROM learning_tracks WHERE video_id = ?", (video_id,))
+    if not track or track["intro_status"] == "generating":
+        return False
+    fields = ["intro_status = 'generating'", "intro_progress = 0", "intro_message = ?", "intro_error = NULL",
+              "intro_strip_stress = ?", "updated_at = ?"]
+    params = ["Navbatda", 1 if strip_stress else 0, db.now()]
+    db.execute(f"UPDATE learning_tracks SET {', '.join(fields)} WHERE id = ?", params + [track["id"]])
+    log(video_id, "Learning intro yaratish navbatga qo'yildi.")
+    LEARNING_EXTRA_QUEUE.put_nowait(("intro", video_id))
+    return True
+
+
+async def run_learning_export(video_id: str):
+    import learning
+    track = db.fetchone("SELECT * FROM learning_tracks WHERE video_id = ?", (video_id,))
+    video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    if not track or not video or track["export_status"] != "generating":
+        return
+    try:
+        clean = Path(track["final_video_path"] or "")
+        if track["final_video_status"] != "ready" or not clean.exists():
+            raise RuntimeError("Avval Learning videosi tayyor bo'lishi kerak.")
+        offset = learning_intro_offset(track)
+        intro_path = Path(track["intro_video_path"]) if offset > 0 else None
+        cues = learning.words_cues(learning_blocks(track), learning_freeze_points(track), offset)
+        burn = bool(cues) and learning.ass_filter_available()
+        if not burn and intro_path is None:
+            reason = ("Learning SRT'da so'z teglari yo'q." if not cues else
+                      "ffmpeg build'ida libass (ass filtri) yo'q - so'zlar faqat pleyerdagi \"So'zlar\" treki "
+                      "orqali ko'rinadi.")
+            db.execute("UPDATE learning_tracks SET export_status = 'skipped', export_video_path = NULL, "
+                       "export_with_intro = 0, export_error = ?, updated_at = ? WHERE id = ?",
+                       (reason, db.now(), track["id"]))
+            log(video_id, f"[Ruscha o'rganish] Eksport kerak emas: {reason}")
+            return
+        loop = asyncio.get_event_loop()
+        info = await loop.run_in_executor(None, learning.probe_media, clean)
+        ass_text = learning.build_words_ass(cues, info["width"], info["height"]) if burn else None
+        out_dir = RESULTS_DIR / video_id
+        base = safe_name(Path(video["original_name"]).stem) or "video"
+        out_path = out_dir / f"{base}_learning_export.mp4"
+        tmp_path = out_dir / f"{base}_learning_export.rendering.mp4"
+        work_dir = CHUNKS_DIR / video_id / "learning_export_work"
+        log(video_id, "[Ruscha o'rganish] Yuklab olinadigan Learning videosi yig'ilmoqda"
+                      + (" (intro bilan)" if intro_path else "") + "...")
+        method = await loop.run_in_executor(None, learning.build_export, clean, tmp_path, work_dir, info,
+                                            ass_text, intro_path)
+        tmp_path.replace(out_path)
+        shutil.rmtree(work_dir, ignore_errors=True)
+        warn = None if burn or not cues else ("ffmpeg build'ida libass yo'q - so'zlar kadrga yozilmadi, "
+                                              "faqat pleyer treki orqali ko'rinadi.")
+        db.execute("UPDATE learning_tracks SET export_status = 'ready', export_video_path = ?, "
+                   "export_with_intro = ?, export_error = ?, updated_at = ? WHERE id = ?",
+                   (str(out_path), 1 if intro_path else 0, warn, db.now(), track["id"]))
+        log(video_id, f"[Ruscha o'rganish] Yuklab olinadigan Learning videosi tayyor: {method}.")
+    except Exception as e:
+        db.execute("UPDATE learning_tracks SET export_status = 'error', export_error = ?, updated_at = ? "
+                   "WHERE id = ?", (str(e)[:1500], db.now(), track["id"]))
+        log(video_id, f"XATO (Learning eksport): {e}\n{traceback.format_exc()[-400:]}")
+
+
+async def run_learning_intro(video_id: str):
+    import intro
+    track = db.fetchone("SELECT * FROM learning_tracks WHERE video_id = ?", (video_id,))
+    video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    if not track or not video or track["intro_status"] != "generating":
+        return
+
+    def progress(pct: float, message: str):
+        db.execute("UPDATE learning_tracks SET intro_progress = ?, intro_message = ?, updated_at = ? "
+                   "WHERE id = ?", (round(pct, 1), message, db.now(), track["id"]))
+
+    try:
+        clean = Path(track["final_video_path"] or "")
+        if track["final_video_status"] != "ready":
+            raise RuntimeError("Intro Learning videosining parametrlari bilan yaratiladi - avval Learning "
+                               "videosi tayyor bo'lishi kerak.")
+        if not clean.exists():
+            raise RuntimeError(f"Learning video fayli topilmadi: {clean}")
+        voice = track["voice"] if track["provider"] == "openai" and track["voice"] else ""
+        out_dir = RESULTS_DIR / video_id
+        base = safe_name(Path(video["original_name"]).stem) or "video"
+        out_path = out_dir / f"{base}_learning_intro.mp4"
+        log(video_id, "[Ruscha o'rganish] Intro yaratilmoqda...")
+        result = await intro.create_intro(
+            learning_blocks(track), clean, out_path, out_dir / "learning_intro_slides",
+            CHUNKS_DIR / video_id / "learning_intro_work", video_id, video["owner_id"], voice,
+            bool(track["intro_strip_stress"]), progress)
+        db.execute("UPDATE learning_tracks SET intro_status = 'ready', intro_progress = 100, intro_message = NULL, "
+                   "intro_error = NULL, intro_duration = ?, intro_video_path = ?, intro_slides_json = ?, "
+                   "updated_at = ? WHERE id = ?",
+                   (result["duration"], str(out_path), result["slides_json"], db.now(), track["id"]))
+        log(video_id, f"[Ruscha o'rganish] Intro tayyor: {result['duration']:.2f}s, "
+                      f"{len(result['slides'])} ta ekran.")
+        enqueue_learning_export(video_id)
+    except Exception as e:
+        db.execute("UPDATE learning_tracks SET intro_status = 'error', intro_error = ?, intro_message = NULL, "
+                   "updated_at = ? WHERE id = ?", (str(e)[:1500], db.now(), track["id"]))
+        log(video_id, f"XATO (Learning intro): {e}\n{traceback.format_exc()[-400:]}")
+
+
+async def learning_extra_consumer():
+    while True:
+        kind, video_id = await LEARNING_EXTRA_QUEUE.get()
+        try:
+            if kind == "intro":
+                await run_learning_intro(video_id)
+            else:
+                await run_learning_export(video_id)
+        except Exception as e:
+            log(video_id, f"XATO (Learning {kind} consumer): {e}\n{traceback.format_exc()[-500:]}")
+        finally:
+            LEARNING_EXTRA_QUEUE.task_done()
+
+
+# ---------------------------------------------------------------------------
 #     SUBTITR "KUYDIRISH" (HARDSUB) - ixtiyoriy, video 'completed' bo'lgach
 #     (asosiy yoki qo'shimcha provayder treki uchun) foydalanuvchi so'rovi
 #     bilan yaratiladi. Asosiy/qo'shimcha final_video_path'larga UMUMAN
@@ -1695,13 +2141,58 @@ def _pick_final_srt_path(video_id: str, provider: str = None):
     return row["path"] if row else None
 
 
+def _learning_burn_inputs(video_id: str, track: dict, video: dict):
+    """Learning eksportiga mos video va SRT'ni qaytaradi.
+
+    Intro tayyor bo'lsa eksport video intro bilan boshlanadi, shuning uchun
+    subtitr avval freeze-pointlar, keyin intro uzunligiga suriladi. Eksport
+    hali yo'q bo'lsa toza Learning video va faqat freeze-point ishlatiladi.
+    """
+    import learning
+
+    use_export = (track["export_status"] == "ready" and track["export_video_path"]
+                  and Path(track["export_video_path"]).exists())
+    source_path = Path(track["export_video_path"] if use_export else track["final_video_path"])
+    source_srt = Path(track["srt_path"] or "")
+    if not source_srt.exists():
+        return source_path, None
+    blocks = translation.parse_srt_direct(source_srt.read_text(encoding="utf-8"))
+    try:
+        freeze_points = json.loads(track["freeze_points"]) if track["freeze_points"] else []
+    except ValueError:
+        freeze_points = []
+    offset = float(track["intro_duration"] or 0) if use_export and track["export_with_intro"] else 0.0
+    adjusted = learning.shifted_segments(blocks, freeze_points, offset)
+    out_dir = RESULTS_DIR / video_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    base = safe_name(Path(video["original_name"]).stem) or "video"
+    srt_path = out_dir / f"{base}.ru-learning.burn.srt"
+    srt_path.write_text(transcription.build_srt(adjusted), encoding="utf-8")
+    return source_path, srt_path
+
+
 def enqueue_subtitle_burn(video_id: str, provider: str = None) -> bool:
     """Subtitr kuydirishni navbatga qo'yadi. Allaqachon 'generating' bo'lsa
     yoki manba video hali tayyor bo'lmasa - qayta qo'ymaydi (idempotent)."""
     video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
-    if not video or video["status"] != "completed":
+    if not video:
         return False
-    if provider:
+    if provider == "learning":
+        track = db.fetchone("SELECT * FROM learning_tracks WHERE video_id = ?", (video_id,))
+        if not track or track["final_video_status"] != "ready" or not track["final_video_path"]:
+            return False
+        has_words = any(b.get("words") for b in learning_blocks(track))
+        export_ready = (track["export_status"] == "ready" and track["export_video_path"]
+                        and Path(track["export_video_path"]).exists())
+        if has_words and not export_ready:
+            return False
+        if track["subtitled_video_status"] == "generating":
+            return False
+        db.execute("UPDATE learning_tracks SET subtitled_video_status = 'generating', "
+                   "subtitled_video_error = NULL, updated_at = ? WHERE id = ?", (db.now(), track["id"]))
+    elif provider:
+        if video["status"] != "completed":
+            return False
         track = db.fetchone("SELECT * FROM audio_tracks WHERE video_id = ? AND provider = ?", (video_id, provider))
         if not track or track["final_video_status"] != "ready" or not track["final_video_path"]:
             return False
@@ -1710,6 +2201,8 @@ def enqueue_subtitle_burn(video_id: str, provider: str = None) -> bool:
         db.execute("UPDATE audio_tracks SET subtitled_video_status = 'generating', subtitled_video_error = NULL, "
                    "updated_at = ? WHERE id = ?", (db.now(), track["id"]))
     else:
+        if video["status"] != "completed":
+            return False
         if video["final_video_status"] != "ready" or not video["final_video_path"]:
             return False
         if video["subtitled_video_status"] == "generating":
@@ -1726,16 +2219,29 @@ async def burn_subtitles_job(video_id: str, provider: str = None):
     if not video:
         return
     track = None
-    if provider:
+    learning_track = None
+    if provider == "learning":
+        learning_track = db.fetchone("SELECT * FROM learning_tracks WHERE video_id = ?", (video_id,))
+        if not learning_track:
+            return
+    elif provider:
         track = db.fetchone("SELECT * FROM audio_tracks WHERE video_id = ? AND provider = ?", (video_id, provider))
         if not track:
             return
-    label = f"[{PROVIDER_LABELS.get(provider, provider)}] " if provider else ""
-    source_path = Path(track["final_video_path"]) if track else Path(video["final_video_path"])
-    srt_path_str = _pick_final_srt_path(video_id, provider)
+    label = "[Ruscha o'rganish] " if provider == "learning" else \
+        (f"[{PROVIDER_LABELS.get(provider, provider)}] " if provider else "")
+    if learning_track:
+        source_path, learning_srt_path = _learning_burn_inputs(video_id, learning_track, video)
+        srt_path_str = str(learning_srt_path) if learning_srt_path else None
+    else:
+        source_path = Path(track["final_video_path"]) if track else Path(video["final_video_path"])
+        srt_path_str = _pick_final_srt_path(video_id, provider)
 
     def _fail(msg: str):
-        if track:
+        if learning_track:
+            db.execute("UPDATE learning_tracks SET subtitled_video_status = 'error', subtitled_video_error = ?, "
+                       "updated_at = ? WHERE id = ?", (msg, db.now(), learning_track["id"]))
+        elif track:
             db.execute("UPDATE audio_tracks SET subtitled_video_status = 'error', subtitled_video_error = ?, "
                        "updated_at = ? WHERE id = ?", (msg, db.now(), track["id"]))
         else:
@@ -1763,7 +2269,11 @@ async def burn_subtitles_job(video_id: str, provider: str = None):
             None, transcription.burn_subtitles_into_video, source_path, Path(srt_path_str), tmp_out_path)
         tmp_out_path.replace(out_path)
 
-        if track:
+        if learning_track:
+            db.execute("UPDATE learning_tracks SET subtitled_video_status = 'ready', subtitled_video_path = ?, "
+                       "subtitled_video_error = NULL, updated_at = ? WHERE id = ?",
+                       (str(out_path), db.now(), learning_track["id"]))
+        elif track:
             db.execute("UPDATE audio_tracks SET subtitled_video_status = 'ready', subtitled_video_path = ?, "
                        "subtitled_video_error = NULL, updated_at = ? WHERE id = ?",
                        (str(out_path), db.now(), track["id"]))
@@ -1823,6 +2333,34 @@ async def recover_and_start():
         log(t["video_id"], f"Server qayta ishga tushdi - [{t['provider']}] qo'shimcha video yig'ish qayta boshlanadi.")
         TRACK_RENDER_QUEUE.put_nowait((t["video_id"], t["provider"]))
 
+    interrupted_learning_render = db.fetchall(
+        "SELECT video_id FROM learning_tracks WHERE final_video_status = 'generating'")
+    for t in interrupted_learning_render:
+        log(t["video_id"], "Server qayta ishga tushdi - Learning video yig'ish qayta boshlanadi.")
+        LEARNING_RENDER_QUEUE.put_nowait(t["video_id"])
+
+    for t in db.fetchall("SELECT video_id FROM learning_tracks WHERE intro_status = 'generating'"):
+        log(t["video_id"], "Server qayta ishga tushdi - Learning intro yaratish davom ettiriladi.")
+        LEARNING_EXTRA_QUEUE.put_nowait(("intro", t["video_id"]))
+    for t in db.fetchall("SELECT video_id FROM learning_tracks WHERE export_status = 'generating'"):
+        log(t["video_id"], "Server qayta ishga tushdi - Learning eksport qayta boshlanadi.")
+        LEARNING_EXTRA_QUEUE.put_nowait(("export", t["video_id"]))
+
+    # Yangi avtomatik intro funksiyasi deploy qilinishidan oldin tayyor bo'lgan
+    # Learning videolarini ham bir marta avtomatik davom ettiradi. Xatoga tushgan
+    # track qayta-qayta urinmaydi: uni UI'dagi "Qayta boshlash" boshqaradi.
+    pending_auto_intro = db.fetchall(
+        "SELECT video_id, words_json FROM learning_tracks "
+        "WHERE final_video_status = 'ready' AND intro_status = 'none' "
+        "AND export_status != 'generating'")
+    for t in pending_auto_intro:
+        try:
+            lists = translation.learning_word_lists(json.loads(t["words_json"] or "[]"))
+        except (TypeError, ValueError):
+            lists = {"new": [], "repeat": []}
+        if lists["new"] or lists["repeat"]:
+            enqueue_learning_intro(t["video_id"])
+
     interrupted_subtitle_burn = db.fetchall(
         "SELECT id FROM videos WHERE subtitled_video_status = 'generating'")
     for v in interrupted_subtitle_burn:
@@ -1833,13 +2371,18 @@ async def recover_and_start():
     for t in interrupted_track_subtitle_burn:
         log(t["video_id"], f"Server qayta ishga tushdi - [{t['provider']}] subtitrli video yaratish qayta boshlanadi.")
         SUBTITLE_BURN_QUEUE.put_nowait((t["video_id"], t["provider"]))
+    for t in db.fetchall("SELECT video_id FROM learning_tracks WHERE subtitled_video_status = 'generating'"):
+        log(t["video_id"], "Server qayta ishga tushdi - Learning subtitrli video yaratish qayta boshlanadi.")
+        SUBTITLE_BURN_QUEUE.put_nowait((t["video_id"], "learning"))
 
     for _ in range(MAX_ACTIVE_VIDEO_JOBS):
         asyncio.create_task(segment_consumer())
         asyncio.create_task(transcribe_consumer())
         asyncio.create_task(render_consumer())
         asyncio.create_task(track_render_consumer())
+        asyncio.create_task(learning_render_consumer())
         asyncio.create_task(subtitle_burn_consumer())
+    asyncio.create_task(learning_extra_consumer())
 
     import tts
     await tts.recover_and_start()

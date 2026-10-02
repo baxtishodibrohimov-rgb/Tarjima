@@ -164,16 +164,20 @@ async def openai_tts_generate_one(client: httpx.AsyncClient, text: str, voice: s
 
 def create_job(title: str, provider: str, segments: list, voice: str = "", mood: str = "",
                speed: float = 1.0, instructions: str = "", aisha_key: str = "",
-               stretch_to_fit: bool = True, video_id: str = None, for_track: bool = False) -> str:
+               stretch_to_fit: bool = True, video_id: str = None, for_track: bool = False,
+               owner_id: str = None) -> str:
     job_id = db.new_id()
+    if not owner_id and video_id:
+        video = db.fetchone("SELECT owner_id FROM videos WHERE id = ?", (video_id,))
+        owner_id = video["owner_id"] if video else None
     aisha_enc = keys_manager.encrypt_raw(aisha_key) if aisha_key else None
     db.execute(
         """INSERT INTO tts_jobs (id, title, provider, voice, mood, speed, instructions,
            aisha_key_encrypted, stretch_to_fit, status, total_segments, completed_segments, created_at, video_id,
-           for_track)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?)""",
+           for_track, owner_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?, ?)""",
         (job_id, title or "TTS ishi", provider, voice, mood, speed, instructions,
-         aisha_enc, 1 if stretch_to_fit else 0, len(segments), db.now(), video_id, 1 if for_track else 0),
+         aisha_enc, 1 if stretch_to_fit else 0, len(segments), db.now(), video_id, 1 if for_track else 0, owner_id),
     )
     for i, seg in enumerate(segments):
         # Matni bo'sh bo'lak - foydalanuvchi ataylab "tarjima qilmayman, o'tkazib
@@ -272,7 +276,7 @@ async def _process_segment(client, job, seg, lock, ctx, out_dir):
         key_params = {"mood": job["mood"], "speed": aisha_speed}
         ext = "wav"
     else:
-        kid, raw = keys_manager.get_next_active_key()
+        kid, raw = keys_manager.get_next_active_key(owner_id=job["owner_id"])
         if not raw:
             async with lock:
                 db.execute("UPDATE tts_segments SET status = 'pending' WHERE id = ?", (seg["id"],))
@@ -343,12 +347,14 @@ async def _process_segment(client, job, seg, lock, ctx, out_dir):
                     chars = len(seg["text"][:1000])
                     som_cost = round(chars * AISHA_SOM_PER_CHAR, 2)
                     db.add_cost(job["video_id"], "tts_aisha", amount_usd=0, amount_som=som_cost,
-                                 detail=f"Aisha TTS, segment {seg['seg_index']+1}, ~{chars} belgi")
+                                 detail=f"Aisha TTS, segment {seg['seg_index']+1}, ~{chars} belgi",
+                                 owner_id=job["owner_id"])
                 else:
                     chars = len(seg["text"][:2000])
                     cost = round((chars / 1000) * 0.015, 6)
                     db.add_cost(job["video_id"], "tts_openai", cost,
-                                 detail=f"OpenAI TTS, segment {seg['seg_index']+1}, ~{chars} belgi")
+                                 detail=f"OpenAI TTS, segment {seg['seg_index']+1}, ~{chars} belgi",
+                                 owner_id=job["owner_id"])
         if provider != "aisha":
             keys_manager.mark_result(kid, True)
     except Exception as e:

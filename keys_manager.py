@@ -40,18 +40,25 @@ def mask_key(raw: str) -> str:
     return f"{raw[:3]}...{raw[-4:]}"
 
 
-def add_key(raw_key: str, label: str = "", provider: str = "openai") -> dict:
+def _owner_id(owner_id=None):
+    if owner_id:
+        return owner_id
+    import auth
+    return auth.current_user_id()
+
+
+def add_key(raw_key: str, label: str = "", provider: str = "openai", owner_id: str = None) -> dict:
     raw_key = raw_key.strip()
     if not raw_key:
         raise ValueError("API kalit bo'sh bo'lishi mumkin emas.")
     enc = _fernet.encrypt(raw_key.encode()).decode()
     kid = db.new_id()
     db.execute(
-        """INSERT INTO api_keys (id, label, key_encrypted, masked, active, status, created_at, provider)
-           VALUES (?, ?, ?, ?, 1, 'unknown', ?, ?)""",
-        (kid, label or mask_key(raw_key), enc, mask_key(raw_key), db.now(), provider),
+        """INSERT INTO api_keys (id, label, key_encrypted, masked, active, status, created_at, provider, owner_id)
+           VALUES (?, ?, ?, ?, 1, 'unknown', ?, ?, ?)""",
+        (kid, label or mask_key(raw_key), enc, mask_key(raw_key), db.now(), provider, _owner_id(owner_id)),
     )
-    return get_key_public(kid)
+    return get_key_public(kid, owner_id)
 
 
 def _decrypt(enc: str) -> str:
@@ -61,11 +68,13 @@ def _decrypt(enc: str) -> str:
         return ""
 
 
-def list_keys_public(provider: str = None) -> list:
+def list_keys_public(provider: str = None, owner_id: str = None) -> list:
+    owner_id = _owner_id(owner_id)
     if provider:
-        rows = db.fetchall("SELECT * FROM api_keys WHERE provider = ? ORDER BY created_at ASC", (provider,))
+        rows = db.fetchall("SELECT * FROM api_keys WHERE owner_id = ? AND provider = ? ORDER BY created_at ASC",
+                           (owner_id, provider))
     else:
-        rows = db.fetchall("SELECT * FROM api_keys ORDER BY created_at ASC")
+        rows = db.fetchall("SELECT * FROM api_keys WHERE owner_id = ? ORDER BY created_at ASC", (owner_id,))
     return [_public(r) for r in rows]
 
 
@@ -83,17 +92,18 @@ def _public(r: dict) -> dict:
     }
 
 
-def get_key_public(kid: str) -> dict:
-    r = db.fetchone("SELECT * FROM api_keys WHERE id = ?", (kid,))
+def get_key_public(kid: str, owner_id: str = None) -> dict:
+    r = db.fetchone("SELECT * FROM api_keys WHERE id = ? AND owner_id = ?", (kid, _owner_id(owner_id)))
     return _public(r) if r else None
 
 
-def delete_key(kid: str):
-    db.execute("DELETE FROM api_keys WHERE id = ?", (kid,))
+def delete_key(kid: str, owner_id: str = None):
+    db.execute("DELETE FROM api_keys WHERE id = ? AND owner_id = ?", (kid, _owner_id(owner_id)))
 
 
-def set_active(kid: str, active: bool):
-    db.execute("UPDATE api_keys SET active = ? WHERE id = ?", (1 if active else 0, kid))
+def set_active(kid: str, active: bool, owner_id: str = None):
+    db.execute("UPDATE api_keys SET active = ? WHERE id = ? AND owner_id = ?",
+               (1 if active else 0, kid, _owner_id(owner_id)))
 
 
 def mark_result(kid: str, ok: bool, error: str = None):
@@ -111,21 +121,22 @@ def decrypt_raw(enc: str) -> str:
     return _decrypt(enc)
 
 
-def raw_key_for(kid: str) -> str:
-    r = db.fetchone("SELECT key_encrypted FROM api_keys WHERE id = ?", (kid,))
+def raw_key_for(kid: str, owner_id: str = None) -> str:
+    r = db.fetchone("SELECT key_encrypted FROM api_keys WHERE id = ? AND owner_id = ?",
+                    (kid, _owner_id(owner_id)))
     if not r:
         return ""
     return _decrypt(r["key_encrypted"])
 
 
-def get_next_active_key(exclude_ids=None, provider: str = "openai"):
+def get_next_active_key(exclude_ids=None, provider: str = "openai", owner_id: str = None):
     """Navbatdagi ishlatiladigan aktiv kalitni tanlaydi (eng kam ishlatilgan / xatosiz)."""
     exclude_ids = exclude_ids or set()
     rows = db.fetchall(
-        "SELECT * FROM api_keys WHERE active = 1 AND provider = ? ORDER BY "
+        "SELECT * FROM api_keys WHERE owner_id = ? AND active = 1 AND provider = ? ORDER BY "
         "(CASE WHEN status = 'error' THEN 1 ELSE 0 END), "
         "(last_used_at IS NULL) DESC, last_used_at ASC",
-        (provider,),
+        (_owner_id(owner_id), provider),
     )
     for r in rows:
         if r["id"] not in exclude_ids:
@@ -135,16 +146,18 @@ def get_next_active_key(exclude_ids=None, provider: str = "openai"):
     return None, None
 
 
-def has_any_active_key(provider: str = "openai") -> bool:
-    r = db.fetchone("SELECT COUNT(*) as c FROM api_keys WHERE active = 1 AND provider = ?", (provider,))
+def has_any_active_key(provider: str = "openai", owner_id: str = None) -> bool:
+    r = db.fetchone("SELECT COUNT(*) as c FROM api_keys WHERE owner_id = ? AND active = 1 AND provider = ?",
+                    (_owner_id(owner_id), provider))
     return bool(r and r["c"] > 0)
 
 
-async def test_key(kid: str) -> dict:
+async def test_key(kid: str, owner_id: str = None) -> dict:
+    owner_id = _owner_id(owner_id)
     import httpx
-    r = db.fetchone("SELECT provider FROM api_keys WHERE id = ?", (kid,))
+    r = db.fetchone("SELECT provider FROM api_keys WHERE id = ? AND owner_id = ?", (kid, owner_id))
     provider = (r["provider"] if r else None) or "openai"
-    raw = raw_key_for(kid)
+    raw = raw_key_for(kid, owner_id)
     if not raw:
         return {"ok": False, "error": "Kalit topilmadi."}
     try:

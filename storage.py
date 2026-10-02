@@ -1,8 +1,9 @@
 """
 Persistent storage layout.
 
-Barcha doimiy ma'lumot STORAGE_DIR ichida saqlanadi (Railway persistent volume
-shu papkaga ulanishi kerak). Source-kod papkasiga hech narsa yozilmaydi.
+Barcha doimiy ma'lumot STORAGE_DIR ichida saqlanadi. Production'da u Oracle
+Cloud'dagi 180 GB doimiy volume ichidagi papka bo'lishi kerak. Source-kod
+papkasiga hech narsa yozilmaydi.
 """
 import os
 import shutil
@@ -33,13 +34,16 @@ MAX_WHISPER_CONCURRENCY = int(os.environ.get("MAX_WHISPER_CONCURRENCY", "4"))
 MAX_ACTIVE_VIDEO_JOBS = int(os.environ.get("MAX_ACTIVE_VIDEO_JOBS", "1"))
 MAX_ACTIVE_TTS_JOBS = int(os.environ.get("MAX_ACTIVE_TTS_JOBS", "1"))
 MAX_UPLOAD_SIZE = int(os.environ.get("MAX_UPLOAD_SIZE", str(20 * 1024 * 1024 * 1024)))  # 20 GB
-STORAGE_LIMIT = int(os.environ.get("STORAGE_LIMIT", str(95 * 1024 * 1024 * 1024)))  # 95 GB
+# Serverning umumiy hovuzi 180 GB. Har bir hisob kvotasi auth.py orqali
+# alohida tekshiriladi (super-admin 95 GB, oddiy foydalanuvchi 10 GB).
+STORAGE_LIMIT = int(os.environ.get("STORAGE_LIMIT", str(180 * 1024 * 1024 * 1024)))
 REPETITION_THRESHOLD = int(os.environ.get("REPETITION_THRESHOLD", "3"))
 UPLOAD_CHUNK_SIZE = int(os.environ.get("UPLOAD_CHUNK_SIZE", str(8 * 1024 * 1024)))
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")  # bo'sh bo'lsa himoya o'chirilgan
 
-# Butun saytni login/parol bilan himoyalash uchun (HTTP Basic Auth) - ikkalasi
-# ham bo'sh bo'lsa, himoya o'chirilgan holda qoladi (masalan lokal sinov uchun).
+# Birinchi ishga tushishda super-admin hisobini yaratish uchun. Keyin parol
+# PBKDF2 hash ko'rinishida bazada saqlanadi va sayt HttpOnly cookie-session bilan
+# himoyalanadi (brauzerning native HTTP Basic Auth oynasi ishlatilmaydi).
 APP_USERNAME = os.environ.get("APP_USERNAME", "")
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
 # Idea Flow (Lovable) botidagi "Video Baza / Tarjima" papkasiga tayyor videolarni
@@ -87,7 +91,7 @@ def disk_usage() -> dict:
     """STORAGE_DIR joylashgan diskning umumiy holati + biz egallagan hajm."""
     total, used, free = shutil.disk_usage(STORAGE_DIR)
     our_usage = 0
-    for d in (VIDEOS_DIR, CHUNKS_DIR, RESULTS_DIR, TTS_DIR, UPLOADS_DIR):
+    for d in (VIDEOS_DIR, CHUNKS_DIR, RESULTS_DIR, TTS_DIR, UPLOADS_DIR, CLOUD_DIR):
         for p in d.rglob("*"):
             if p.is_file():
                 try:

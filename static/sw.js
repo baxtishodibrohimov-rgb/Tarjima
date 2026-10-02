@@ -7,8 +7,8 @@
  * holati, progress va h.k. doim jonli - server bilan to'g'ridan-to'g'ri gaplashishi
  * shart), shuning uchun bu ilovaning asosiy funksiyalari internetsiz ishlamaydi.
  */
-const CACHE_NAME = "darslik-studiyasi-shell-v1";
-const APP_SHELL = ["/", "/manifest.json", "/icons/icon-192.png", "/icons/icon-512.png"];
+const CACHE_NAME = "darslik-studiyasi-shell-v2";
+const APP_SHELL = ["/manifest.json", "/icons/icon-192.png", "/icons/icon-512.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -30,7 +30,8 @@ self.addEventListener("fetch", (event) => {
   const req = event.request;
   const url = new URL(req.url);
 
-  if (req.method !== "GET" || url.origin !== self.location.origin || url.pathname.startsWith("/api/")) {
+  if (req.method !== "GET" || url.origin !== self.location.origin || url.pathname.startsWith("/api/") ||
+      url.pathname === "/" || url.pathname === "/login") {
     return; // API va boshqa manba so'rovlari to'g'ridan-to'g'ri tarmoqqa boradi
   }
 

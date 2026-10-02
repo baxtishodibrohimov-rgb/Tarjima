@@ -14,10 +14,10 @@
 #   5. 80-portni (oddiy http://IP - qo'shimcha raqamsiz) ochadi.
 #
 # Ishlatish (Oracle Cloud Shell'da yoki SSH orqali serverga ulanib):
-#   curl -fsSL https://raw.githubusercontent.com/baxtishodibrohimov-rgb/Tarjima/main/scripts/setup_oracle_vm.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/baxtishodibrohimov-rgb/darslik-studiyasi-server/main/scripts/setup_oracle_vm.sh | bash
 set -euo pipefail
 
-REPO_URL="https://github.com/baxtishodibrohimov-rgb/Tarjima.git"
+REPO_URL="https://github.com/baxtishodibrohimov-rgb/darslik-studiyasi-server.git"
 APP_DIR="/opt/tarjima"
 STORAGE_DIR="/opt/tarjima-storage"
 SERVICE_NAME="tarjima"
@@ -52,6 +52,11 @@ After=network.target
 Type=simple
 WorkingDirectory=${APP_DIR}
 Environment=STORAGE_DIR=${STORAGE_DIR}
+Environment=STORAGE_LIMIT=193273528320
+Environment=TOTAL_STORAGE_LIMIT=193273528320
+Environment=ADMIN_STORAGE_LIMIT=102005473280
+Environment=USER_STORAGE_LIMIT=10737418240
+Environment=MAX_REGULAR_USERS=5
 ExecStart=${APP_DIR}/.venv/bin/uvicorn app:app --host 0.0.0.0 --port ${PORT}
 Restart=always
 RestartSec=5

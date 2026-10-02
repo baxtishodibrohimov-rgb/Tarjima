@@ -292,6 +292,197 @@ def parse_srt_direct(content: str) -> list:
     return segments
 
 
+# ---------------------------------------------------------------------------
+# Learning SRT so'z teglari: vaqt qatorida [yangi:LEMMA=MA'NO] / [takror:LEMMA=MA'NO].
+# parse_srt_direct'dan ATAYLAB alohida - u umumiy funksiya, xatti-harakati o'zgarmaydi.
+# ---------------------------------------------------------------------------
+
+LEARNING_TAG_RE = re.compile(r"\[(yangi|takror):([^\[\]=:]+)=([^\[\]=:]+)\]")
+_LEARNING_TAG_START_RE = re.compile(r"^\s*(yangi|takror)\s*:", re.IGNORECASE)
+_BRACKET_GROUP_RE = re.compile(r"\[[^\[\]]*\]")
+_SRT_TIME_RE = re.compile(r"(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})[,.](\d{3})")
+LEARNING_MAX_NEW_WORDS = 20
+
+
+class LearningSrtError(ValueError):
+    """Learning SRT teglarida yuklashni rad etadigan xato (blok raqami bilan)."""
+
+
+def _iter_srt_blocks(content: str):
+    """parse_srt_direct bilan AYNAN bir xil bloklarni (bir xil tartib, matnsiz
+    bloklar tashlab ketiladi) beradi: (raqam, vaqt_qatori, start, end, matn)."""
+    normalized = content.replace("\r\n", "\n").replace("\r", "\n").strip()
+    ordinal = 0
+    for block in re.split(r"\n\s*\n", normalized):
+        lines = [l for l in block.split("\n") if l.strip() != ""]
+        if not lines:
+            continue
+        idx = 1 if re.match(r"^\d+$", lines[0].strip()) else 0
+        if idx >= len(lines):
+            continue
+        m = _SRT_TIME_RE.search(lines[idx])
+        if not m:
+            continue
+        text = " ".join(lines[idx + 1:]).strip()
+        if not text:
+            continue
+        ordinal += 1
+        number = int(lines[0].strip()) if idx == 1 else ordinal
+        g = [int(x) for x in m.groups()]
+        start = g[0] * 3600 + g[1] * 60 + g[2] + g[3] / 1000
+        end = g[4] * 3600 + g[5] * 60 + g[6] + g[7] / 1000
+        yield number, lines[idx], start, end, text
+
+
+def learning_norm(s: str) -> str:
+    """Solishtirish uchun: urg'u belgisi (U+0301) olib tashlanadi, kichik harf, ё -> е."""
+    return (s or "").replace("́", "").lower().replace("ё", "е")
+
+
+def _check_tag_syntax(number: int, time_line: str):
+    rest = _BRACKET_GROUP_RE.sub(" ", time_line)
+    if "[" in rest or "]" in rest:
+        raise LearningSrtError(f"{number}-blok: vaqt qatorida yopilmagan qavs bor: «{time_line.strip()}».")
+    for group in _BRACKET_GROUP_RE.findall(time_line):
+        if _LEARNING_TAG_START_RE.match(group[1:-1]) and not LEARNING_TAG_RE.fullmatch(group):
+            raise LearningSrtError(
+                f"{number}-blok: noto'g'ri formatdagi teg {group} - to'g'ri ko'rinish: "
+                f"[yangi:LEMMA=MA'NO] yoki [takror:LEMMA=MA'NO].")
+
+
+def parse_learning_srt(content: str) -> list:
+    """Learning SRT'ni o'qiydi: har blok uchun
+    {index, start, end, text, words: [{kind, lemma, meaning}]}.
+    Teglar faqat vaqt qatoridan o'qiladi; boshqa teglar ([speed:fast] va h.k.)
+    e'tiborsiz qoldiriladi. Buzilgan [yangi:/[takror: tegi yoki yopilmagan
+    qavs - LearningSrtError (blok raqami bilan)."""
+    blocks = []
+    for number, time_line, start, end, text in _iter_srt_blocks(content):
+        _check_tag_syntax(number, time_line)
+        words = []
+        for m in LEARNING_TAG_RE.finditer(time_line):
+            lemma, meaning = m.group(2).strip(), m.group(3).strip()
+            if not lemma or not meaning:
+                raise LearningSrtError(f"{number}-blok: tegda so'z yoki ma'no bo'sh: {m.group(0)}.")
+            words.append({"kind": m.group(1), "lemma": lemma, "meaning": meaning})
+        blocks.append({"index": number, "start": start, "end": end, "text": text, "words": words})
+    if not blocks:
+        raise LearningSrtError("SRT faylida to'g'ri formatdagi bloklar topilmadi.")
+    return blocks
+
+
+def _lemma_stem(norm_word: str) -> str:
+    return norm_word[:max(3, len(norm_word) - 2)]
+
+
+def lemma_found_in_text(lemma: str, text: str) -> bool:
+    """O'zak = lemmaning oxirgi 2 harfisiz qismi (kamida 3 harf). Matndagi biror
+    so'z shu o'zak bilan boshlansa - topilgan. Ko'p so'zli lemmada har bir so'z
+    alohida tekshiriladi."""
+    tokens = re.findall(r"\w+", learning_norm(text))
+    parts = re.findall(r"\w+", learning_norm(lemma))
+    if not parts:
+        return False
+    return all(any(t.startswith(_lemma_stem(p)) for t in tokens) for p in parts)
+
+
+def lemma_occurrence_count(lemma: str, texts: list[str]) -> int:
+    """Lemma video matnlarida necha marta ishlatilganini hisoblaydi.
+
+    Urg'u, katta-kichik harf va ``ё/е`` farqi e'tiborga olinmaydi. Ruscha
+    qo'shimchali shakllar ham mavjud Learning tekshiruviga mos ravishda lemma
+    o'zagi bilan sanaladi. Ko'p so'zli terminlar ketma-ket ibora sifatida
+    hisoblanadi.
+    """
+    parts = re.findall(r"\w+", learning_norm(lemma))
+    if not parts:
+        return 0
+    stems = [_lemma_stem(part) for part in parts]
+    total = 0
+    for text in texts:
+        tokens = re.findall(r"\w+", learning_norm(text))
+        width = len(stems)
+        total += sum(
+            1 for start in range(max(0, len(tokens) - width + 1))
+            if all(tokens[start + offset].startswith(stem) for offset, stem in enumerate(stems))
+        )
+    return total
+
+
+def learning_srt_warnings(blocks: list) -> list:
+    """Yuklashni to'xtatmaydigan ogohlantirishlar: [{"block": N|None, "reason": ..}]."""
+    warnings = []
+    meanings, kinds, first_lemma = {}, {}, {}
+    for b in blocks:
+        for w in b["words"]:
+            key = learning_norm(w["lemma"])
+            first_lemma.setdefault(key, w["lemma"])
+            meanings.setdefault(key, {}).setdefault(learning_norm(w["meaning"]), (w["meaning"], b["index"]))
+            kinds.setdefault(key, {}).setdefault(w["kind"], b["index"])
+            if not lemma_found_in_text(w["lemma"], b["text"]):
+                warnings.append({"block": b["index"],
+                                 "reason": f"«{w['lemma']}» so'zi blok matnida topilmadi."})
+    for key, variants in meanings.items():
+        if len(variants) > 1:
+            shown = "; ".join(f"«{m}» ({blk}-blok)" for m, blk in variants.values())
+            warnings.append({"block": None,
+                             "reason": f"«{first_lemma[key]}» turli joylarda turli ma'no bilan yozilgan: {shown}."})
+    for key, ks in kinds.items():
+        if len(ks) > 1:
+            warnings.append({"block": None,
+                             "reason": f"«{first_lemma[key]}» {ks['yangi']}-blokda yangi, "
+                                       f"{ks['takror']}-blokda takror deb belgilangan."})
+    new_count = len(learning_word_lists(blocks)["new"])
+    if new_count > LEARNING_MAX_NEW_WORDS:
+        warnings.append({"block": None,
+                         "reason": f"Yangi so'zlar soni {new_count} ta - {LEARNING_MAX_NEW_WORDS} tadan ko'p."})
+    return warnings
+
+
+def learning_word_lists(blocks: list) -> dict:
+    """Noyob yangi va takror lemmalar, birinchi uchragan tartib va matndagi soni."""
+    result = {"new": [], "repeat": []}
+    seen = {"yangi": set(), "takror": set()}
+    texts = [b.get("text", "") for b in blocks]
+    for b in blocks:
+        for w in b["words"]:
+            key = learning_norm(w["lemma"])
+            if key in seen[w["kind"]]:
+                continue
+            seen[w["kind"]].add(key)
+            target = result["new"] if w["kind"] == "yangi" else result["repeat"]
+            target.append({"lemma": w["lemma"], "meaning": w["meaning"], "block": b["index"],
+                           "occurrences": lemma_occurrence_count(w["lemma"], texts)})
+    return result
+
+
+def replace_srt_block_texts(content: str, texts: list) -> str:
+    """SRT bloklarining faqat MATN qatorlarini almashtiradi - raqam va vaqt
+    qatori (undagi [yangi:..]/[speed:..] teglari bilan birga) o'zgarishsiz
+    qoladi. texts tartibi parse_srt_direct bloklari tartibiga mos."""
+    normalized = content.replace("\r\n", "\n").replace("\r", "\n").strip()
+    out, i = [], 0
+    for block in re.split(r"\n\s*\n", normalized):
+        lines = [l for l in block.split("\n") if l.strip() != ""]
+        if not lines:
+            continue
+        idx = 1 if re.match(r"^\d+$", lines[0].strip()) else 0
+        if idx >= len(lines) or not _SRT_TIME_RE.search(lines[idx]) \
+                or not " ".join(lines[idx + 1:]).strip():
+            out.append("\n".join(lines))
+            continue
+        if i >= len(texts):
+            raise ValueError("Matnlar soni SRT bloklari soniga mos emas.")
+        new_text = str(texts[i]).strip()
+        i += 1
+        if not new_text:
+            continue
+        out.append("\n".join(lines[:idx + 1] + [new_text]))
+    if i != len(texts):
+        raise ValueError("Matnlar soni SRT bloklari soniga mos emas.")
+    return "\n\n".join(out) + "\n"
+
+
 def fmt_hms(total_sec: float) -> str:
     h = int(total_sec // 3600)
     m = int((total_sec % 3600) // 60)

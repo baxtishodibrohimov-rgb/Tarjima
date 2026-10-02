@@ -5,11 +5,9 @@ Ishga tushirish (lokal sinov uchun):
     pip install -r requirements.txt
     uvicorn app:app --host 0.0.0.0 --port 8000
 
-Railway'ga joylashtirish uchun README.txt'ga qarang.
+Oracle Cloud'ga joylashtirish uchun README.txt'ga qarang.
 """
 import asyncio
-import base64
-import hmac
 import httpx
 import json
 import re
@@ -23,10 +21,12 @@ from fastapi.responses import JSONResponse, FileResponse, HTMLResponse, Streamin
 from fastapi.staticfiles import StaticFiles
 
 import database as db
+import auth
 import keys_manager
 import transcription
 import translation
 import glossary_data
+import learning
 import tts
 import worker
 from storage import (VIDEOS_DIR, RESULTS_DIR, UPLOADS_DIR, CHUNKS_DIR, SPLIT_DIR, CLOUD_DIR, MAX_UPLOAD_SIZE, ADMIN_TOKEN,
@@ -112,33 +112,34 @@ app.add_middleware(
 
 @app.middleware("http")
 async def require_login(request: Request, call_next):
-    """Butun saytni (barcha sahifa va API so'rovlarini) login/parol bilan
-    himoyalaydi - APP_USERNAME/APP_PASSWORD environment variable orqali
-    sozlanadi. Ikkalasi ham bo'sh bo'lsa (sozlanmagan bo'lsa), himoya
-    o'chirilgan holda qoladi (masalan lokal sinov uchun)."""
-    if not APP_USERNAME or not APP_PASSWORD:
+    """Native Basic Auth o'rniga xavfsiz HttpOnly cookie-session ishlatadi."""
+    path = request.url.path
+    public = path in ("/login", "/api/auth/login", "/health", "/manifest.json", "/sw.js") \
+        or path.startswith("/icons/") or path.startswith("/api/public/")
+    if public:
         return await call_next(request)
 
-    auth_header = request.headers.get("authorization", "")
-    if auth_header.lower().startswith("basic "):
-        try:
-            decoded = base64.b64decode(auth_header[6:]).decode("utf-8")
-            username, _, password = decoded.partition(":")
-        except Exception:
-            username, password = "", ""
-        if hmac.compare_digest(username, APP_USERNAME) and hmac.compare_digest(password, APP_PASSWORD):
-            return await call_next(request)
+    user = auth.user_from_request(request)
+    if not user:
+        if path.startswith("/api/"):
+            return JSONResponse({"detail": "Avval tizimga kiring."}, status_code=401)
+        return Response(status_code=303, headers={"Location": "/login"})
 
-    return Response(
-        status_code=401,
-        content="Kirish uchun login va parol kerak.",
-        headers={"WWW-Authenticate": 'Basic realm="Darslik Studiyasi"'},
-    )
+    request.state.user = user
+    token = auth.set_current_user(user)
+    try:
+        auth.authorize_resource(request, user)
+        return await call_next(request)
+    except HTTPException as exc:
+        return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+    finally:
+        auth.reset_current_user(token)
 
 
 @app.on_event("startup")
 async def on_startup():
     db.init_db()
+    auth.bootstrap_superadmin(APP_USERNAME, APP_PASSWORD)
     await worker.recover_and_start()
     if INBOUND_BOT_TOKEN:
         import telegram_bot
@@ -197,9 +198,137 @@ async def health():
     return {"ok": True, "ffmpeg": bool(transcription.ffmpeg_exe())}
 
 
+@app.get("/login", response_class=HTMLResponse)
+async def login_page():
+    return HTMLResponse((BASE / "login.html").read_text(encoding="utf-8"))
+
+
+@app.post("/api/auth/login")
+async def login(request: Request):
+    payload = await request.json()
+    user = auth.authenticate(str(payload.get("username", "")), str(payload.get("password", "")))
+    if not user:
+        raise HTTPException(401, "Login yoki parol noto'g'ri.")
+    token, _ = auth.create_session(user["id"])
+    response = JSONResponse({"ok": True, "user": auth.public_user(user)})
+    forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    response.set_cookie(auth.SESSION_COOKIE, token, max_age=auth.SESSION_DAYS * 86400,
+                        httponly=True, secure=forwarded_proto == "https", samesite="lax", path="/")
+    return response
+
+
+@app.post("/api/auth/logout")
+async def logout(request: Request):
+    auth.delete_session(request)
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(auth.SESSION_COOKIE, path="/")
+    return response
+
+
+@app.get("/api/auth/me")
+async def auth_me():
+    user = auth.current_user()
+    out = auth.public_user(user)
+    out["usage_bytes"] = auth.user_usage(user["id"])
+    return out
+
+
+@app.get("/api/admin/users")
+async def admin_users():
+    auth.require_superadmin()
+    rows = db.fetchall("SELECT * FROM users ORDER BY CASE role WHEN 'superadmin' THEN 0 ELSE 1 END, created_at")
+    return [{**auth.public_user(row), "usage_bytes": auth.user_usage(row["id"])} for row in rows]
+
+
+@app.post("/api/admin/users")
+async def admin_create_user(request: Request):
+    auth.require_superadmin()
+    payload = await request.json()
+    username = str(payload.get("username", "")).strip()
+    password = str(payload.get("password", ""))
+    if not re.fullmatch(r"[A-Za-z0-9@._+-]{3,120}", username):
+        raise HTTPException(400, "Login 3-120 belgi bo'lsin; harf, raqam, @ . _ + - ishlatish mumkin.")
+    if len(password) < 8:
+        raise HTTPException(400, "Parol kamida 8 belgidan iborat bo'lishi kerak.")
+    if auth.active_regular_user_count() >= auth.MAX_REGULAR_USERS:
+        raise HTTPException(
+            400,
+            f"Ko'pi bilan {auth.MAX_REGULAR_USERS} ta faol oddiy foydalanuvchi qo'shish mumkin.",
+        )
+    # Oddiy hisoblarning kvotasi server siyosati bo'yicha doim bir xil (10 GB).
+    # Frontend payload'i bu limitni oshira olmaydi.
+    quota_bytes = auth.USER_QUOTA
+    if auth.allocated_capacity() + quota_bytes > auth.TOTAL_CAPACITY:
+        raise HTTPException(400, "180 GB umumiy joydan ajratilmagan qismi yetarli emas.")
+    if db.fetchone("SELECT id FROM users WHERE username = ? COLLATE NOCASE", (username,)):
+        raise HTTPException(409, "Bu login band.")
+    user_id = db.new_id()
+    db.execute(
+        "INSERT INTO users (id, username, password_hash, role, quota_bytes, active, created_at, updated_at) "
+        "VALUES (?, ?, ?, 'user', ?, 1, ?, ?)",
+        (user_id, username, auth.hash_password(password), quota_bytes, db.now(), db.now()),
+    )
+    return auth.public_user(db.fetchone("SELECT * FROM users WHERE id = ?", (user_id,)))
+
+
+@app.patch("/api/admin/users/{user_id}")
+async def admin_update_user(user_id: str, request: Request):
+    admin = auth.require_superadmin()
+    user = db.fetchone("SELECT * FROM users WHERE id = ?", (user_id,))
+    if not user:
+        raise HTTPException(404, "Foydalanuvchi topilmadi.")
+    payload = await request.json()
+    if "password" in payload and str(payload["password"]):
+        password = str(payload["password"])
+        if len(password) < 8:
+            raise HTTPException(400, "Parol kamida 8 belgidan iborat bo'lishi kerak.")
+        db.execute("UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+                   (auth.hash_password(password), db.now(), user_id))
+        db.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+    if "active" in payload:
+        if user_id == admin["id"] and not bool(payload["active"]):
+            raise HTTPException(400, "O'zingizning super-admin hisobingizni o'chira olmaysiz.")
+        if bool(payload["active"]) and not user["active"] and \
+                auth.allocated_capacity(user_id) + int(user["quota_bytes"]) > auth.TOTAL_CAPACITY:
+            raise HTTPException(400, "Hisobni yoqish uchun 180 GB umumiy hovuzda yetarli joy ajratilmagan.")
+        if bool(payload["active"]) and not user["active"] and user["role"] == "user" and \
+                auth.active_regular_user_count(user_id) >= auth.MAX_REGULAR_USERS:
+            raise HTTPException(
+                400,
+                f"Ko'pi bilan {auth.MAX_REGULAR_USERS} ta faol oddiy foydalanuvchi bo'lishi mumkin.",
+            )
+        db.execute("UPDATE users SET active = ?, updated_at = ? WHERE id = ?",
+                   (1 if payload["active"] else 0, db.now(), user_id))
+        if not payload["active"]:
+            db.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+    if "quota_gb" in payload:
+        quota_bytes = int(float(payload["quota_gb"]) * 1024**3)
+        if user["role"] == "user" and quota_bytes > auth.USER_QUOTA:
+            raise HTTPException(400, "Oddiy foydalanuvchi kvotasi 10 GB dan oshmaydi.")
+        if quota_bytes < auth.user_usage(user_id):
+            raise HTTPException(400, "Kvota foydalanuvchining hozirgi fayllaridan kichik bo'la olmaydi.")
+        if auth.allocated_capacity(user_id) + quota_bytes > auth.TOTAL_CAPACITY:
+            raise HTTPException(400, "180 GB umumiy joydan ajratilmagan qismi yetarli emas.")
+        db.execute("UPDATE users SET quota_bytes = ?, updated_at = ? WHERE id = ?",
+                   (quota_bytes, db.now(), user_id))
+    return auth.public_user(db.fetchone("SELECT * FROM users WHERE id = ?", (user_id,)))
+
+
 @app.get("/api/storage")
 async def api_storage():
-    return disk_usage()
+    user = auth.current_user()
+    physical = disk_usage()
+    return {
+        "app_usage": auth.user_usage(user["id"]),
+        "storage_limit": int(user["quota_bytes"]),
+        "disk_free": physical["disk_free"],
+        "disk_total": physical["disk_total"],
+        "is_superadmin": user["role"] == "superadmin",
+        "total_capacity": auth.TOTAL_CAPACITY,
+        "allocated_capacity": auth.allocated_capacity() if user["role"] == "superadmin" else None,
+        "max_regular_users": auth.MAX_REGULAR_USERS if user["role"] == "superadmin" else None,
+        "active_regular_users": auth.active_regular_user_count() if user["role"] == "superadmin" else None,
+    }
 
 
 @app.get("/api/config")
@@ -252,6 +381,21 @@ def video_public(v: dict) -> dict:
     if v["tts_job_id"]:
         pj = db.fetchone("SELECT provider FROM tts_jobs WHERE id = ?", (v["tts_job_id"],))
         primary_tts_provider = pj["provider"] if pj else None
+    learning_track = db.fetchone(
+        "SELECT srt_filename, srt_status, segment_count, provider, tts_job_id, audio_status, "
+        "final_video_status, error, updated_at, export_status, export_with_intro, export_error, "
+        "intro_status, intro_progress, intro_message, intro_error, intro_duration, "
+        "subtitled_video_status, subtitled_video_error "
+        "FROM learning_tracks WHERE video_id = ?", (v["id"],))
+    learning_public = dict(learning_track) if learning_track else None
+    if learning_public and learning_track["tts_job_id"]:
+        learning_job = db.fetchone(
+            "SELECT status, total_segments, completed_segments FROM tts_jobs WHERE id = ?",
+            (learning_track["tts_job_id"],))
+        if learning_job:
+            learning_public["job_status"] = learning_job["status"]
+            learning_public["total_segments"] = learning_job["total_segments"] or 0
+            learning_public["completed_segments"] = learning_job["completed_segments"] or 0
     return {
         "id": v["id"], "original_name": v["original_name"], "file_size": v["file_size"],
         "duration": v["duration"], "status": v["status"], "blocked_reason": v["blocked_reason"],
@@ -279,6 +423,10 @@ def video_public(v: dict) -> dict:
             "SELECT provider, audio_status, final_video_status, subtitled_video_status, "
             "subtitled_video_error, error FROM audio_tracks WHERE video_id = ?",
             (v["id"],))] if v["status"] == "completed" else [],
+        # "Ruscha o'rganish" treki - Uzbek pipeline holatidan mustaqil, doim
+        # ko'rsatiladi (video hali 'completed' bo'lmasa ham Learning SRT
+        # yuklab, audio/video yaratish mumkin).
+        "learning_track": learning_public,
     }
 
 
@@ -313,7 +461,9 @@ def chunk_detail(c: dict, transcript_segments: list = None) -> dict:
 
 @app.get("/api/videos")
 async def list_videos():
-    rows = db.fetchall("SELECT * FROM videos WHERE kind = 'pipeline' OR kind IS NULL ORDER BY created_at DESC")
+    owner_id = auth.current_user_id()
+    rows = db.fetchall("SELECT * FROM videos WHERE owner_id = ? AND (kind = 'pipeline' OR kind IS NULL) "
+                       "ORDER BY created_at DESC", (owner_id,))
     return [video_public(r) for r in rows]
 
 
@@ -331,7 +481,8 @@ def split_video_public(v: dict) -> dict:
 
 @app.get("/api/split-videos")
 async def list_split_videos():
-    rows = db.fetchall("SELECT * FROM videos WHERE kind = 'split_only' ORDER BY created_at DESC")
+    rows = db.fetchall("SELECT * FROM videos WHERE owner_id = ? AND kind = 'split_only' ORDER BY created_at DESC",
+                       (auth.current_user_id(),))
     return [split_video_public(r) for r in rows]
 
 
@@ -341,41 +492,86 @@ async def list_split_videos():
 
 @app.get("/api/folders")
 async def list_folders():
-    folders = db.fetchall("SELECT * FROM folders ORDER BY name COLLATE NOCASE ASC")
-    counts = db.fetchall("SELECT folder_id, COUNT(*) as n FROM videos WHERE folder_id IS NOT NULL GROUP BY folder_id")
+    owner_id = auth.current_user_id()
+    folders = db.fetchall(
+        "SELECT * FROM folders WHERE owner_id = ? ORDER BY COALESCE(parent_id, ''), sort_order ASC, "
+        "name COLLATE NOCASE ASC", (owner_id,))
+    counts = db.fetchall("SELECT folder_id, COUNT(*) as n FROM videos WHERE owner_id = ? AND folder_id IS NOT NULL "
+                         "GROUP BY folder_id", (owner_id,))
     count_by_id = {c["folder_id"]: c["n"] for c in counts}
-    return [{"id": f["id"], "name": f["name"], "created_at": f["created_at"],
+    child_counts = db.fetchall("SELECT parent_id, COUNT(*) as n FROM folders WHERE owner_id = ? AND parent_id IS NOT NULL "
+                               "GROUP BY parent_id", (owner_id,))
+    child_count_by_id = {c["parent_id"]: c["n"] for c in child_counts}
+    return [{"id": f["id"], "name": f["name"], "parent_id": f["parent_id"],
+             "sort_order": f["sort_order"] or 0, "created_at": f["created_at"],
+             "child_count": child_count_by_id.get(f["id"], 0),
              "video_count": count_by_id.get(f["id"], 0)} for f in folders]
 
 
 @app.post("/api/folders")
-async def create_folder(name: str = Form(...)):
+async def create_folder(name: str = Form(...), parent_id: str = Form("")):
+    owner_id = auth.current_user_id()
     name = name.strip()
     if not name:
         raise HTTPException(400, "Papka nomi bo'sh bo'lishi mumkin emas.")
+    parent_id = parent_id.strip() or None
+    if parent_id and not db.fetchone("SELECT id FROM folders WHERE id = ? AND owner_id = ?", (parent_id, owner_id)):
+        raise HTTPException(404, "Asosiy papka topilmadi.")
+    duplicate = db.fetchone("SELECT id FROM folders WHERE owner_id = ? AND parent_id IS ? AND name = ? COLLATE NOCASE",
+                            (owner_id, parent_id, name))
+    if duplicate:
+        raise HTTPException(409, "Shu joyda bunday nomli papka mavjud.")
+    last = db.fetchone("SELECT COALESCE(MAX(sort_order), -1) AS n FROM folders WHERE owner_id = ? AND parent_id IS ?",
+                       (owner_id, parent_id))
     folder_id = db.new_id()
-    db.execute("INSERT INTO folders (id, name, created_at) VALUES (?, ?, ?)", (folder_id, name, db.now()))
-    return {"id": folder_id, "name": name}
+    sort_order = int(last["n"]) + 1
+    db.execute("INSERT INTO folders (id, name, parent_id, sort_order, created_at, owner_id) VALUES (?, ?, ?, ?, ?, ?)",
+               (folder_id, name, parent_id, sort_order, db.now(), owner_id))
+    return {"id": folder_id, "name": name, "parent_id": parent_id, "sort_order": sort_order}
+
+
+@app.post("/api/folders/{folder_id}/move")
+async def move_folder(folder_id: str, direction: str = Form(...)):
+    owner_id = auth.current_user_id()
+    folder = db.fetchone("SELECT id, parent_id FROM folders WHERE id = ?", (folder_id,))
+    if not folder:
+        raise HTTPException(404, "Papka topilmadi.")
+    if direction not in ("up", "down"):
+        raise HTTPException(400, "Yo'nalish up yoki down bo'lishi kerak.")
+    siblings = db.fetchall(
+        "SELECT id FROM folders WHERE owner_id = ? AND parent_id IS ? ORDER BY sort_order ASC, name COLLATE NOCASE ASC",
+        (owner_id, folder["parent_id"]))
+    ids = [row["id"] for row in siblings]
+    index = ids.index(folder_id)
+    target = index - 1 if direction == "up" else index + 1
+    if target < 0 or target >= len(ids):
+        return {"ok": True}
+    ids[index], ids[target] = ids[target], ids[index]
+    for order, sibling_id in enumerate(ids):
+        db.execute("UPDATE folders SET sort_order = ? WHERE id = ?", (order, sibling_id))
+    return {"ok": True}
 
 
 @app.delete("/api/folders/{folder_id}")
 async def delete_folder(folder_id: str):
-    f = db.fetchone("SELECT id FROM folders WHERE id = ?", (folder_id,))
+    f = db.fetchone("SELECT id, parent_id FROM folders WHERE id = ?", (folder_id,))
     if not f:
         raise HTTPException(404, "Papka topilmadi.")
-    db.execute("UPDATE videos SET folder_id = NULL WHERE folder_id = ?", (folder_id,))
+    db.execute("UPDATE videos SET folder_id = ? WHERE folder_id = ?", (f["parent_id"], folder_id))
+    db.execute("UPDATE folders SET parent_id = ? WHERE parent_id = ?", (f["parent_id"], folder_id))
     db.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
     return {"ok": True}
 
 
 @app.post("/api/videos/{video_id}/folder")
 async def set_video_folder(video_id: str, folder_id: str = Form("")):
+    owner_id = auth.current_user_id()
     v = db.fetchone("SELECT id FROM videos WHERE id = ?", (video_id,))
     if not v:
         raise HTTPException(404, "Video topilmadi.")
     folder_id = folder_id.strip() or None
     if folder_id:
-        f = db.fetchone("SELECT id FROM folders WHERE id = ?", (folder_id,))
+        f = db.fetchone("SELECT id FROM folders WHERE id = ? AND owner_id = ?", (folder_id, owner_id))
         if not f:
             raise HTTPException(404, "Papka topilmadi.")
     db.execute("UPDATE videos SET folder_id = ? WHERE id = ?", (folder_id, video_id))
@@ -399,6 +595,17 @@ async def get_video(video_id: str):
     out["results"] = results
     out["transcript_text"] = v["transcript_text"] or ""
     out["translation_text"] = v["translation_text"] or ""
+    out["learning_text"] = ""
+    learning_source = db.fetchone(
+        "SELECT srt_path FROM learning_tracks WHERE video_id = ? AND srt_status = 'uploaded'", (video_id,))
+    if learning_source and learning_source["srt_path"] and Path(learning_source["srt_path"]).exists():
+        try:
+            learning_segments = translation.parse_srt_direct(
+                Path(learning_source["srt_path"]).read_text(encoding="utf-8"))
+            out["learning_text"] = "\n\n".join(s.get("text", "") for s in learning_segments)
+        except (OSError, ValueError):
+            pass
+    out["learning_words"] = _learning_words_payload(video_id)
     out["expected_segment_count"] = len(chunks) if v["transcript_segments"] else None
     out["flagged_issues"] = json.loads(v["flagged_issues"]) if v["flagged_issues"] else []
     if v["tts_job_id"]:
@@ -406,6 +613,20 @@ async def get_video(video_id: str):
                           (v["tts_job_id"],))
         out["tts_job"] = tj
     return out
+
+
+@app.post("/api/videos/{video_id}/name")
+async def rename_video(video_id: str, name: str = Form(...)):
+    video = db.fetchone("SELECT id FROM videos WHERE id = ?", (video_id,))
+    if not video:
+        raise HTTPException(404, "Video topilmadi.")
+    name = name.strip()
+    if not name:
+        raise HTTPException(400, "Video nomi bo'sh bo'lishi mumkin emas.")
+    if len(name) > 300:
+        raise HTTPException(400, "Video nomi 300 belgidan oshmasligi kerak.")
+    db.execute("UPDATE videos SET original_name = ?, updated_at = ? WHERE id = ?", (name, db.now(), video_id))
+    return {"ok": True, "name": name}
 
 
 @app.get("/api/videos/{video_id}/thumbnail")
@@ -417,7 +638,7 @@ async def get_thumbnail(video_id: str):
 
 
 @app.delete("/api/videos/{video_id}")
-async def delete_video(video_id: str, mode: str = "full", _=Depends(check_admin)):
+async def delete_video(video_id: str, mode: str = "full"):
     v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
     if not v:
         raise HTTPException(404, "Video topilmadi.")
@@ -429,6 +650,7 @@ async def delete_video(video_id: str, mode: str = "full", _=Depends(check_admin)
         worker._update_video(video_id, status="segments_ready", blocked_reason=None)
     else:
         worker.CANCEL_FLAGS[video_id] = True
+        worker.cleanup_learning_track(video_id, delete_record=True)
         if v["tts_job_id"]:
             db.execute("DELETE FROM tts_segments WHERE job_id = ?", (v["tts_job_id"],))
             db.execute("DELETE FROM tts_jobs WHERE id = ?", (v["tts_job_id"],))
@@ -527,6 +749,75 @@ async def transcribe_endpoint(video_id: str, language: str = Form(""), instructi
                "WHERE video_id = ?", (video_id,))
     worker.start_transcription(video_id, language, instruction, topic_group)
     return {"ok": True}
+
+
+@app.post("/api/videos/{video_id}/transcript/srt-upload")
+async def upload_original_transcript_srt_endpoint(video_id: str, file: UploadFile = File(...),
+                                                  language: str = Form("")):
+    """Qurilmadan tayyor ORIGINAL SRT yuklab, Whisper bosqichini almashtiradi.
+
+    SRT o'z vaqt belgilarini saqlaydi; foydalanuvchi keyingi ekranda matnni
+    tekshiradi va odatdagi kabi alohida tasdiqlaydi.
+    """
+    v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    if not v:
+        raise HTTPException(404, "Video topilmadi.")
+    if v["status"] not in ("segments_ready", "transcription_ready", "cancelled"):
+        raise HTTPException(400, "Original SRT faqat matn olish bosqichida yuklanadi.")
+    _validate_transcribe_language(language)
+    name = file.filename or ""
+    if not name.lower().endswith(".srt"):
+        raise HTTPException(400, "Faqat .srt fayl qabul qilinadi.")
+    raw = await file.read()
+    if len(raw) > 10 * 1024 * 1024:
+        raise HTTPException(400, "SRT fayl juda katta (limit: 10 MB).")
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = raw.decode("cp1251", errors="ignore")
+    try:
+        parsed = translation.parse_srt_direct(text)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    segments = []
+    for i, item in enumerate(sorted(parsed, key=lambda s: (s["start"], s["end"]))):
+        start = float(item["start"])
+        end = float(item["end"])
+        if start < 0 or end <= start:
+            raise HTTPException(400, f"SRT'dagi {i + 1}-bo'lak vaqt belgisi noto'g'ri.")
+        segments.append({"start": start, "end": end, "text": (item.get("text") or "").strip()})
+
+    duration = float(v["duration"] or 0)
+    if duration and segments[-1]["end"] > duration + 5:
+        raise HTTPException(
+            400,
+            f"SRT oxirgi vaqti ({segments[-1]['end']:.1f}s) video davomiyligidan "
+            f"({duration:.1f}s) ancha uzun. Boshqa videoning SRT fayli tanlangan bo'lishi mumkin.",
+        )
+
+    txt_text = transcription.build_txt(segments)
+    db.execute("UPDATE chunks SET status = 'completed', error = NULL WHERE video_id = ?", (video_id,))
+    worker._update_video(
+        video_id,
+        status="transcription_ready",
+        blocked_reason=None,
+        progress=100,
+        message="Original SRT yuklandi. Tekshirib tasdiqlang.",
+        error=None,
+        language=language,
+        detected_language=language or None,
+        transcript_text=txt_text,
+        transcript_segments=json.dumps(segments, ensure_ascii=False),
+        transcript_approved=0,
+        flagged_issues="[]",
+        translation_status="none",
+        translation_text="",
+        translation_segments="[]",
+    )
+    worker.write_transcript_results(video_id)
+    db.log_line(video_id, f"Original SRT qurilmadan yuklandi: {name} ({len(segments)} ta segment).")
+    return {"ok": True, "segment_count": len(segments)}
 
 
 @app.get("/api/glossary/groups")
@@ -781,7 +1072,8 @@ async def translate_srt_direct_from_cloud_endpoint(video_id: str, cloud_file_id:
         raise HTTPException(404, "Video topilmadi.")
     if not v["transcript_approved"]:
         raise HTTPException(400, "Avval original matnni tasdiqlang.")
-    f = db.fetchone("SELECT * FROM cloud_files WHERE id = ? AND kind = 'file'", (cloud_file_id,))
+    f = db.fetchone("SELECT * FROM cloud_files WHERE id = ? AND kind = 'file' AND owner_id = ?",
+                    (cloud_file_id, auth.current_user_id()))
     if not f or not Path(f["path"]).exists():
         raise HTTPException(404, "Bulutda bunday fayl topilmadi.")
     name = (f["original_name"] or "").lower()
@@ -1038,6 +1330,409 @@ async def create_audio_track_endpoint(
     return {"ok": True, "tts_job_id": job_id}
 
 
+@app.get("/api/videos/{video_id}/learning")
+async def learning_track_endpoint(video_id: str):
+    """"Ruscha o'rganish" trekining joriy holatini qaytaradi (frontend polling
+    uchun) - Uzbek pipeline holatidan mustaqil."""
+    v = db.fetchone("SELECT id FROM videos WHERE id = ?", (video_id,))
+    if not v:
+        raise HTTPException(404, "Video topilmadi.")
+    t = db.fetchone("SELECT * FROM learning_tracks WHERE video_id = ?", (video_id,))
+    return dict(t) if t else None
+
+
+@app.post("/api/videos/{video_id}/learning/srt")
+async def upload_learning_srt_endpoint(video_id: str, file: UploadFile = File(...)):
+    """Foydalanuvchi qo'lda tayyorlagan Learning SRT faylni yuklaydi. Dastur bu
+    faylni YARATMAYDI - faqat validatsiya qilib, o'zgartirmasdan saqlaydi.
+    Mixed-language (o'zbek lotin + rus kirill) matn NORMAL - hech qanday
+    tozalash/transliteratsiya/tarjima qilinmaydi."""
+    v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    if not v:
+        raise HTTPException(404, "Video topilmadi.")
+    if not v["transcript_approved"]:
+        raise HTTPException(400, "Avval original matnni tasdiqlang.")
+    name = (file.filename or "").lower()
+    if not name.endswith(".srt"):
+        raise HTTPException(400, "Faqat .srt fayl qabul qilinadi.")
+    raw = await file.read()
+    if len(raw) > 10 * 1024 * 1024:
+        raise HTTPException(400, "Learning SRT juda katta (limit: 10 MB).")
+    if not raw.strip():
+        raise HTTPException(400, "Yuklangan fayl bo'sh.")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(400, "Fayl UTF-8 kodlashda emas. Iltimos, UTF-8 formatida saqlab qayta yuklang.")
+    try:
+        segments = translation.parse_srt_direct(text)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    try:
+        worker.apply_learning_srt(video_id, text, file.filename or "learning.srt", len(segments))
+    except translation.LearningSrtError as e:
+        raise HTTPException(400, str(e))
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    return {"ok": True, "segment_count": len(segments)}
+
+
+def _learning_segments(video_id: str) -> tuple[dict, list]:
+    track = db.fetchone("SELECT * FROM learning_tracks WHERE video_id = ?", (video_id,))
+    if not track or track["srt_status"] != "uploaded" or not track["srt_path"]:
+        raise HTTPException(404, "Ruscha o'rganish matni topilmadi.")
+    path = Path(track["srt_path"])
+    if not path.exists():
+        raise HTTPException(404, "Ruscha o'rganish SRT fayli topilmadi.")
+    try:
+        segments = translation.parse_srt_direct(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise HTTPException(400, f"Ruscha o'rganish matnini o'qib bo'lmadi: {e}")
+    return dict(track), segments
+
+
+def _save_learning_segments(video_id: str, segments: list, filename: str):
+    if not segments:
+        raise HTTPException(400, "Kamida bitta matn bo'lagi kerak.")
+    srt_text = transcription.build_srt(segments)
+    _apply_learning_srt_text(video_id, srt_text, filename, len(segments))
+
+
+def _apply_learning_srt_text(video_id: str, srt_text: str, filename: str, segment_count: int):
+    try:
+        worker.apply_learning_srt(video_id, srt_text, filename, segment_count)
+    except translation.LearningSrtError as e:
+        raise HTTPException(400, str(e))
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+
+def _manual_learning_segments(v: dict, text: str) -> list:
+    source_segments = _json_or_empty(v["transcript_segments"])
+    if not source_segments:
+        raise HTTPException(400, "Original matn segmentlari topilmadi.")
+    try:
+        texts = translation.parse_manual_translation(text, source_segments)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return [
+        {"start": source_segments[i]["start"], "end": source_segments[i]["end"], "text": value}
+        for i, value in enumerate(texts)
+    ]
+
+
+@app.get("/api/videos/{video_id}/learning/blocks")
+async def learning_blocks_endpoint(video_id: str):
+    _, segments = _learning_segments(video_id)
+    return [
+        {"index": i, "start": s["start"], "end": s["end"], "text": s.get("text", "")}
+        for i, s in enumerate(segments)
+    ]
+
+
+@app.post("/api/videos/{video_id}/learning/text")
+async def learning_manual_text_endpoint(video_id: str, text: str = Form(...)):
+    v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    if not v:
+        raise HTTPException(404, "Video topilmadi.")
+    if not v["transcript_approved"]:
+        raise HTTPException(400, "Avval original matnni tasdiqlang.")
+    segments = _manual_learning_segments(v, text)
+    _save_learning_segments(video_id, segments, "ruscha-organish.srt")
+    return {"ok": True, "segment_count": len(segments)}
+
+
+@app.post("/api/videos/{video_id}/learning/file")
+async def learning_manual_file_endpoint(video_id: str, file: UploadFile = File(...)):
+    v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    if not v:
+        raise HTTPException(404, "Video topilmadi.")
+    if not v["transcript_approved"]:
+        raise HTTPException(400, "Avval original matnni tasdiqlang.")
+    raw = await file.read()
+    name = (file.filename or "ruscha-organish.txt").lower()
+    if name.endswith(".docx"):
+        text = _extract_docx_text(raw)
+    else:
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text = raw.decode("cp1251", errors="ignore")
+    if name.endswith(".srt"):
+        try:
+            segments = translation.parse_srt_direct(text)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        # Xom SRT saqlanadi - vaqt qatoridagi [yangi:..]/[takror:..] teglari yo'qolmasligi uchun.
+        _apply_learning_srt_text(video_id, text, file.filename or "ruscha-organish.srt", len(segments))
+        return {"ok": True, "segment_count": len(segments)}
+    segments = _manual_learning_segments(v, text)
+    _save_learning_segments(video_id, segments, file.filename or "ruscha-organish.srt")
+    return {"ok": True, "segment_count": len(segments)}
+
+
+@app.post("/api/videos/{video_id}/learning/save-blocks")
+async def learning_save_blocks_endpoint(video_id: str, payload: dict):
+    track, segments = _learning_segments(video_id)
+    texts = payload.get("texts")
+    if not isinstance(texts, list):
+        raise HTTPException(400, "'texts' massiv bo'lishi kerak.")
+    if len(texts) != len(segments):
+        raise HTTPException(400, f"Bo'laklar soni mos emas: {len(texts)} / {len(segments)}.")
+    updated = [
+        {"start": s["start"], "end": s["end"], "text": str(texts[i]).strip()}
+        for i, s in enumerate(segments)
+    ]
+    if not any(u["text"] for u in updated):
+        raise HTTPException(400, "Kamida bitta matn bo'lagi kerak.")
+    # Faqat matn qatorlari almashtiriladi - vaqt qatoridagi so'z teglari saqlanadi.
+    original = Path(track["srt_path"]).read_text(encoding="utf-8")
+    srt_text = translation.replace_srt_block_texts(original, [u["text"] for u in updated])
+    _apply_learning_srt_text(video_id, srt_text, track.get("srt_filename") or "ruscha-organish.srt",
+                             sum(1 for u in updated if u["text"]))
+    return {"ok": True, "changed_count": sum(
+        1 for i, s in enumerate(segments) if (s.get("text") or "") != updated[i]["text"])}
+
+
+@app.post("/api/videos/{video_id}/learning/reset")
+async def learning_reset_endpoint(video_id: str):
+    v = db.fetchone("SELECT id FROM videos WHERE id = ?", (video_id,))
+    if not v:
+        raise HTTPException(404, "Video topilmadi.")
+    worker.cleanup_learning_track(video_id, delete_record=True)
+    db.log_line(video_id, "Ruscha o'rganish matni va hosila fayllari qaytadan boshlash uchun tozalandi.")
+    return {"ok": True}
+
+
+@app.get("/api/videos/{video_id}/learning/srt-download")
+async def download_learning_srt(video_id: str):
+    track = db.fetchone("SELECT srt_path, srt_filename FROM learning_tracks WHERE video_id = ?", (video_id,))
+    if not track or not track["srt_path"] or not Path(track["srt_path"]).exists():
+        raise HTTPException(404, "Learning SRT topilmadi.")
+    return FileResponse(track["srt_path"], media_type="application/x-subrip",
+                        filename=track["srt_filename"] or "learning.srt")
+
+
+@app.get("/api/videos/{video_id}/learning/audio-download")
+async def download_learning_audio(video_id: str, request: Request):
+    track = db.fetchone("SELECT audio_path, audio_status FROM learning_tracks WHERE video_id = ?", (video_id,))
+    if not track or track["audio_status"] != "ready" or not track["audio_path"]:
+        raise HTTPException(404, "Learning audio topilmadi.")
+    path = Path(track["audio_path"])
+    if not path.exists():
+        raise HTTPException(404, "Learning audio topilmadi.")
+    return range_file_response(request, path, "audio/wav")
+
+
+@app.post("/api/videos/{video_id}/learning/audio")
+async def start_learning_audio_endpoint(
+    video_id: str, provider: str = Form(...), voice: str = Form(""), mood: str = Form(""),
+    speed: float = Form(1.0), instructions: str = Form(""), aisha_key: str = Form(""),
+    stretch_to_fit: bool = Form(True),
+):
+    """Yuklangan Learning SRT asosida, MAVJUD TTS mexanizmi orqali mustaqil
+    Learning audio yaratishni boshlaydi - asosiy Uzbek audioga tegmaydi."""
+    v = db.fetchone("SELECT id FROM videos WHERE id = ?", (video_id,))
+    if not v:
+        raise HTTPException(404, "Video topilmadi.")
+    if provider == "aisha" and not aisha_key.strip():
+        raise HTTPException(400, "Aisha API kalit kiritilmagan.")
+    if provider == "openai" and not keys_manager.has_any_active_key():
+        raise HTTPException(400, "Ishlaydigan OpenAI API kalit topilmadi. Avval API kalit qo'shing.")
+    try:
+        job_id = worker.start_learning_track(video_id, provider, voice, mood, speed, instructions,
+                                              aisha_key.strip(), stretch_to_fit)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    return {"ok": True, "tts_job_id": job_id}
+
+
+@app.post("/api/videos/{video_id}/learning/render")
+async def learning_render_endpoint(video_id: str):
+    """Learning yakuniy videoni qo'lda qayta yig'ish (odatda audio tayyor
+    bo'lgach avtomatik ishga tushadi - bu asosan "qayta urinish" uchun)."""
+    track = db.fetchone("SELECT * FROM learning_tracks WHERE video_id = ?", (video_id,))
+    if not track or track["audio_status"] != "ready" or not track["audio_path"]:
+        raise HTTPException(400, "Avval Learning audio tayyor bo'lishi kerak.")
+    if not worker.enqueue_learning_render(video_id):
+        raise HTTPException(409, "Learning video allaqachon yig'ilmoqda.")
+    return {"ok": True}
+
+
+@app.get("/api/videos/{video_id}/learning/final-download")
+async def download_learning_final(video_id: str, request: Request):
+    """Tayyor Russian Learning yakuniy videoni yuklab olish - asosiy Uzbek
+    final-download'dan mustaqil, alohida fayl."""
+    track = db.fetchone("SELECT final_video_path, final_video_status FROM learning_tracks WHERE video_id = ?",
+                         (video_id,))
+    if not track or track["final_video_status"] != "ready" or not track["final_video_path"]:
+        raise HTTPException(404, "Learning video topilmadi.")
+    path = Path(track["final_video_path"])
+    if not path.exists():
+        raise HTTPException(404, "Learning video topilmadi.")
+    return range_file_response(request, path, "video/mp4")
+
+
+# ---------------------------------------------------------------------------
+#     Learning so'zlari, so'zlar treki, yuklab olinadigan Learning videosi va intro
+# ---------------------------------------------------------------------------
+
+def _learning_track_or_404(video_id: str) -> dict:
+    track = db.fetchone("SELECT * FROM learning_tracks WHERE video_id = ?", (video_id,))
+    if not track or track["srt_status"] != "uploaded":
+        raise HTTPException(404, "Learning SRT topilmadi.")
+    return track
+
+
+def _learning_asos(track: dict, video_id: str) -> str:
+    v = db.fetchone("SELECT original_name FROM videos WHERE id = ?", (video_id,))
+    fallback = Path(v["original_name"]).stem if v and v["original_name"] else "learning"
+    return learning.asos_name(track["srt_filename"], fallback)
+
+
+def _attachment(response, filename: str):
+    response.headers["Content-Disposition"] = learning.content_disposition(filename)
+    return response
+
+
+def _learning_words_payload(video_id: str):
+    track = db.fetchone("SELECT words_json, warnings_json, intro_slides_json FROM learning_tracks "
+                        "WHERE video_id = ? AND srt_status = 'uploaded'", (video_id,))
+    if not track:
+        return None
+    blocks = worker.learning_blocks(track)
+    lists = translation.learning_word_lists(blocks)
+    return {
+        "new": lists["new"], "repeat": lists["repeat"],
+        "new_count": len(lists["new"]), "repeat_count": len(lists["repeat"]),
+        "tagged_blocks": sum(1 for b in blocks if b["words"]),
+        "warnings": _json_or_empty(track["warnings_json"]),
+        "intro_slides": _json_or_empty(track["intro_slides_json"]),
+    }
+
+
+def _intro_offset(track: dict, intro: bool) -> float:
+    if not intro:
+        return 0.0
+    offset = worker.learning_intro_offset(track)
+    if offset <= 0:
+        raise HTTPException(404, "Intro hali yaratilmagan.")
+    return offset
+
+
+@app.get("/api/videos/{video_id}/learning/words")
+async def learning_words_endpoint(video_id: str):
+    payload = _learning_words_payload(video_id)
+    if payload is None:
+        raise HTTPException(404, "Learning SRT topilmadi.")
+    return payload
+
+
+@app.get("/api/videos/{video_id}/learning/words.vtt")
+async def learning_words_vtt(video_id: str, intro: bool = False, download: bool = False):
+    """So'zlar treki: har tegli blok vaqtida LEMMA — MA'NO (yuqori o'ng burchak).
+    intro=1 - intro bilan yig'ilgan video uchun (freeze-point, so'ng intro surilishi)."""
+    track = _learning_track_or_404(video_id)
+    cues = learning.words_cues(worker.learning_blocks(track), worker.learning_freeze_points(track),
+                               _intro_offset(track, intro))
+    resp = Response(content=learning.build_words_vtt(cues), media_type="text/vtt; charset=utf-8")
+    if download:
+        _attachment(resp, f"{_learning_asos(track, video_id)}_sozlar{'_intro' if intro else ''}.vtt")
+    return resp
+
+
+@app.get("/api/videos/{video_id}/learning/subtitles.vtt")
+async def learning_subtitles_vtt(video_id: str, intro: bool = False):
+    """Learning subtitrlari (pleyer treki) - so'zlar treki bilan bir xil vaqt manbasi."""
+    track = _learning_track_or_404(video_id)
+    path = Path(track["srt_path"] or "")
+    if not path.exists():
+        raise HTTPException(404, "Learning SRT fayli topilmadi.")
+    segments = translation.parse_srt_direct(path.read_text(encoding="utf-8"))
+    segments = learning.shifted_segments(segments, worker.learning_freeze_points(track), _intro_offset(track, intro))
+    return Response(content=transcription.build_vtt(segments), media_type="text/vtt; charset=utf-8")
+
+
+@app.get("/api/videos/{video_id}/learning/subtitles-intro.srt")
+async def learning_subtitles_intro_srt(video_id: str):
+    """Intro bilan yig'ilgan video uchun surilgan Learning SRT."""
+    track = _learning_track_or_404(video_id)
+    path = Path(track["srt_path"] or "")
+    if not path.exists():
+        raise HTTPException(404, "Learning SRT fayli topilmadi.")
+    segments = translation.parse_srt_direct(path.read_text(encoding="utf-8"))
+    segments = learning.shifted_segments(segments, worker.learning_freeze_points(track), _intro_offset(track, True))
+    resp = Response(content=transcription.build_srt(segments), media_type="application/x-subrip")
+    return _attachment(resp, f"{_learning_asos(track, video_id)}_learning_intro.srt")
+
+
+@app.post("/api/videos/{video_id}/learning/export")
+async def learning_export_endpoint(video_id: str):
+    track = _learning_track_or_404(video_id)
+    if track["final_video_status"] != "ready":
+        raise HTTPException(400, "Avval Learning videosi tayyor bo'lishi kerak.")
+    if track["export_status"] == "generating":
+        raise HTTPException(409, "Learning videosi allaqachon yig'ilmoqda.")
+    worker.enqueue_learning_export(video_id)
+    return {"ok": True}
+
+
+@app.get("/api/videos/{video_id}/learning/video-download")
+async def learning_video_download(video_id: str, request: Request):
+    """ASOS_learning.mp4 - so'zlar kadrga yozilgan (va intro bo'lsa, intro bilan)
+    versiya. Learning SRT'da so'zlar bo'lsa toza nusxaga qaytmaydi: foydalanuvchi
+    faqat so'zlari o'chirib bo'lmaydigan tayyor eksportni oladi."""
+    track = _learning_track_or_404(video_id)
+    path = None
+    if track["export_status"] == "ready" and track["export_video_path"]:
+        path = Path(track["export_video_path"])
+    elif any(b.get("words") for b in worker.learning_blocks(track)):
+        raise HTTPException(409, "So'zlar videoga yozilmoqda. Tayyor bo'lgach qayta urinib ko'ring.")
+    elif track["final_video_status"] == "ready" and track["final_video_path"]:
+        path = Path(track["final_video_path"])
+    if not path or not path.exists():
+        raise HTTPException(404, "Learning video topilmadi.")
+    return _attachment(range_file_response(request, path, "video/mp4"),
+                       f"{_learning_asos(track, video_id)}_learning.mp4")
+
+
+@app.post("/api/videos/{video_id}/learning/intro")
+async def learning_intro_endpoint(video_id: str, strip_stress: bool = Form(False)):
+    track = _learning_track_or_404(video_id)
+    if track["final_video_status"] != "ready":
+        raise HTTPException(400, "Intro Learning videosi parametrlari bilan yaratiladi - avval Learning "
+                                 "videosi tayyor bo'lishi kerak.")
+    lists = translation.learning_word_lists(worker.learning_blocks(track))
+    if not lists["new"] and not lists["repeat"]:
+        raise HTTPException(400, "Learning SRT'da yangi yoki takror so'z teglari yo'q - intro yaratilmaydi.")
+    owner = db.fetchone("SELECT owner_id FROM videos WHERE id = ?", (video_id,))
+    if lists["new"] and not keys_manager.has_any_active_key(owner_id=owner["owner_id"] if owner else None):
+        raise HTTPException(400, "Ishlaydigan OpenAI API kalit topilmadi (intro ovozlari uchun).")
+    if not worker.enqueue_learning_intro(video_id, strip_stress):
+        raise HTTPException(409, "Intro allaqachon yaratilmoqda.")
+    return {"ok": True}
+
+
+@app.get("/api/videos/{video_id}/learning/intro-download")
+async def learning_intro_download(video_id: str, request: Request):
+    track = _learning_track_or_404(video_id)
+    path = Path(track["intro_video_path"] or "")
+    if track["intro_status"] != "ready" or not path.exists():
+        raise HTTPException(404, "Intro topilmadi.")
+    return _attachment(range_file_response(request, path, "video/mp4"),
+                       f"{_learning_asos(track, video_id)}_intro.mp4")
+
+
+@app.get("/api/videos/{video_id}/learning/intro-slides/{name}")
+async def learning_intro_slide(video_id: str, name: str):
+    if not re.fullmatch(r"\d{2,3}\.png", name):
+        raise HTTPException(404, "Slayd topilmadi.")
+    path = RESULTS_DIR / video_id / "learning_intro_slides" / name
+    if not path.exists():
+        raise HTTPException(404, "Slayd topilmadi.")
+    return FileResponse(path, media_type="image/png")
+
+
 @app.post("/api/videos/{video_id}/render")
 async def render_endpoint(video_id: str):
     v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
@@ -1090,9 +1785,13 @@ async def subtitle_burn_endpoint(video_id: str, provider: str = Form(None)):
     v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
     if not v:
         raise HTTPException(404, "Video topilmadi.")
-    if v["status"] != "completed":
+    if provider != "learning" and v["status"] != "completed":
         raise HTTPException(400, "Avval yakuniy video tayyor bo'lishi kerak.")
-    if provider:
+    if provider == "learning":
+        track = db.fetchone("SELECT * FROM learning_tracks WHERE video_id = ?", (video_id,))
+        if not track or track["final_video_status"] != "ready" or not track["final_video_path"]:
+            raise HTTPException(400, "Ruscha o'rganish videosi hali tayyor emas.")
+    elif provider:
         track = db.fetchone("SELECT * FROM audio_tracks WHERE video_id = ? AND provider = ?", (video_id, provider))
         if not track or track["final_video_status"] != "ready" or not track["final_video_path"]:
             raise HTTPException(400, "Bu provayder uchun yakuniy video hali tayyor emas.")
@@ -1106,7 +1805,14 @@ async def subtitle_burn_endpoint(video_id: str, provider: str = Form(None)):
 @app.get("/api/videos/{video_id}/subtitled-download")
 async def download_subtitled_video(video_id: str, request: Request, provider: str = None):
     v = _ensure_video(video_id)
-    if provider:
+    if provider == "learning":
+        track = db.fetchone(
+            "SELECT subtitled_video_path, subtitled_video_status FROM learning_tracks WHERE video_id = ?",
+            (video_id,))
+        if not track or track["subtitled_video_status"] != "ready" or not track["subtitled_video_path"]:
+            raise HTTPException(404, "Ruscha o'rganish subtitrli videosi topilmadi.")
+        video_path = track["subtitled_video_path"]
+    elif provider:
         track = db.fetchone(
             "SELECT subtitled_video_path, subtitled_video_status FROM audio_tracks WHERE video_id = ? AND provider = ?",
             (video_id, provider))
@@ -1172,11 +1878,27 @@ async def send_to_bot_endpoint(video_id: str, request: Request, provider: str = 
     v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
     if not v:
         raise HTTPException(404, "Video topilmadi.")
-    if v["status"] != "completed":
+    if provider != "learning" and v["status"] != "completed":
         raise HTTPException(400, "Avval yakuniy video tayyor bo'lishi kerak.")
 
     title_suffix = ""
-    if provider:
+    if provider == "learning":
+        track = db.fetchone("SELECT * FROM learning_tracks WHERE video_id = ?", (video_id,))
+        if not track or track["final_video_status"] != "ready" or not track["final_video_path"]:
+            raise HTTPException(400, "Ruscha o'rganish videosi hali tayyor emas.")
+        use_export = (track["export_status"] == "ready" and track["export_video_path"]
+                      and Path(track["export_video_path"]).exists())
+        if any(b.get("words") for b in worker.learning_blocks(track)) and not use_export:
+            raise HTTPException(409, "So'zlar videoga yozilmoqda. Botga yuborishdan oldin tayyor bo'lishini kuting.")
+        if subtitled:
+            if track["subtitled_video_status"] != "ready" or not track["subtitled_video_path"]:
+                raise HTTPException(400, "Ruscha o'rganish subtitrli videosi hali tayyor emas.")
+            video_path = track["subtitled_video_path"]
+            title_suffix = " (ruscha o'rganish) [subtitrli]"
+        else:
+            video_path = track["export_video_path"] if use_export else track["final_video_path"]
+            title_suffix = " (ruscha o'rganish)"
+    elif provider:
         track = db.fetchone("SELECT * FROM audio_tracks WHERE video_id = ? AND provider = ?",
                              (video_id, provider))
         if not track or track["final_video_status"] != "ready" or not track["final_video_path"]:
@@ -1250,26 +1972,30 @@ async def retry_split_send(video_id: str):
 @app.post("/api/videos/upload/init")
 async def upload_init(original_name: str = Form(...), total_size: int = Form(...), kind: str = Form("pipeline"),
                        file_kind: str = Form("video")):
+    user = auth.current_user()
+    owner_id = user["id"]
+    if user["role"] != "superadmin" and kind != "pipeline":
+        raise HTTPException(403, "Oddiy foydalanuvchi faqat Kutubxonaga video yuklay oladi.")
     if kind not in ("pipeline", "split_only", "cloud"):
         raise HTTPException(400, "Noto'g'ri kind qiymati.")
     if file_kind not in ("video", "image", "file"):
         raise HTTPException(400, "Noto'g'ri file_kind qiymati.")
     if total_size > MAX_UPLOAD_SIZE:
         raise HTTPException(400, f"Fayl juda katta (limit: {MAX_UPLOAD_SIZE // (1024**3)} GB).")
-    if not has_space_for(total_size):
-        raise HTTPException(400, "Serverda yetarli bo'sh joy yo'q.")
+    if not has_space_for(total_size) or not auth.has_user_space(total_size, user):
+        raise HTTPException(400, "Sizga ajratilgan saqlash joyi yetarli emas.")
 
     name = safe_name(original_name)
     if kind != "cloud":
         existing_video = db.fetchone(
-            "SELECT * FROM videos WHERE original_name = ? AND file_size = ? AND kind = ? AND status != 'error' LIMIT 1",
-            (name, total_size, kind))
+            "SELECT * FROM videos WHERE owner_id = ? AND original_name = ? AND file_size = ? AND kind = ? "
+            "AND status != 'error' LIMIT 1", (owner_id, name, total_size, kind))
         if existing_video and existing_video["status"] != "uploading":
             return {"duplicate_of": video_public(existing_video) if kind == "pipeline" else split_video_public(existing_video)}
 
     existing_upload = db.fetchone(
-        "SELECT * FROM uploads WHERE original_name = ? AND total_size = ? AND kind = ? AND status = 'uploading' LIMIT 1",
-        (name, total_size, kind))
+        "SELECT * FROM uploads WHERE owner_id = ? AND original_name = ? AND total_size = ? AND kind = ? "
+        "AND status = 'uploading' LIMIT 1", (owner_id, name, total_size, kind))
     if existing_upload:
         return {"upload_id": existing_upload["id"], "received_size": existing_upload["received_size"], "resumed": True}
 
@@ -1278,15 +2004,15 @@ async def upload_init(original_name: str = Form(...), total_size: int = Form(...
     tmp_path.touch()
     db.execute(
         """INSERT INTO uploads (id, original_name, total_size, received_size, tmp_path, status, kind, file_kind,
-           created_at, updated_at) VALUES (?, ?, ?, 0, ?, 'uploading', ?, ?, ?, ?)""",
-        (upload_id, name, total_size, str(tmp_path), kind, file_kind, db.now(), db.now()),
+           created_at, updated_at, owner_id) VALUES (?, ?, ?, 0, ?, 'uploading', ?, ?, ?, ?, ?)""",
+        (upload_id, name, total_size, str(tmp_path), kind, file_kind, db.now(), db.now(), owner_id),
     )
     return {"upload_id": upload_id, "received_size": 0, "resumed": False}
 
 
 @app.get("/api/videos/upload/{upload_id}")
 async def upload_status(upload_id: str):
-    u = db.fetchone("SELECT * FROM uploads WHERE id = ?", (upload_id,))
+    u = db.fetchone("SELECT * FROM uploads WHERE id = ? AND owner_id = ?", (upload_id, auth.current_user_id()))
     if not u:
         raise HTTPException(404, "Upload topilmadi.")
     return {"id": u["id"], "received_size": u["received_size"], "total_size": u["total_size"], "status": u["status"]}
@@ -1294,7 +2020,8 @@ async def upload_status(upload_id: str):
 
 @app.post("/api/videos/upload/{upload_id}/chunk")
 async def upload_chunk(upload_id: str, offset: int = Form(...), chunk: UploadFile = File(...)):
-    u = db.fetchone("SELECT * FROM uploads WHERE id = ?", (upload_id,))
+    user = auth.current_user()
+    u = db.fetchone("SELECT * FROM uploads WHERE id = ? AND owner_id = ?", (upload_id, user["id"]))
     if not u:
         raise HTTPException(404, "Upload topilmadi.")
     if u["status"] != "uploading":
@@ -1314,7 +2041,7 @@ async def upload_chunk(upload_id: str, offset: int = Form(...), chunk: UploadFil
             written += len(part)
 
     new_received = u["received_size"] + written
-    if not has_space_for(0):
+    if not has_space_for(0) or not auth.has_user_space(0, user):
         db.execute("UPDATE uploads SET status = 'error', updated_at = ? WHERE id = ?", (db.now(), upload_id))
         raise HTTPException(400, "Serverda joy tugadi, upload to'xtatildi.")
     db.execute("UPDATE uploads SET received_size = ?, updated_at = ? WHERE id = ?",
@@ -1324,7 +2051,8 @@ async def upload_chunk(upload_id: str, offset: int = Form(...), chunk: UploadFil
 
 @app.post("/api/videos/upload/{upload_id}/complete")
 async def upload_complete(upload_id: str, request: Request):
-    u = db.fetchone("SELECT * FROM uploads WHERE id = ?", (upload_id,))
+    owner_id = auth.current_user_id()
+    u = db.fetchone("SELECT * FROM uploads WHERE id = ? AND owner_id = ?", (upload_id, owner_id))
     if not u:
         raise HTTPException(404, "Upload topilmadi.")
     tmp_path = Path(u["tmp_path"])
@@ -1342,10 +2070,10 @@ async def upload_complete(upload_id: str, request: Request):
         dest_path = dest_dir / u["original_name"]
         shutil.move(str(tmp_path), str(dest_path))
         db.execute(
-            """INSERT INTO cloud_files (id, kind, original_name, filename, path, file_size, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO cloud_files (id, kind, original_name, filename, path, file_size, created_at, owner_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (cloud_id, u["file_kind"] or "video", u["original_name"], dest_path.name, str(dest_path),
-             u["total_size"], db.now()),
+             u["total_size"], db.now(), owner_id),
         )
         db.execute("UPDATE uploads SET status = 'completed' WHERE id = ?", (upload_id,))
         if (u["file_kind"] or "video") == "video":
@@ -1362,9 +2090,9 @@ async def upload_complete(upload_id: str, request: Request):
     init_message = "Serverda saqlangan. Bo'laklarga avtomatik bo'linmoqda..." if kind == "pipeline" else "Yuklandi, botga yuborilmoqda..."
     db.execute(
         """INSERT INTO videos (id, original_name, filename, path, file_size, status, kind,
-           created_at, updated_at, message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           created_at, updated_at, message, owner_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (video_id, u["original_name"], dest_path.name, str(dest_path), u["total_size"], init_status, kind,
-         db.now(), db.now(), init_message),
+         db.now(), db.now(), init_message, owner_id),
     )
     db.execute("UPDATE uploads SET status = 'completed', video_id = ? WHERE id = ?", (video_id, upload_id))
     db.log_line(video_id, "Video serverga to'liq yuklandi.")
@@ -1416,7 +2144,7 @@ async def upload_complete(upload_id: str, request: Request):
 
 @app.delete("/api/videos/upload/{upload_id}")
 async def upload_cancel(upload_id: str):
-    u = db.fetchone("SELECT * FROM uploads WHERE id = ?", (upload_id,))
+    u = db.fetchone("SELECT * FROM uploads WHERE id = ? AND owner_id = ?", (upload_id, auth.current_user_id()))
     if not u:
         raise HTTPException(404, "Upload topilmadi.")
     Path(u["tmp_path"]).unlink(missing_ok=True)
@@ -1427,12 +2155,14 @@ async def upload_cancel(upload_id: str):
 @app.get("/api/uploads")
 async def list_uploads():
     return db.fetchall("SELECT id, original_name, total_size, received_size, status, created_at "
-                        "FROM uploads WHERE status IN ('uploading','error') ORDER BY created_at DESC")
+                        "FROM uploads WHERE owner_id = ? AND status IN ('uploading','error') ORDER BY created_at DESC",
+                       (auth.current_user_id(),))
 
 
 @app.delete("/api/uploads/cleanup")
 async def cleanup_uploads():
-    rows = db.fetchall("SELECT * FROM uploads WHERE status IN ('cancelled', 'error')")
+    rows = db.fetchall("SELECT * FROM uploads WHERE owner_id = ? AND status IN ('cancelled', 'error')",
+                       (auth.current_user_id(),))
     for u in rows:
         Path(u["tmp_path"]).unlink(missing_ok=True)
         db.execute("DELETE FROM uploads WHERE id = ?", (u["id"],))
@@ -1524,10 +2254,14 @@ async def incoming_video_from_bot(request: Request):
         shutil.rmtree(dest_dir, ignore_errors=True)
         raise HTTPException(400, "Serverda joy yetarli emas.")
 
+    admin = db.fetchone("SELECT id FROM users WHERE role = 'superadmin' ORDER BY created_at LIMIT 1")
+    if not admin:
+        shutil.rmtree(dest_dir, ignore_errors=True)
+        raise HTTPException(503, "Super-admin hisobi topilmadi.")
     db.execute(
-        """INSERT INTO cloud_files (id, kind, original_name, filename, path, file_size, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (cloud_id, "video", name, dest_path.name, str(dest_path), total, db.now()),
+        """INSERT INTO cloud_files (id, kind, original_name, filename, path, file_size, created_at, owner_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (cloud_id, "video", name, dest_path.name, str(dest_path), total, db.now(), admin["id"]),
     )
     _generate_cloud_thumbnail(cloud_id, dest_dir, dest_path)
     return {"ok": True, "cloud_file_id": cloud_id}
@@ -1535,10 +2269,12 @@ async def incoming_video_from_bot(request: Request):
 
 @app.get("/api/cloud-files")
 async def list_cloud_files(kind: str = None):
+    owner_id = auth.current_user_id()
     if kind:
-        rows = db.fetchall("SELECT * FROM cloud_files WHERE kind = ? ORDER BY created_at DESC", (kind,))
+        rows = db.fetchall("SELECT * FROM cloud_files WHERE owner_id = ? AND kind = ? ORDER BY created_at DESC",
+                           (owner_id, kind))
     else:
-        rows = db.fetchall("SELECT * FROM cloud_files ORDER BY created_at DESC")
+        rows = db.fetchall("SELECT * FROM cloud_files WHERE owner_id = ? ORDER BY created_at DESC", (owner_id,))
     return [cloud_file_public(f) for f in rows]
 
 
@@ -1564,9 +2300,9 @@ def _move_cloud_video_into_pipeline(f: dict, kind: str) -> str:
     init_message = "Bulutdan qo'shildi. Bo'laklarga bo'lishni kuting." if kind == "pipeline" else "Bulutdan qo'shildi, botga yuborilmoqda..."
     db.execute(
         """INSERT INTO videos (id, original_name, filename, path, file_size, status, kind,
-           created_at, updated_at, message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           created_at, updated_at, message, owner_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (video_id, f["original_name"], dest_path.name, str(dest_path), f["file_size"], init_status, kind,
-         db.now(), db.now(), init_message),
+         db.now(), db.now(), init_message, f["owner_id"]),
     )
     db.log_line(video_id, "Bulutdan video qo'shildi.")
     try:
@@ -1643,15 +2379,16 @@ PHASE_LABELS = {
 
 @app.get("/api/jobs")
 async def list_jobs():
+    owner_id = auth.current_user_id()
     videos = db.fetchall(
         "SELECT id, original_name, status, blocked_reason, progress, message, chunk_count, created_at FROM videos "
-        "WHERE status NOT IN ('uploading') ORDER BY created_at DESC")
+        "WHERE owner_id = ? AND status NOT IN ('uploading') ORDER BY created_at DESC", (owner_id,))
     video_jobs = [{"id": v["id"], "type": "video", "title": v["original_name"], "status": v["status"],
                     "blocked_reason": v["blocked_reason"], "phase": PHASE_LABELS.get(v["status"], v["status"]),
                     "progress": v["progress"], "message": v["message"], "total": v["chunk_count"]} for v in videos]
     tts_jobs = db.fetchall(
         "SELECT id, title, status, total_segments, completed_segments, error FROM tts_jobs "
-        "WHERE video_id IS NULL ORDER BY created_at DESC")
+        "WHERE owner_id = ? AND video_id IS NULL ORDER BY created_at DESC", (owner_id,))
     tts_job_list = [{"id": t["id"], "type": "tts", "title": t["title"], "status": t["status"],
                       "progress": round((t["completed_segments"] / t["total_segments"] * 100), 1) if t["total_segments"] else 0,
                       "message": t["error"] or "", "total": t["total_segments"],
@@ -1826,7 +2563,18 @@ async def video_results(video_id: str):
 async def download_final_video(video_id: str, request: Request, provider: str = None):
     v = _ensure_video(video_id)
     video_path = v["final_video_path"]
-    if provider:
+    if provider == "learning":
+        track = db.fetchone(
+            "SELECT final_video_path, final_video_status, export_video_path, export_status, words_json "
+            "FROM learning_tracks WHERE video_id = ?", (video_id,))
+        if not track or track["final_video_status"] != "ready" or not track["final_video_path"]:
+            raise HTTPException(404, "Ruscha o'rganish videosi topilmadi.")
+        export_ready = (track["export_status"] == "ready" and track["export_video_path"]
+                        and Path(track["export_video_path"]).exists())
+        if any(b.get("words") for b in worker.learning_blocks(track)) and not export_ready:
+            raise HTTPException(409, "So'zlar videoga yozilmoqda. Tayyor bo'lgach qayta urinib ko'ring.")
+        video_path = track["export_video_path"] if export_ready else track["final_video_path"]
+    elif provider:
         track = db.fetchone(
             "SELECT final_video_path, final_video_status FROM audio_tracks WHERE video_id = ? AND provider = ?",
             (video_id, provider))
@@ -1976,14 +2724,15 @@ async def create_tts_job(
     if provider == "openai" and not keys_manager.has_any_active_key():
         raise HTTPException(400, "Ishlaydigan OpenAI API kalit topilmadi. Avval API kalit qo'shing.")
     job_id = tts.create_job(title, provider, segments, voice, mood, speed, instructions,
-                             aisha_key.strip(), stretch_to_fit)
+                             aisha_key.strip(), stretch_to_fit, owner_id=auth.current_user_id())
     return {"id": job_id, "segments": len(segments)}
 
 
 @app.get("/api/tts/jobs")
 async def list_tts_jobs():
     return db.fetchall("SELECT id, title, provider, status, total_segments, completed_segments, "
-                        "error, created_at FROM tts_jobs ORDER BY created_at DESC")
+                        "error, created_at FROM tts_jobs WHERE owner_id = ? ORDER BY created_at DESC",
+                       (auth.current_user_id(),))
 
 
 @app.get("/api/tts/jobs/{job_id}")
@@ -2059,10 +2808,11 @@ async def get_costs():
 
     # amount_usd (dollar) va amount_som (Aisha, so'm) ikki xil valyuta -
     # ARALASHTIRILMAYDI, alohida-alohida yig'indi qilinadi.
+    owner_id = auth.current_user_id()
     def total_since(since):
         r = db.fetchone(
             "SELECT COALESCE(SUM(amount_usd),0) usd, COALESCE(SUM(amount_som),0) som "
-            "FROM costs WHERE created_at >= ?", (since,))
+            "FROM costs WHERE owner_id = ? AND created_at >= ?", (owner_id, since))
         return {"usd": round(r["usd"], 4), "som": round(r["som"], 2)}
 
     # "tts" - eski (migratsiyadan oldingi) OpenAI TTS yozuvlari, "tts_openai" bilan
@@ -2076,7 +2826,7 @@ async def get_costs():
            SUM(CASE WHEN c.kind IN ('tts_openai','tts') THEN c.amount_usd ELSE 0 END) as tts_openai,
            SUM(CASE WHEN c.kind='tts_aisha' THEN c.amount_som ELSE 0 END) as tts_aisha_som
            FROM videos v LEFT JOIN costs c ON c.video_id = v.id
-           GROUP BY v.id ORDER BY v.created_at DESC""")
+           WHERE v.owner_id = ? GROUP BY v.id ORDER BY v.created_at DESC""", (owner_id,))
     return {
         "today": total_since(today_start),
         "week": total_since(week_start),
@@ -2106,9 +2856,10 @@ DEFAULT_SETTINGS = {
 
 @app.get("/api/settings")
 async def get_settings():
+    owner_id = auth.current_user_id()
     out = dict(DEFAULT_SETTINGS)
     for key in DEFAULT_SETTINGS:
-        v = db.get_setting(key)
+        v = db.get_user_setting(owner_id, key)
         if v is not None:
             out[key] = v
     return out
@@ -2116,9 +2867,10 @@ async def get_settings():
 
 @app.post("/api/settings")
 async def update_settings(payload: dict):
+    owner_id = auth.current_user_id()
     for key, value in payload.items():
         if key in DEFAULT_SETTINGS:
-            db.set_setting(key, str(value))
+            db.set_user_setting(owner_id, key, str(value))
     return {"ok": True}
 
 
@@ -2129,20 +2881,22 @@ async def update_settings(payload: dict):
 @app.get("/api/translation-memory/chat")
 async def get_memory_chat():
     return db.fetchall("SELECT id, role, content, created_at FROM translation_memory_chat "
-                        "ORDER BY created_at ASC")
+                        "WHERE owner_id = ? ORDER BY created_at ASC", (auth.current_user_id(),))
 
 
 @app.post("/api/translation-memory/chat")
 async def send_memory_chat(message: str = Form(...)):
+    owner_id = auth.current_user_id()
     if not keys_manager.has_any_active_key(provider="claude"):
         raise HTTPException(400, "Ishlaydigan Claude API kalit topilmadi. Avval API kalit qo'shing.")
     kid, raw = keys_manager.get_next_active_key(provider="claude")
 
     user_msg_id = db.new_id()
-    db.execute("INSERT INTO translation_memory_chat (id, role, content, created_at) VALUES (?, 'user', ?, ?)",
-               (user_msg_id, message, db.now()))
+    db.execute("INSERT INTO translation_memory_chat (id, role, content, created_at, owner_id) "
+               "VALUES (?, 'user', ?, ?, ?)", (user_msg_id, message, db.now(), owner_id))
 
-    history = db.fetchall("SELECT role, content FROM translation_memory_chat ORDER BY created_at ASC LIMIT 40")
+    history = db.fetchall("SELECT role, content FROM translation_memory_chat WHERE owner_id = ? "
+                          "ORDER BY created_at ASC LIMIT 40", (owner_id,))
     claude_messages = [{"role": h["role"], "content": h["content"]} for h in history]
 
     system_prompt = (
@@ -2170,31 +2924,33 @@ async def send_memory_chat(message: str = Form(...)):
         raise HTTPException(400, f"Claude bilan bog'lanishda xato: {e}")
 
     assistant_msg_id = db.new_id()
-    db.execute("INSERT INTO translation_memory_chat (id, role, content, created_at) VALUES (?, 'assistant', ?, ?)",
-               (assistant_msg_id, reply, db.now()))
+    db.execute("INSERT INTO translation_memory_chat (id, role, content, created_at, owner_id) "
+               "VALUES (?, 'assistant', ?, ?, ?)", (assistant_msg_id, reply, db.now(), owner_id))
     return {"id": assistant_msg_id, "role": "assistant", "content": reply}
 
 
 @app.delete("/api/translation-memory/chat")
 async def clear_memory_chat():
-    db.execute("DELETE FROM translation_memory_chat", ())
+    db.execute("DELETE FROM translation_memory_chat WHERE owner_id = ?", (auth.current_user_id(),))
     return {"ok": True}
 
 
 @app.get("/api/translation-memory/notes")
 async def list_memory_notes():
-    return db.fetchall("SELECT id, content, created_at FROM translation_memory_notes ORDER BY created_at DESC")
+    return db.fetchall("SELECT id, content, created_at FROM translation_memory_notes WHERE owner_id = ? "
+                       "ORDER BY created_at DESC", (auth.current_user_id(),))
 
 
 @app.post("/api/translation-memory/notes")
 async def add_memory_note(content: str = Form(...), source_message_id: str = Form("")):
     note_id = db.new_id()
-    db.execute("INSERT INTO translation_memory_notes (id, content, source_message_id, created_at) "
-               "VALUES (?, ?, ?, ?)", (note_id, content, source_message_id or None, db.now()))
+    db.execute("INSERT INTO translation_memory_notes (id, content, source_message_id, created_at, owner_id) "
+               "VALUES (?, ?, ?, ?, ?)", (note_id, content, source_message_id or None, db.now(), auth.current_user_id()))
     return {"ok": True, "id": note_id}
 
 
 @app.delete("/api/translation-memory/notes/{note_id}")
 async def delete_memory_note(note_id: str):
-    db.execute("DELETE FROM translation_memory_notes WHERE id = ?", (note_id,))
+    db.execute("DELETE FROM translation_memory_notes WHERE id = ? AND owner_id = ?",
+               (note_id, auth.current_user_id()))
     return {"ok": True}

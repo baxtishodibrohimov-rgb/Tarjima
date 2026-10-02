@@ -64,20 +64,45 @@
   :focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 
   /* ---------- qobiq ---------- */
-  .app { display:flex; min-height:100vh; }
-  .sidebar { width:244px; flex:none; padding:20px 14px; display:flex; flex-direction:column; gap:22px;
-    background:var(--panel); position:sticky; top:0; height:100vh; }
-  .brand { display:flex; align-items:center; gap:10px; padding:0 8px; }
+  .app { display:flex; flex-direction:column; min-height:100vh; }
+  .sidebar { width:100%; height:46px; flex:none; padding:4px 14px; display:flex; flex-direction:row;
+    align-items:center; gap:16px; background:var(--panel); position:sticky; top:0; z-index:20; overflow:hidden; }
+  .nav-toggle { width:30px; height:30px; padding:0; border:1px solid var(--border); border-radius:9px;
+    background:var(--surface); color:var(--accent); display:grid; place-items:center; flex:none;
+    font:700 17px/1 inherit; cursor:pointer; box-shadow:var(--shadow); }
+  .nav-toggle:hover { background:var(--accent-chip); }
+  body.nav-collapsed .sidebar { height:0; min-height:0; padding:0; overflow:visible; background:transparent; }
+  body.nav-collapsed .sidebar > :not(.nav-toggle) { display:none !important; }
+  body.nav-collapsed .nav-toggle { position:fixed; left:8px; top:8px; z-index:30; }
+  body.nav-collapsed .topbar { top:0; padding-left:52px; }
+  /* Video ichida global navigatsiya joy egallamaydi: video nomi eng yuqorida qoladi. */
+  body.video-detail-open .sidebar { display:none; }
+  body.video-detail-open .topbar { top:0; padding-left:28px; }
+  .brand { display:flex; align-items:center; gap:10px; padding:0 8px; flex:none; }
   .brand-mark { width:30px; height:30px; border-radius:9px; background:var(--accent-chip); color:var(--accent);
     display:grid; place-items:center; font-size:16px; flex:none; }
   .brand-name { font-weight:600; font-size:15px; }
-  .side-nav { display:flex; flex-direction:column; gap:3px; }
+  .side-nav { display:flex; flex-direction:row; flex-wrap:nowrap; gap:3px; overflow-x:auto; }
+  .global-nav-actions { margin-left:auto; display:flex; align-items:center; flex:none; }
+  .sidebar .nav-btn { min-height:34px; padding:0 9px; font-size:13px; }
+  .sidebar .icon-btn { width:34px; height:34px; }
   .side-widget { margin-top:auto; display:flex; flex-direction:column; gap:9px; padding:13px; border-radius:12px; background:var(--surface); }
-  .main { flex:1; min-width:0; display:flex; flex-direction:column; }
-  .topbar { display:flex; align-items:center; gap:12px; padding:16px 28px; flex-wrap:wrap;
-    border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--bg); z-index:12; }
+  .main { flex:1; width:100%; min-width:0; display:flex; flex-direction:column; }
+  .topbar { display:flex; align-items:center; gap:10px; min-height:46px; padding:5px 28px; flex-wrap:nowrap;
+    border-bottom:1px solid var(--line); position:sticky; top:46px; background:var(--bg); z-index:12; }
   .topbar h1 { font-size:19px; margin:0; }
+  .topbar-title-group { display:flex; align-items:center; gap:10px; min-width:0; }
+  .topbar-heading-stack { display:flex; flex-direction:column; gap:5px; min-width:0; }
+  .topbar-heading-line { display:flex; align-items:center; gap:10px; min-width:0; }
+  .topbar-back { display:none; width:38px; height:38px; border-radius:999px; border:1px solid var(--border);
+    background:var(--surface); color:var(--accent); align-items:center; justify-content:center; cursor:pointer;
+    font:800 22px/1 inherit; flex:none; box-shadow:var(--shadow); }
+  .topbar-back:hover { background:var(--accent-chip); }
   .topbar-actions { margin-left:auto; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  #headerFolderButton { width:34px; height:34px; font-size:14px; }
+  #topbarTitle { display:none; }
+  .topbar-video-name { display:none; min-width:0; max-width:min(56vw,720px); overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap; color:var(--muted); font-size:13px; font-weight:500; }
 
   .nav { display:flex; gap:8px; flex-wrap:wrap; }
   .nav-btn { display:flex; align-items:center; gap:11px; min-height:44px; padding:0 12px; border:none;
@@ -145,6 +170,12 @@
     color:var(--warn); margin:0 0 18px; line-height:1.55; }
   .card, .panel, .stage { background:var(--surface); border-radius:16px; padding:18px; margin-bottom:14px; }
   .card h2, .panel h2, .stage h3 { font-size:16px; margin:0 0 10px; }
+  details.settings-collapsible { padding:0; overflow:hidden; }
+  details.settings-collapsible > summary { list-style:none; cursor:pointer; padding:15px 18px;
+    font-size:16px; font-weight:600; color:var(--text); user-select:none; }
+  details.settings-collapsible > summary::-webkit-details-marker { display:none; }
+  details.settings-collapsible[open] > summary { border-bottom:1px solid var(--line); }
+  .settings-panel-body { padding:16px 18px 18px; }
   .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
   @media (max-width:640px) { .grid2 { grid-template-columns:1fr; } }
   .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:12px; }
@@ -158,6 +189,21 @@
   input:focus-visible, textarea:focus-visible, select:focus-visible { border-color:var(--accent); outline-offset:0; }
   input[type=file] { padding:8px 10px; font-size:12.5px; }
   audio { height:36px; max-width:200px; }
+
+  .process-log > summary { cursor:pointer; font-weight:600; }
+  .process-log[open] { position:fixed; inset:24px; z-index:50; margin:0 !important; padding:20px;
+    display:flex; flex-direction:column; background:var(--surface); border:1px solid var(--border);
+    border-radius:18px; box-shadow:0 18px 60px rgba(0,0,0,.28); }
+  .process-log[open] > summary { display:flex; align-items:center; justify-content:space-between;
+    flex:none; padding-bottom:14px; border-bottom:1px solid var(--line); }
+  .process-log[open] > summary::after { content:"Yopish ×"; color:var(--accent); font-size:13px; }
+  .process-log[open] > textarea { position:absolute; inset:76px 20px 20px; width:auto;
+    height:auto !important; min-height:0 !important; max-height:none; margin:0 !important;
+    resize:none; font-size:13px !important; }
+  @media (max-width:640px) {
+    .process-log[open] { inset:8px; padding:14px; border-radius:14px; }
+    .process-log[open] > textarea { inset:66px 14px 14px; }
+  }
 
   table { width:100%; border-collapse:collapse; font-size:13.5px; margin-top:12px; }
   th, td { text-align:left; padding:10px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
@@ -188,18 +234,26 @@
     display:flex; align-items:center; justify-content:center; color:var(--faint); font-size:12px; }
   .vcard .vbody { display:flex; flex-direction:column; gap:8px; flex:1; }
   .vcard .vname { font-weight:600; font-size:14.5px; margin:0; word-break:break-word; line-height:1.32; }
+  .vcard-name-row { display:flex; align-items:flex-start; gap:7px; }
+  .vcard-name-row .vname { flex:1; min-width:0; }
+  .rename-video-btn { flex:none; width:28px; height:28px; padding:0; border:none; border-radius:8px;
+    background:var(--surface); color:var(--muted); cursor:pointer; font-size:14px; }
+  .rename-video-btn:hover { color:var(--accent); background:var(--accent-chip); }
   .vcard .vmeta { font-size:11.5px; color:var(--muted); margin:0; font-family:"JetBrains Mono",ui-monospace,monospace; }
   .card-foot { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }
   .vcard-folder-select select { font-size:11.5px; padding:6px 8px; border-radius:8px; background:var(--surface); }
   .vcard-folder-select { position:relative; z-index:2; }
 
-  .fab-wrap { position:fixed; left:244px; right:0; bottom:24px; display:flex; justify-content:center; z-index:15; pointer-events:none; }
-  .fab { pointer-events:auto; display:inline-flex; align-items:center; gap:8px; min-height:52px; padding:0 26px;
-    border-radius:999px; background:var(--accent); color:#fff; font-weight:600; font-size:14.5px; border:none;
+  .fab-wrap { position:fixed; left:0; right:0; bottom:24px; padding-right:24px; display:flex; justify-content:flex-end; z-index:15; pointer-events:none; }
+  .fab { pointer-events:auto; display:inline-flex; align-items:center; justify-content:center; width:54px; height:54px; padding:0;
+    border-radius:999px; background:var(--accent); color:#fff; font-weight:600; font-size:26px; line-height:1; border:none;
     box-shadow:0 8px 24px rgba(31,36,48,0.18); }
   .fab:hover { filter:brightness(1.08); }
 
   .folder-bar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:16px; }
+  .header-folder-bar { gap:5px; margin:0; min-height:26px; max-width:calc(100vw - 120px);
+    flex-wrap:nowrap; overflow-x:auto; scrollbar-width:thin; }
+  .header-folder-bar .folder-chip { min-height:26px; padding:0 9px; font-size:11px; flex:none; }
   .folder-chip, .filter-chip { display:inline-flex; align-items:center; gap:6px; min-height:36px; padding:0 15px;
     border:none; border-radius:999px; background:var(--neutral-bg); color:var(--neutral-fg); font-size:12.5px; cursor:pointer; }
   .folder-chip.active, .filter-chip.active { background:var(--accent-chip); color:var(--accent); }
@@ -209,6 +263,13 @@
   .folder-chip-add { display:inline-flex; align-items:center; gap:5px; min-height:36px; padding:0 15px;
     background:transparent; border:1px dashed var(--border); color:var(--muted); border-radius:999px; font-size:12.5px; cursor:pointer; }
   .folder-chip-add:hover { border-color:var(--accent); color:var(--accent); }
+  .folder-manager-list { display:flex; flex-direction:column; gap:6px; margin-top:14px; max-height:45vh; overflow:auto; }
+  .folder-manager-row { display:flex; align-items:center; gap:8px; min-height:42px; padding:6px 8px;
+    border-radius:10px; background:var(--work); }
+  .folder-manager-name { flex:1; min-width:0; border:none; background:transparent; color:var(--text);
+    text-align:left; cursor:pointer; font:inherit; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .folder-order-btn { width:30px; height:30px; padding:0; border:none; border-radius:8px; cursor:pointer;
+    background:var(--surface); color:var(--text); }
   .drop-zone { border:1px dashed var(--border); border-radius:16px; padding:28px; text-align:center;
     color:var(--muted); font-size:13.5px; cursor:pointer; background:var(--surface); }
   .drop-zone.drag { border-color:var(--accent); color:var(--accent); }
@@ -226,12 +287,29 @@
   .step-label.dim { color:var(--muted); }
   .step-line { flex:1; min-width:18px; max-width:56px; height:1px; background:var(--accent-line); margin:0 10px; }
   .step-line.done { background:var(--accent); }
+  .workflow-nav { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:4px; padding:4px; }
+  /* Video nomi ostidagi bosqichlar skrol paytida ham doim ko'rinadi. */
+  body.video-detail-open #videoDetailView .workflow-nav { position:sticky; top:49px; z-index:11;
+    box-shadow:0 8px 18px rgba(31,36,48,.08); }
+  .workflow-tab { min-height:38px; border:1px solid transparent; border-radius:9px; background:transparent;
+    color:var(--muted); display:flex; align-items:center; gap:7px; padding:4px 8px; cursor:pointer;
+    font:500 11.5px/1.2 inherit; text-align:left; }
+  .workflow-tab:hover { background:var(--panel); color:var(--text); }
+  .workflow-tab.active { background:var(--accent-chip); border-color:var(--accent-line); color:var(--accent); }
+  .workflow-tab .step-dot { width:22px; height:22px; font-size:10px; }
+  .workflow-tab .step-label { font-size:11.5px; }
+  @media (max-width:700px) {
+    .workflow-nav { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .workflow-tab { min-height:36px; }
+  }
   .stage.dim { opacity:.5; }
   .stage-head { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:6px; }
   .stage-head h3 { margin:0; font-size:15.5px; }
 
   .overview-grid { display:grid; grid-template-columns:minmax(240px,340px) 1fr; gap:14px; margin-bottom:14px; }
   @media (max-width:900px) { .overview-grid { grid-template-columns:1fr; } }
+  .original-video-player { display:block; width:100%; max-height:68vh; border-radius:12px; background:#000; }
+  .original-text-preview { min-height:140px; max-height:320px; margin-top:10px; resize:vertical; }
   .video-frame-ph { border-radius:12px; background:var(--neutral-bg); aspect-ratio:16/9; display:flex;
     align-items:center; justify-content:center; font-size:28px; color:var(--faint); }
   .panel img.video-frame-img { width:100%; border-radius:12px; aspect-ratio:16/9; object-fit:cover; display:block; }
@@ -289,6 +367,17 @@
   details.video-card summary::-webkit-details-marker { display:none; }
 
   .player-wrap video { width:100%; border-radius:12px; background:#000; }
+  video::cue(.yangi) { color:#FFD400; }
+  video::cue(.takror) { color:#FFFFFF; }
+  .lw-counts { display:flex; gap:14px; flex-wrap:wrap; font-size:13px; margin-bottom:8px; }
+  .lw-cols { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px; }
+  .lw-list { margin:6px 0 0; padding-left:18px; font-size:13px; }
+  .lw-list li { margin:2px 0; overflow-wrap:anywhere; }
+  .lw-new { color:#b8860b; font-weight:600; }
+  .lw-warn { margin:6px 0 0; padding-left:18px; font-size:12.5px; color:#a15c00; }
+  .intro-slides { display:grid; grid-template-columns:repeat(auto-fill, minmax(140px, 1fr)); gap:8px; margin-top:8px; }
+  .intro-slides figure { margin:0; font-size:11px; color:var(--muted); text-align:center; }
+  .intro-slides img { width:100%; border-radius:8px; display:block; background:#111; }
   .player-controls { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:12px; font-size:12.5px; color:var(--muted); }
   .player-controls select { width:auto; padding:8px 10px; font-size:12.5px; }
 
@@ -298,18 +387,34 @@
     background:var(--surface); border-radius:18px; padding:22px; width:min(520px,92vw); max-height:86vh;
     overflow-y:auto; box-shadow:0 18px 48px rgba(31,36,48,0.22); }
   .modal.open { display:block; }
+  body:not(.is-superadmin) .admin-only { display:none !important; }
   .modal-head { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:12px; }
   .modal-head h2 { margin:0; font-size:17px; }
+  .modal-close-btn { width:36px; min-height:36px; padding:0; font-size:20px; line-height:1; }
 
   @media (max-width:900px) {
-    .app { flex-direction:column; }
-    .sidebar { width:100%; height:auto; position:static; flex-direction:row; align-items:center; gap:10px;
-      overflow-x:auto; padding:12px 14px; }
-    .side-nav { flex-direction:row; }
+    .sidebar { width:100%; height:46px; flex-direction:row; align-items:center; gap:10px;
+      overflow:hidden; padding:4px 8px; }
+    .side-nav { flex-direction:row; flex-wrap:nowrap; overflow-x:auto; }
     .side-widget { display:none; }
-    .fab-wrap { left:0; }
+    .fab-wrap { left:0; padding-right:14px; }
     .page { padding:18px 16px 56px; }
-    .topbar { padding:14px 16px; }
+    .topbar { padding:5px 16px; }
+    body.video-detail-open .topbar { padding-left:16px; }
+  }
+  @media (max-width:640px) {
+    .sidebar { width:100%; height:44px; padding:4px 7px; }
+    .brand { justify-content:center; padding:0; }
+    .brand-name { display:none; }
+    .nav-btn { justify-content:center; padding:0; font-size:0; }
+    .nav-btn svg.icon { width:20px; height:20px; }
+    .sidebar .nav-btn { min-height:32px; }
+    .sidebar .icon-btn { width:32px; height:32px; }
+    .topbar { top:44px; }
+    body.nav-collapsed .nav-toggle { top:7px; }
+    body.nav-collapsed .topbar { top:0; padding-left:48px; }
+    body.video-detail-open .topbar { top:0; padding-left:16px; }
+    .fab-wrap { left:0; }
   }
 </style>
 </head>
@@ -317,6 +422,7 @@
 <div class="app">
 
   <aside class="sidebar">
+    <button class="nav-toggle" id="navToggleButton" type="button" onclick="toggleNavigationBar()" title="Navigatsiya qatorini yopish" aria-label="Navigatsiya qatorini yopish" aria-expanded="true">▲</button>
     <div class="brand">
       <span class="brand-mark"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg></span>
       <span class="brand-name">Darslik Studiyasi</span>
@@ -324,35 +430,34 @@
 
     <nav class="side-nav nav">
       <button class="nav-btn active" data-page="page-videos" onclick="switchPage('page-videos')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Kutubxona</button>
-      <button class="nav-btn" data-page="page-jobs" onclick="switchPage('page-jobs')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2 12 7 12 10 20 14 4 17 12 22 12"/></svg>Navbat</button>
-      <button class="nav-btn" data-page="page-split" onclick="switchPage('page-split')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></svg>Video bo'lish</button>
-      <button class="nav-btn" data-page="page-translate" onclick="switchPage('page-translate')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 16.58A5 5 0 0 0 18 7h-1.26A8 8 0 1 0 4 15.25"/><polyline points="12 12 12 21"/><polyline points="9 18 12 21 15 18"/></svg>Tarjima va bulut</button>
+      <button class="nav-btn admin-only" data-page="page-split" onclick="switchPage('page-split')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></svg>Video bo'lish</button>
+      <button class="nav-btn admin-only" data-page="page-translate" onclick="switchPage('page-translate')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 16.58A5 5 0 0 0 18 7h-1.26A8 8 0 1 0 4 15.25"/><polyline points="12 12 12 21"/><polyline points="9 18 12 21 15 18"/></svg>Tarjima va bulut</button>
       <button class="nav-btn" data-page="page-settings" onclick="switchPage('page-settings')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>Sozlamalar</button>
       <button class="nav-btn" data-page="page-transcribe" onclick="switchPage('page-transcribe')" style="display:none;">Video → Matn</button>
       <button class="nav-btn" data-page="page-audio" onclick="switchPage('page-audio')" style="display:none;">Audio</button>
       <button class="nav-btn" data-page="page-merge" onclick="switchPage('page-merge')" style="display:none;">Birlashtirish</button>
     </nav>
 
-    <div class="side-widget">
-      <div class="storage-pill" id="headerStoragePill">
-        <span id="headerStorageText">—</span>
-        <span class="storage-bar"><span class="storage-bar-fill" id="headerStorageFill"></span></span>
-      </div>
-      <div style="display:flex; align-items:center; gap:7px; font-size:12px; color:var(--muted);">
-        <span class="server-dot" id="serverDot" title="Server holati">🔴</span> Server holati
-      </div>
+    <div class="global-nav-actions">
+      <button class="icon-btn" onclick="openGlobalSearch()" title="Video qidirish" aria-label="Video qidirish"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></button>
     </div>
+
   </aside>
 
   <div class="main">
     <div class="topbar">
-      <h1 id="topbarTitle">Kutubxona</h1>
+      <div class="topbar-title-group">
+        <button class="topbar-back" id="videoBackButton" onclick="closeVideoDetail()" title="Kutubxonaga qaytish" aria-label="Kutubxonaga qaytish">&#8592;</button>
+        <div class="topbar-heading-stack">
+          <div class="topbar-heading-line">
+            <h1 id="topbarTitle">Kutubxona</h1>
+            <span class="topbar-video-name" id="topbarVideoName"></span>
+          </div>
+          <div id="folderBar" class="folder-bar header-folder-bar"></div>
+        </div>
+      </div>
       <div class="topbar-actions">
-        <button class="icon-btn" onclick="toggleHeaderSearch()" title="Video qidirish"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></button>
-        <button class="icon-btn theme-toggle" id="themeToggleBtn" onclick="toggleTheme()" title="Mavzuni almashtirish">🌙</button>
-        <button class="tiny-btn" onclick="openModal('apiModal')">API kalitlar</button>
-        <button class="tiny-btn" onclick="openModal('ayshaModal')">Aysha</button>
-        <div class="avatar" title="Darslik Studiyasi">D</div>
+        <button class="icon-btn" id="headerFolderButton" onclick="openFolderManager()" title="Papkalarni boshqarish" aria-label="Papkalarni boshqarish">⚙</button>
       </div>
     </div>
 
@@ -390,11 +495,15 @@
 <div class="modal-backdrop" id="folderModal-backdrop" onclick="closeModal('folderModal')"></div>
 <div class="modal" id="folderModal">
   <div class="modal-head">
-    <h2>Yangi papka</h2>
-    <button class="tiny-btn" onclick="closeModal('folderModal')">Yopish</button>
+    <h2>Papkalarni boshqarish</h2>
+    <button class="tiny-btn modal-close-btn" onclick="closeModal('folderModal')" title="Yopish" aria-label="Yopish">×</button>
   </div>
+  <div id="folderManagerList" class="folder-manager-list"></div>
+  <h3 style="margin-top:18px;">Yangi papka</h3>
   <label class="field">Papka nomi</label>
   <input type="text" id="newFolderName" placeholder="Masalan: Matematika" onkeydown="if(event.key==='Enter') submitNewFolder();">
+  <label class="field" style="margin-top:10px;">Qaysi papka ichida</label>
+  <select id="newFolderParent"></select>
   <div class="row">
     <button class="action" onclick="submitNewFolder()">Yaratish</button>
   </div>
@@ -412,6 +521,19 @@
     <button class="action" onclick="confirmModalYes()">Ha</button>
     <button class="secondary" onclick="closeModal('confirmModal')">Yo'q</button>
   </div>
+</div>
+
+<div class="modal-backdrop" id="renameVideoModal-backdrop" onclick="closeModal('renameVideoModal')"></div>
+<div class="modal" id="renameVideoModal">
+  <div class="modal-head">
+    <h2>Video nomini o‘zgartirish</h2>
+    <button class="tiny-btn" onclick="closeModal('renameVideoModal')">Yopish</button>
+  </div>
+  <label class="field">Yangi nom</label>
+  <input type="text" id="renameVideoName" maxlength="300" onkeydown="if(event.key==='Enter') submitVideoRename();">
+  <input type="hidden" id="renameVideoId">
+  <div class="row"><button class="action" onclick="submitVideoRename()">Saqlash</button></div>
+  <div class="status" id="renameVideoStatus"></div>
 </div>
 
 <div class="modal-backdrop" id="retryModal-backdrop" onclick="closeModal('retryModal')"></div>
@@ -502,6 +624,7 @@
   <div id="splitUploadProgressCard" style="display:none;" class="card">
     <div class="progress-wrap"><div class="progress-bar" id="splitUploadProgressBar"></div></div>
     <div class="status" id="splitUploadStatus"></div>
+    <button class="small-btn danger" id="splitUploadStopBtn" onclick="stopCurrentUpload()" style="display:none; margin-top:10px;">To'xtatish</button>
   </div>
 
   <div id="splitVideoList"><p class="hint">Yuklanmoqda...</p></div>
@@ -512,34 +635,25 @@
 <!-- ============================================================ -->
 <div class="page active" id="page-videos">
   <div id="videosGridView">
-    <div class="row" style="margin-top:0;">
-      <button class="small-btn" onclick="openCloudPicker('video', useCloudVideoInPipeline)">☁ Bulutdan olish</button>
-    </div>
     <input type="file" id="uploadFile" accept="video/*,audio/*" multiple style="display:none;">
     <div id="uploadProgressCard" style="display:none;" class="card">
       <div class="progress-wrap"><div class="progress-bar" id="uploadProgressBar"></div></div>
       <div class="status" id="uploadStatus"></div>
+      <button class="small-btn danger" id="uploadStopBtn" onclick="stopCurrentUpload()" style="display:none; margin-top:10px;">To'xtatish</button>
     </div>
-
-    <p class="subtitle">Har bir video — alohida loyiha. Video, segmentlar, matn, tarjima, audio va yakuniy video shu loyihaga bog'langan holda saqlanadi.</p>
 
     <div class="header-search" id="headerSearchBar">
       🔍 <input type="text" id="headerSearchInput" placeholder="Video nomi bo'yicha qidirish..." oninput="renderVideoGrid()">
     </div>
-    <div id="folderBar" class="folder-bar"></div>
-
     <div id="videoGrid" class="vgrid"><p class="hint">Yuklanmoqda...</p></div>
   </div>
 
   <div id="videoDetailView" style="display:none;">
-    <button class="back-link" onclick="closeVideoDetail()">← Videolarga qaytish</button>
     <div id="videoDetailContent"></div>
   </div>
 
   <div class="fab-wrap" id="videosFab">
-    <button class="fab" onclick="document.getElementById('uploadFile').click()">
-      <span style="font-size:16px; line-height:1;">+</span> Video qo'shish
-    </button>
+    <button class="fab" onclick="document.getElementById('uploadFile').click()" title="Video qo‘shish" aria-label="Video qo‘shish">+</button>
   </div>
 </div>
 
@@ -572,6 +686,7 @@
     <div id="tarjimaUploadProgressCard" style="display:none;" class="card">
       <div class="progress-wrap"><div class="progress-bar" id="tarjimaUploadProgressBar"></div></div>
       <div class="status" id="tarjimaUploadStatus"></div>
+      <button class="small-btn danger" id="tarjimaUploadStopBtn" onclick="stopCurrentUpload()" style="display:none; margin-top:10px;">To'xtatish</button>
     </div>
     <p class="hint">Bu yerga yuklangan video darhol tarjima qilinmaydi - u bulutga tushadi, keyin "Kelgan videolarni ko'rish"dan Videolar bazasiga qo'shasiz.</p>
   </div>
@@ -598,29 +713,57 @@
 </div>
 
 <!-- ============================================================ -->
-<!--   PAGE: ISHLAR                                                -->
-<!-- ============================================================ -->
-<div class="page" id="page-jobs">
-  <p class="subtitle">Serverda hozir bajarilayotgan yoki navbatda turgan barcha ishlar. Bu ro'yxat brauzer holatiga bog'liq emas.</p>
-  <div class="card">
-    <div class="row" style="margin-top:0;">
-      <button class="secondary" onclick="loadJobsPanel()">Yangilash</button>
-    </div>
-    <div id="jobsList"><p class="hint">Yuklanmoqda...</p></div>
-  </div>
-</div>
-
-<!-- ============================================================ -->
 <!--   PAGE: XARAJATLAR                                            -->
 <!-- ============================================================ -->
 <!-- ============================================================ -->
 <!--   PAGE: SOZLAMALAR (Xarajatlar ham shu yerda)                 -->
 <!-- ============================================================ -->
 <div class="page" id="page-settings">
-  <p class="subtitle">Umumiy standart qiymatlar. OpenAI kalitlar — yuqoridagi "API" tugmasida, Aysha sozlamalari — "Aysha" tugmasida.</p>
+  <p class="subtitle">API kalitlari, ovoz, ko‘rinish va umumiy standart qiymatlarni shu yerdan boshqaring.</p>
 
-  <div class="card">
-    <h2>Xarajatlar</h2>
+  <details class="card settings-collapsible">
+    <summary>API keys</summary>
+    <div class="settings-panel-body">
+    <p class="hint">Tizim ko‘rinishi, API kalitlari va Aysha sozlamalari.</p>
+    <p class="hint">Kutubxonada har bir video alohida loyiha hisoblanadi. Video, segmentlar, matn, tarjima, audio va yakuniy video shu loyihaga bog‘langan holda saqlanadi.</p>
+    <div class="row">
+      <button class="icon-btn theme-toggle" id="themeToggleBtn" onclick="toggleTheme()" title="Mavzuni almashtirish">🌙</button>
+      <button class="tiny-btn" onclick="openModal('apiModal')">API kalitlar</button>
+      <button class="tiny-btn" onclick="openModal('ayshaModal')">Aysha</button>
+      <div class="avatar" title="Darslik Studiyasi">D</div>
+      <span class="hint" id="currentUsername"></span>
+      <button class="tiny-btn" onclick="logoutApp()">Chiqish</button>
+    </div>
+    </div>
+  </details>
+
+  <div class="card admin-only" id="usersAdminCard">
+    <h2>Ulangan odamlar</h2>
+    <p class="hint">Ko‘pi bilan 5 ta faol foydalanuvchi ulanishi mumkin. Har biriga standart 10 GB joy beriladi; login va parolni faqat super-admin yaratadi.</p>
+    <div id="usersList"><p class="hint">Yuklanmoqda...</p></div>
+    <h3 style="margin-top:18px;">Yangi odam qo‘shish</h3>
+    <div class="grid2">
+      <div><label class="field">Login</label><input id="newUserLogin" autocomplete="off" placeholder="masalan: shifokor01"></div>
+      <div><label class="field">Parol</label><input id="newUserPassword" type="password" autocomplete="new-password" placeholder="kamida 8 belgi"></div>
+    </div>
+    <div class="row"><button class="action" onclick="createConnectedUser()">Qo‘shish (10 GB)</button></div>
+    <div class="status" id="usersAdminStatus"></div>
+  </div>
+
+  <details class="card settings-collapsible">
+    <summary>Navbat</summary>
+    <div class="settings-panel-body">
+    <p class="hint">Serverda hozir bajarilayotgan yoki navbatda turgan barcha ishlar.</p>
+    <div class="row" style="margin-top:0;">
+      <button class="secondary" onclick="loadJobsPanel()">Yangilash</button>
+    </div>
+    <div id="jobsList"><p class="hint">Yuklanmoqda...</p></div>
+    </div>
+  </details>
+
+  <details class="card settings-collapsible">
+    <summary>Xarajatlar</summary>
+    <div class="settings-panel-body">
     <p class="hint">OpenAI (Whisper, tarjima, TTS) va Aysha xarajatlari hisoblab boriladi.</p>
     <div class="grid2">
       <div><label class="field">Bugun</label><div class="status ok" id="costToday">—</div></div>
@@ -632,10 +775,12 @@
       <thead><tr><th>Video</th><th>Transkripsiya</th><th>Tarjima</th><th>Aisha TTS</th><th>OpenAI TTS</th><th>Jami</th></tr></thead>
       <tbody id="costTableBody"></tbody>
     </table>
-  </div>
+    </div>
+  </details>
 
-  <div class="card">
-    <h2>Tarjimon sozlamalari</h2>
+  <details class="card settings-collapsible">
+    <summary>Tarjimon sozlamalari</summary>
+    <div class="settings-panel-body">
     <p class="hint">Har bir tarjima so'roviga (OpenAI yoki Claude, avtomatik tarjima qilinganda) avtomatik qo'shib yuboriladi.</p>
     <label class="field">Instruksiya (doimiy ko'rsatma)</label>
     <textarea id="settingsTranslationInstruction" placeholder="masalan: Rasmiy uslubda, qisqa jumlalar bilan yoz." style="min-height:70px;"></textarea>
@@ -645,7 +790,8 @@
       <button class="action" onclick="saveTranslationSettings()">Saqlash</button>
     </div>
     <div class="status" id="translationSettingsStatus"></div>
-  </div>
+    </div>
+  </details>
 
   <div class="card">
     <h2>Tarjimon xotirasi (Claude bilan chat)</h2>
@@ -693,6 +839,15 @@
   </div>
   <div class="card">
     <h2>Server holati</h2>
+    <div class="row" style="margin:10px 0 14px;">
+      <div class="storage-pill" id="headerStoragePill">
+        <span id="headerStorageText">—</span>
+        <span class="storage-bar"><span class="storage-bar-fill" id="headerStorageFill"></span></span>
+      </div>
+      <div style="display:flex; align-items:center; gap:7px; font-size:12px; color:var(--muted);">
+        <span class="server-dot" id="serverDot" title="Server holati">🔴</span> Server holati
+      </div>
+    </div>
     <p class="hint">Bo'lak uzunligi, parallel ishlash sozlamalari va boshqa texnik parametrlar Railway'dagi environment variable'lar orqali boshqariladi (README.txt'ga qarang).</p>
     <div id="configInfo" class="status"></div>
   </div>
@@ -762,6 +917,28 @@
 </div>
 
 <script>
+function applyNavigationState(collapsed) {
+  document.body.classList.toggle('nav-collapsed', collapsed);
+  const btn = document.getElementById('navToggleButton');
+  if (!btn) return;
+  btn.textContent = collapsed ? '▼' : '▲';
+  btn.title = collapsed ? 'Navigatsiya qatorini ochish' : 'Navigatsiya qatorini yopish';
+  btn.setAttribute('aria-label', btn.title);
+  btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+}
+
+function toggleNavigationBar() {
+  const collapsed = !document.body.classList.contains('nav-collapsed');
+  applyNavigationState(collapsed);
+  try { localStorage.setItem('darslik-nav-collapsed', collapsed ? '1' : '0'); } catch (e) {}
+}
+
+function openGlobalSearch() {
+  if (currentDetailVideoId) closeVideoDetail();
+  switchPage('page-videos');
+  toggleHeaderSearch();
+}
+
 function toggleHeaderSearch() {
   const bar = document.getElementById('headerSearchBar');
   if (!bar) return;
@@ -792,11 +969,25 @@ function switchPage(pageId) {
   const target = document.getElementById(pageId);
   if (target) target.classList.add('active');
   document.querySelectorAll('.nav-btn[data-page]').forEach(b => b.classList.toggle('active', b.dataset.page === pageId));
-  const titles = { 'page-videos': 'Kutubxona', 'page-jobs': 'Navbat', 'page-split': "Video bo'lish",
+  const titles = { 'page-videos': 'Kutubxona', 'page-split': "Video bo'lish",
     'page-translate': 'Tarjima va bulut', 'page-settings': 'Sozlamalar', 'page-transcribe': 'Video → Matn',
     'page-audio': 'Audio', 'page-merge': 'Birlashtirish' };
   const titleEl = document.getElementById('topbarTitle');
-  if (titleEl && titles[pageId]) titleEl.textContent = titles[pageId];
+  if (titleEl && titles[pageId]) {
+    titleEl.textContent = titles[pageId];
+    titleEl.style.display = pageId === 'page-videos' ? 'none' : 'block';
+  }
+  const backBtn = document.getElementById('videoBackButton');
+  if (backBtn) {
+    const detailOpen = pageId === 'page-videos' && currentDetailVideoId;
+    backBtn.style.display = detailOpen ? 'flex' : 'none';
+  }
+  const folderBtn = document.getElementById('headerFolderButton');
+  if (folderBtn) folderBtn.style.display = pageId === 'page-videos' && !currentDetailVideoId ? 'flex' : 'none';
+  const videoName = document.getElementById('topbarVideoName');
+  if (videoName) videoName.style.display = pageId === 'page-videos' && currentDetailVideoData ? 'block' : 'none';
+  const folderBar = document.getElementById('folderBar');
+  if (folderBar) folderBar.style.display = pageId === 'page-videos' && !currentDetailVideoId ? 'flex' : 'none';
 }
 
 function switchTab(group, tabId) {
@@ -878,6 +1069,7 @@ function escapeHtml(s) {
 
 async function apiFetch(path, opts) {
   const resp = await fetch(API_BASE + path, opts);
+  if (resp.status === 401) { location.href = '/login'; throw new Error('Sessiya tugadi.'); }
   if (!resp.ok) {
     let msg = 'HTTP ' + resp.status;
     try { const j = await resp.json(); if (j.detail) msg = j.detail; else if (j.error) msg = j.error; } catch (e) {}
@@ -1046,14 +1238,14 @@ async function loadAyshaModalSettings() {
     const s = await apiFetch('/api/settings');
     document.getElementById('settingsAyshaMood').value = s.aisha_default_mood || 'Neutral';
     document.getElementById('settingsAyshaSpeed').value = s.aisha_default_speed || '1.0';
-    const savedKey = localStorage.getItem('aisha_api_key');
+    const savedKey = localStorage.getItem(aishaStorageKey());
     if (savedKey) document.getElementById('ayshaGlobalKey').value = savedKey;
   } catch (e) {}
 }
 
 async function saveAyshaSettings() {
   const key = document.getElementById('ayshaGlobalKey').value.trim();
-  if (key) localStorage.setItem('aisha_api_key', key);
+  if (key) localStorage.setItem(aishaStorageKey(), key);
   try {
     await apiFetch('/api/settings', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1212,6 +1404,8 @@ async function deleteMemoryNote(id) {
 /* ============================================================ */
 const UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024;
 let uploadInProgress = false;
+let currentUpload = null;
+let stopUploadBatch = false;
 
 function setupUploadInput() {
   document.getElementById('uploadFile').addEventListener('change', (e) => {
@@ -1233,16 +1427,89 @@ function refreshAfterUpload(kind) {
 
 async function handleUploadFiles(fileList, kind) {
   const files = Array.from(fileList);
+  stopUploadBatch = false;
   for (let i = 0; i < files.length; i++) {
+    if (stopUploadBatch) break;
     await handleUploadFile(files[i], kind, i + 1, files.length);
+  }
+}
+
+let currentUser = null;
+function aishaStorageKey() { return 'aisha_api_key:' + (currentUser ? currentUser.id : 'guest'); }
+async function loadIdentity() {
+  currentUser = await apiFetch('/api/auth/me');
+  document.body.classList.toggle('is-superadmin', currentUser.is_superadmin);
+  document.querySelectorAll('.admin-only').forEach(el => { el.style.display = currentUser.is_superadmin ? '' : 'none'; });
+  const name = document.getElementById('currentUsername');
+  if (name) name.textContent = currentUser.username + (currentUser.is_superadmin ? ' · super-admin' : '');
+  if (currentUser.is_superadmin) await loadConnectedUsers();
+}
+
+async function logoutApp() {
+  await apiFetch('/api/auth/logout', {method:'POST'});
+  location.href = '/login';
+}
+
+async function loadConnectedUsers() {
+  if (!currentUser || !currentUser.is_superadmin) return;
+  try {
+    const users = await apiFetch('/api/admin/users');
+    const el = document.getElementById('usersList');
+    el.innerHTML = users.map(user => `<div class="key-row">
+      <strong>${escapeHtml(user.username)}</strong>
+      <span class="pill ${user.active ? 'ok' : 'off'}">${user.role === 'superadmin' ? 'Super-admin' : (user.active ? 'Faol' : 'O‘chirilgan')}</span>
+      <span class="hint">${fmtBytes(user.usage_bytes)} / ${fmtBytes(user.quota_bytes)}</span>
+      ${user.role === 'superadmin' ? '' : `<button class="small-btn" onclick="resetConnectedUserPassword('${user.id}')">Parol</button>
+      <button class="small-btn" onclick="toggleConnectedUser('${user.id}',${!user.active})">${user.active ? 'O‘chirish' : 'Yoqish'}</button>`}
+    </div>`).join('');
+  } catch(error) { setStatus('usersAdminStatus', 'Xato: '+error.message, 'err'); }
+}
+
+async function createConnectedUser() {
+  const username=document.getElementById('newUserLogin').value.trim();
+  const password=document.getElementById('newUserPassword').value;
+  try {
+    await apiFetch('/api/admin/users',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password,quota_gb:10})});
+    document.getElementById('newUserLogin').value=''; document.getElementById('newUserPassword').value='';
+    setStatus('usersAdminStatus','Foydalanuvchi qo‘shildi.','ok'); await loadConnectedUsers();
+  } catch(error){setStatus('usersAdminStatus','Xato: '+error.message,'err')}
+}
+
+async function resetConnectedUserPassword(userId) {
+  const password=prompt('Yangi parol (kamida 8 belgi):'); if(!password) return;
+  try { await apiFetch('/api/admin/users/'+userId,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({password})});
+    setStatus('usersAdminStatus','Parol yangilandi.','ok');
+  } catch(error){setStatus('usersAdminStatus','Xato: '+error.message,'err')}
+}
+
+async function toggleConnectedUser(userId,active) {
+  try { await apiFetch('/api/admin/users/'+userId,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({active})}); await loadConnectedUsers(); }
+  catch(error){setStatus('usersAdminStatus','Xato: '+error.message,'err')}
+}
+
+async function stopCurrentUpload() {
+  const state = currentUpload;
+  if (!state || state.cancelled) return;
+  state.cancelled = true;
+  stopUploadBatch = true;
+  state.stopBtn.disabled = true;
+  setStatus(state.ids.status, state.prefix + "Yuklash to'xtatilmoqda...");
+  state.controller.abort();
+  if (state.uploadId) {
+    try {
+      await apiFetch(`/api/videos/upload/${state.uploadId}`, { method: 'DELETE' });
+      state.cleaned = true;
+    } catch (e) {
+      if (!state.cleaned) setStatus(state.ids.status, state.prefix + "Yuklash to'xtadi, lekin vaqtinchalik faylni tozalashda xato: " + e.message, 'err');
+    }
   }
 }
 
 async function handleUploadFile(file, kind, fileIndex, totalFiles) {
   const idsByKind = {
-    split_only: { card: 'splitUploadProgressCard', bar: 'splitUploadProgressBar', status: 'splitUploadStatus', input: 'splitUploadFile' },
-    cloud: { card: 'tarjimaUploadProgressCard', bar: 'tarjimaUploadProgressBar', status: 'tarjimaUploadStatus', input: 'tarjimaUploadFile' },
-    pipeline: { card: 'uploadProgressCard', bar: 'uploadProgressBar', status: 'uploadStatus', input: 'uploadFile' },
+    split_only: { card: 'splitUploadProgressCard', bar: 'splitUploadProgressBar', status: 'splitUploadStatus', input: 'splitUploadFile', stop: 'splitUploadStopBtn' },
+    cloud: { card: 'tarjimaUploadProgressCard', bar: 'tarjimaUploadProgressBar', status: 'tarjimaUploadStatus', input: 'tarjimaUploadFile', stop: 'tarjimaUploadStopBtn' },
+    pipeline: { card: 'uploadProgressCard', bar: 'uploadProgressBar', status: 'uploadStatus', input: 'uploadFile', stop: 'uploadStopBtn' },
   };
   const ids = idsByKind[kind];
   if (uploadInProgress) { alert("Boshqa fayl hozir yuklanmoqda. Kutib turing."); return; }
@@ -1251,8 +1518,13 @@ async function handleUploadFile(file, kind, fileIndex, totalFiles) {
   const prefix = isBatch ? `Fayl ${fileIndex}/${totalFiles} (${file.name}): ` : '';
   const card = document.getElementById(ids.card);
   const bar = document.getElementById(ids.bar);
+  const stopBtn = document.getElementById(ids.stop);
+  const state = { ids, prefix, controller: new AbortController(), uploadId: null, cancelled: false, cleaned: false, stopBtn };
+  currentUpload = state;
   card.style.display = 'block';
   bar.style.width = '0%';
+  stopBtn.style.display = 'inline-flex';
+  stopBtn.disabled = false;
   setStatus(ids.status, prefix + 'Boshlanmoqda...');
   try {
     const initForm = new FormData();
@@ -1260,7 +1532,7 @@ async function handleUploadFile(file, kind, fileIndex, totalFiles) {
     initForm.append('total_size', String(file.size));
     initForm.append('kind', kind);
     if (kind === 'cloud') initForm.append('file_kind', 'video');
-    const initResp = await apiFetch('/api/videos/upload/init', { method: 'POST', body: initForm });
+    const initResp = await apiFetch('/api/videos/upload/init', { method: 'POST', body: initForm, signal: state.controller.signal });
     if (initResp.duplicate_of) {
       setStatus(ids.status, prefix + `Bu video allaqachon serverda bor: "${initResp.duplicate_of.original_name}".`, 'ok');
       uploadInProgress = false;
@@ -1268,14 +1540,16 @@ async function handleUploadFile(file, kind, fileIndex, totalFiles) {
       return;
     }
     const uploadId = initResp.upload_id;
+    state.uploadId = uploadId;
     let offset = initResp.received_size || 0;
 
     while (offset < file.size) {
+      if (state.cancelled) throw new DOMException('Upload cancelled', 'AbortError');
       const slice = file.slice(offset, Math.min(offset + UPLOAD_CHUNK_SIZE, file.size));
       const form = new FormData();
       form.append('offset', String(offset));
       form.append('chunk', slice, 'chunk.bin');
-      const resp = await fetch(`${API_BASE}/api/videos/upload/${uploadId}/chunk`, { method: 'POST', body: form });
+      const resp = await fetch(`${API_BASE}/api/videos/upload/${uploadId}/chunk`, { method: 'POST', body: form, signal: state.controller.signal });
       if (resp.status === 409) {
         const j = await resp.json();
         offset = j.received_size;
@@ -1294,7 +1568,7 @@ async function handleUploadFile(file, kind, fileIndex, totalFiles) {
     }
 
     setStatus(ids.status, prefix + "Yuklash tugadi, serverda tekshirilmoqda...");
-    await apiFetch(`/api/videos/upload/${uploadId}/complete`, { method: 'POST' });
+    await apiFetch(`/api/videos/upload/${uploadId}/complete`, { method: 'POST', signal: state.controller.signal });
     bar.style.width = '100%';
     const doneMsg = kind === 'split_only' ? "Video yuklandi, botga yuborilmoqda..."
       : kind === 'cloud' ? "Video bulutga yuklandi."
@@ -1307,8 +1581,22 @@ async function handleUploadFile(file, kind, fileIndex, totalFiles) {
       setTimeout(() => { card.style.display = 'none'; }, 4000);
     }
   } catch (e) {
-    setStatus(ids.status, prefix + 'Xato: ' + e.message + " — internet tiklangach xuddi shu faylni qayta tanlang, yuklash qoldiqdan davom etadi.", 'err');
+    if (state.cancelled || e.name === 'AbortError') {
+      if (state.uploadId && !state.cleaned) {
+        try {
+          await apiFetch(`/api/videos/upload/${state.uploadId}`, { method: 'DELETE' });
+          state.cleaned = true;
+        } catch (cleanupError) {}
+      }
+      setStatus(ids.status, prefix + "Yuklash to'xtatildi.", 'err');
+      document.getElementById(ids.input).value = '';
+    } else {
+      setStatus(ids.status, prefix + 'Xato: ' + e.message + " — internet tiklangach xuddi shu faylni qayta tanlang, yuklash qoldiqdan davom etadi.", 'err');
+    }
   } finally {
+    stopBtn.style.display = 'none';
+    stopBtn.disabled = false;
+    if (currentUpload === state) currentUpload = null;
     uploadInProgress = false;
   }
 }
@@ -1484,16 +1772,40 @@ async function loadFolders() {
 function renderFolderBar() {
   const bar = document.getElementById('folderBar');
   if (!bar) return;
-  const chips = allFoldersCache.map(f => `
-    <span class="folder-chip ${currentFolderId === f.id ? 'active' : ''}" onclick="selectFolder('${f.id}')">
-      ${escapeHtml(f.name)} <span class="fcount">${f.video_count}</span>
-      <span class="fdel" title="Papkani o'chirish" onclick="event.stopPropagation(); deleteFolder('${f.id}', '${escapeHtml(f.name).replace(/'/g, "\\'")}')">×</span>
-    </span>`).join('');
-  bar.innerHTML = `
-    <span class="folder-chip ${currentFolderId === null ? 'active' : ''}" onclick="selectFolder(null)">Barchasi</span>
-    ${chips}
-    <button class="folder-chip-add" onclick="createFolder()">+ Yangi papka</button>
-  `;
+  const path = folderPath(currentFolderId);
+  const children = allFoldersCache.filter(f => (f.parent_id || null) === currentFolderId)
+    .sort((a, b) => (a.sort_order - b.sort_order) || a.name.localeCompare(b.name));
+  const breadcrumb = `<span class="folder-chip ${currentFolderId === null ? 'active' : ''}" onclick="selectFolder(null)">Barchasi</span>` +
+    path.map(f => `<span style="color:var(--muted); flex:none;">›</span><span class="folder-chip active" onclick="selectFolder('${f.id}')">${escapeHtml(f.name)} <span class="fcount">${f.video_count}</span></span>`).join('');
+  const childChips = children.map(f => `<span class="folder-chip" onclick="selectFolder('${f.id}')">📁 ${escapeHtml(f.name)} <span class="fcount">${f.video_count}</span></span>`).join('');
+  bar.innerHTML = breadcrumb + (children.length ? '<span style="color:var(--border); flex:none;">│</span>' + childChips : '');
+}
+
+function folderPath(folderId) {
+  const path = [];
+  const seen = new Set();
+  let id = folderId;
+  while (id && !seen.has(id)) {
+    seen.add(id);
+    const folder = allFoldersCache.find(f => f.id === id);
+    if (!folder) break;
+    path.unshift(folder);
+    id = folder.parent_id;
+  }
+  return path;
+}
+
+function flattenedFolders(parentId = null, depth = 0, seen = new Set()) {
+  const result = [];
+  const children = allFoldersCache.filter(f => (f.parent_id || null) === parentId)
+    .sort((a, b) => (a.sort_order - b.sort_order) || a.name.localeCompare(b.name));
+  for (const folder of children) {
+    if (seen.has(folder.id)) continue;
+    seen.add(folder.id);
+    result.push({ folder, depth });
+    result.push(...flattenedFolders(folder.id, depth + 1, seen));
+  }
+  return result;
 }
 
 function selectFolder(folderId) {
@@ -1502,11 +1814,45 @@ function selectFolder(folderId) {
   renderVideoGrid();
 }
 
-function createFolder() {
+function openFolderManager() {
   document.getElementById('newFolderName').value = '';
   setStatus('folderModalStatus', '', '');
+  renderFolderManager();
   openModal('folderModal');
+}
+
+function createFolder(parentId = currentFolderId) {
+  openFolderManager();
+  document.getElementById('newFolderParent').value = parentId || '';
   setTimeout(() => document.getElementById('newFolderName').focus(), 50);
+}
+
+function renderFolderManager() {
+  const list = document.getElementById('folderManagerList');
+  const parentSelect = document.getElementById('newFolderParent');
+  if (!list || !parentSelect) return;
+  const flat = flattenedFolders();
+  parentSelect.innerHTML = '<option value="">— Asosiy bo‘lim —</option>' + flat.map(({folder, depth}) =>
+    `<option value="${folder.id}">${'— '.repeat(depth)}${escapeHtml(folder.name)}</option>`).join('');
+  parentSelect.value = currentFolderId || '';
+  list.innerHTML = flat.length ? flat.map(({folder, depth}) => `
+    <div class="folder-manager-row" style="margin-left:${Math.min(depth, 6) * 18}px;">
+      <button class="folder-manager-name" onclick="selectFolder('${folder.id}'); closeModal('folderModal')">📁 ${escapeHtml(folder.name)} <span class="hint">(${folder.video_count})</span></button>
+      <button class="folder-order-btn" onclick="moveFolderOrder('${folder.id}','up')" title="Yuqoriga">↑</button>
+      <button class="folder-order-btn" onclick="moveFolderOrder('${folder.id}','down')" title="Pastga">↓</button>
+      <button class="folder-order-btn" onclick="createFolder('${folder.id}')" title="Ichki papka yaratish">＋</button>
+      <button class="folder-order-btn" onclick="deleteFolder('${folder.id}')" title="O‘chirish">×</button>
+    </div>`).join('') : '<p class="hint">Hali papka yaratilmagan.</p>';
+}
+
+async function moveFolderOrder(folderId, direction) {
+  try {
+    const form = new FormData();
+    form.append('direction', direction);
+    await apiFetch(`/api/folders/${folderId}/move`, { method: 'POST', body: form });
+    await loadFolders();
+    renderFolderManager();
+  } catch (e) { setStatus('folderModalStatus', 'Xato: ' + e.message, 'err'); }
 }
 
 async function submitNewFolder() {
@@ -1518,21 +1864,27 @@ async function submitNewFolder() {
   try {
     const form = new FormData();
     form.append('name', name);
+    form.append('parent_id', document.getElementById('newFolderParent').value || '');
     await apiFetch('/api/folders', { method: 'POST', body: form });
-    closeModal('folderModal');
     await loadFolders();
+    document.getElementById('newFolderName').value = '';
+    renderFolderManager();
+    setStatus('folderModalStatus', "Papka yaratildi.", 'ok');
   } catch (e) {
     setStatus('folderModalStatus', "Xato: " + e.message, 'err');
   }
 }
 
-function deleteFolder(folderId, name) {
-  showConfirm(`"${name}" papkasini o'chirmoqchimisiz? Ichidagi videolar o'chmaydi, faqat papkadan chiqadi.`, async () => {
+function deleteFolder(folderId) {
+  const folder = allFoldersCache.find(f => f.id === folderId);
+  if (!folder) return;
+  showConfirm(`"${folder.name}" papkasini o'chirmoqchimisiz? Video va ichki papkalar yuqori papkaga ko'chadi.`, async () => {
     try {
       await apiFetch(`/api/folders/${folderId}`, { method: 'DELETE' });
-      if (currentFolderId === folderId) currentFolderId = null;
+      if (currentFolderId === folderId) currentFolderId = folder.parent_id || null;
       await loadFolders();
       await loadVideos();
+      openFolderManager();
     } catch (e) {
       alert("Xato: " + e.message);
     }
@@ -1599,7 +1951,7 @@ async function moveVideoToFolder(videoId, folderId) {
 
 function folderSelectHtml(v) {
   const options = ['<option value="">— Papkasiz —</option>']
-    .concat(allFoldersCache.map(f => `<option value="${f.id}" ${v.folder_id === f.id ? 'selected' : ''}>${escapeHtml(f.name)}</option>`));
+    .concat(flattenedFolders().map(({folder, depth}) => `<option value="${folder.id}" ${v.folder_id === folder.id ? 'selected' : ''}>${'— '.repeat(depth)}${escapeHtml(folder.name)}</option>`));
   return `<div class="vcard-folder-select" onclick="event.stopPropagation()">
     <select onchange="moveVideoToFolder('${v.id}', this.value)">${options.join('')}</select>
   </div>`;
@@ -1633,7 +1985,10 @@ function renderVideoGrid() {
     <div class="vcard ${info.cardCls}" onclick="openVideoDetail('${v.id}')">
       ${thumb}
       <div class="vbody">
-        <p class="vname">${escapeHtml(v.original_name)}</p>
+        <div class="vcard-name-row">
+          <p class="vname">${escapeHtml(v.original_name)}</p>
+          <button class="rename-video-btn" onclick="event.stopPropagation(); openRenameVideoModal('${v.id}')" title="Video nomini o‘zgartirish" aria-label="Video nomini o‘zgartirish">✎</button>
+        </div>
         <p class="vmeta">${fmtBytes(v.file_size)} ${v.duration ? '· ' + fmtMinSec(v.duration) : ''}</p>
         <div class="card-foot">
           <span class="status-pill ${info.pillCls}">${info.icon} ${escapeHtml(label)}</span>
@@ -1642,6 +1997,39 @@ function renderVideoGrid() {
       </div>
     </div>`;
   }).join('');
+}
+
+function openRenameVideoModal(videoId) {
+  const video = allVideosCache.find(v => v.id === videoId);
+  if (!video) return;
+  document.getElementById('renameVideoId').value = videoId;
+  document.getElementById('renameVideoName').value = video.original_name || '';
+  setStatus('renameVideoStatus', '', '');
+  openModal('renameVideoModal');
+  setTimeout(() => {
+    const input = document.getElementById('renameVideoName');
+    input.focus();
+    input.select();
+  }, 50);
+}
+
+async function submitVideoRename() {
+  const videoId = document.getElementById('renameVideoId').value;
+  const name = document.getElementById('renameVideoName').value.trim();
+  if (!name) {
+    setStatus('renameVideoStatus', "Video nomini kiriting.", 'err');
+    return;
+  }
+  try {
+    const form = new FormData();
+    form.append('name', name);
+    await apiFetch(`/api/videos/${videoId}/name`, { method: 'POST', body: form });
+    closeModal('renameVideoModal');
+    await loadVideos();
+    if (currentDetailVideoId === videoId) await loadVideoDetail(videoId);
+  } catch (e) {
+    setStatus('renameVideoStatus', 'Xato: ' + e.message, 'err');
+  }
 }
 
 function videoStatusInfo(v) {
@@ -1656,6 +2044,8 @@ function videoStatusInfo(v) {
 /* ============================================================ */
 let currentDetailVideoId = null;
 let currentDetailVideoStatus = null;
+let currentDetailVideoData = null;
+let currentDetailSection = 'transcript';
 // Video 'band' (blocked_reason mavjud) bo'lsa - fon jarayoni FAOL EMAS,
 // foydalanuvchi harakatini kutmoqda (masalan "Video yig'ishda xato").
 // Shunday holatda 4 soniyalik avtomatik yangilanishni to'xtatamiz (xuddi
@@ -1667,37 +2057,186 @@ let currentDetailVideoBlockedReason = null;
 
 function openVideoDetail(id) {
   switchPage('page-videos');
+  document.body.classList.add('video-detail-open');
   currentDetailVideoId = id;
   currentDetailVideoStatus = null;
+  currentDetailVideoData = null;
+  currentDetailSection = 'transcript';
   currentDetailVideoBlockedReason = null;
   document.getElementById('videosGridView').style.display = 'none';
   document.getElementById('videoDetailView').style.display = 'block';
   document.getElementById('videosFab').style.display = 'none';
+  document.getElementById('videoBackButton').style.display = 'flex';
+  document.getElementById('headerFolderButton').style.display = 'none';
+  document.getElementById('topbarVideoName').style.display = 'none';
+  document.getElementById('folderBar').style.display = 'none';
+  window.scrollTo(0, 0);
   loadVideoDetail(id);
 }
 
 function closeVideoDetail() {
+  document.body.classList.remove('video-detail-open');
   currentDetailVideoId = null;
   currentDetailVideoStatus = null;
+  currentDetailVideoData = null;
+  currentDetailSection = 'transcript';
   currentDetailVideoBlockedReason = null;
   document.getElementById('videoDetailView').style.display = 'none';
   document.getElementById('videosGridView').style.display = 'block';
   document.getElementById('videosFab').style.display = 'flex';
+  document.getElementById('videoBackButton').style.display = 'none';
+  document.getElementById('headerFolderButton').style.display = 'flex';
+  document.getElementById('folderBar').style.display = 'flex';
+  const topbarVideoName = document.getElementById('topbarVideoName');
+  topbarVideoName.textContent = '';
+  topbarVideoName.removeAttribute('title');
+  topbarVideoName.style.display = 'none';
   loadVideos();
+}
+
+function videoDetailLayoutKey(v) {
+  const learning = v.learning_track || {};
+  return JSON.stringify({
+    id: v.id,
+    original_name: v.original_name,
+    status: v.status,
+    blocked_reason: v.blocked_reason || null,
+    error: v.error || null,
+    transcript_approved: !!v.transcript_approved,
+    translation_status: v.translation_status || null,
+    audio_status: v.audio_status || null,
+    final_video_status: v.final_video_status || null,
+    subtitled_video_status: v.subtitled_video_status || null,
+    tts_job_id: v.tts_job_id || null,
+    tts_job_status: v.tts_job?.status || null,
+    chunk_count: v.chunk_count || 0,
+    learning: {
+      srt_status: learning.srt_status || null,
+      audio_status: learning.audio_status || null,
+      final_video_status: learning.final_video_status || null,
+      subtitled_video_status: learning.subtitled_video_status || null,
+      error: learning.error || null,
+      export_status: learning.export_status || null,
+      export_error: learning.export_error || null,
+      intro_status: learning.intro_status || null,
+      intro_error: learning.intro_error || null,
+      intro_duration: learning.intro_duration || 0,
+    },
+    audio_tracks: (v.audio_tracks || []).map(t => ({
+      provider: t.provider,
+      audio_status: t.audio_status || null,
+      final_video_status: t.final_video_status || null,
+      subtitled_video_status: t.subtitled_video_status || null,
+      error: t.error || null,
+    })),
+    results: (v.results || []).map(r => [r.id, r.filename]),
+  });
+}
+
+function updateVideoDetailHeader(v) {
+  const topbarVideoName = document.getElementById('topbarVideoName');
+  topbarVideoName.textContent = '— ' + (v.original_name || '');
+  topbarVideoName.title = v.original_name || '';
+  topbarVideoName.style.display = 'block';
+}
+
+function updateLiveVideoDetail(v) {
+  const root = document.getElementById('videoDetailContent');
+  if (!root) return;
+
+  root.querySelectorAll('[data-live-progress="transcription"]').forEach(el => {
+    el.style.width = `${Math.max(0, Math.min(100, Number(v.progress) || 0))}%`;
+  });
+
+  const tts = v.tts_job || {};
+  const ttsPercent = tts.total_segments
+    ? Math.round((Number(tts.completed_segments) || 0) / Number(tts.total_segments) * 100)
+    : 0;
+  root.querySelectorAll('[data-live-progress="tts"]').forEach(el => { el.style.width = `${ttsPercent}%`; });
+  root.querySelectorAll('[data-live-counter="tts"]').forEach(el => {
+    el.textContent = `${tts.completed_segments || 0}/${tts.total_segments || 0} segment tayyor.`;
+  });
+
+  const learning = v.learning_track || {};
+  const learningPercent = learning.total_segments
+    ? Math.round((Number(learning.completed_segments) || 0) / Number(learning.total_segments) * 100)
+    : 0;
+  root.querySelectorAll('[data-live-progress="learning"]').forEach(el => { el.style.width = `${learningPercent}%`; });
+  root.querySelectorAll('[data-live-counter="learning"]').forEach(el => {
+    el.textContent = `⏳ Learning audio yaratilmoqda: ${learning.completed_segments || 0}/${learning.total_segments || 0}`;
+  });
+  root.querySelectorAll('[data-live-progress="intro"]').forEach(el => {
+    el.style.width = `${Math.max(0, Math.min(100, Number(learning.intro_progress) || 0))}%`;
+  });
+  root.querySelectorAll('[data-live-counter="intro"]').forEach(el => {
+    el.textContent = learning.intro_message || 'Intro yaratilmoqda...';
+  });
+}
+
+function applyVideoDetailSnapshot(v, forceRender = false) {
+  const previousLayoutKey = currentDetailVideoData ? videoDetailLayoutKey(currentDetailVideoData) : null;
+  const nextLayoutKey = videoDetailLayoutKey(v);
+  currentDetailVideoData = v;
+  currentDetailVideoStatus = v.status;
+  currentDetailVideoBlockedReason = v.blocked_reason || null;
+  currentDetailVideoLanguage = v.language || '';
+  updateVideoDetailHeader(v);
+
+  if (forceRender || previousLayoutKey !== nextLayoutKey) {
+    const state = forceRender ? null : captureDetailUIState();
+    document.getElementById('videoDetailContent').innerHTML = renderVideoDetail(v);
+    if (currentDetailSection === 'audio' && v.status === 'completed') initPlayer(v.id);
+    if (currentDetailSection === 'learning') switchLearningTracks(v.id);
+    if (state) restoreDetailUIState(state);
+  } else {
+    updateLiveVideoDetail(v);
+  }
 }
 
 async function loadVideoDetail(id) {
   try {
     const v = await apiFetch(`/api/videos/${id}`);
-    currentDetailVideoStatus = v.status;
-    currentDetailVideoBlockedReason = v.blocked_reason || null;
-    currentDetailVideoLanguage = v.language || '';
-    document.getElementById('videoDetailContent').innerHTML = renderVideoDetail(v);
-    if (v.status === 'completed') initPlayer(id);
-    loadOverviewSegments(v);
+    if (currentDetailVideoId !== id) return;
+    applyVideoDetailSnapshot(v, true);
   } catch (e) {
     document.getElementById('videoDetailContent').innerHTML = `<p class="status err">Xato: ${escapeHtml(e.message)}</p>`;
   }
+}
+
+async function pollVideoDetail(id) {
+  try {
+    const v = await apiFetch(`/api/videos/${id}`);
+    if (currentDetailVideoId !== id) return;
+    applyVideoDetailSnapshot(v, false);
+  } catch (e) {
+    // Vaqtinchalik polling xatosida mavjud sahifani buzmaymiz. Keyingi 4 soniyada
+    // yana uriniladi; foydalanuvchi ko'rayotgan video va formalar joyida qoladi.
+  }
+}
+
+function videoDetailHasActiveWork(v) {
+  if (!v) return false;
+  if (v.status !== 'completed' && !v.blocked_reason) return true;
+  const learning = v.learning_track || {};
+  if (learning.audio_status === 'generating' || learning.final_video_status === 'generating' ||
+      learning.subtitled_video_status === 'generating' || learning.intro_status === 'generating' ||
+      learning.export_status === 'generating') return true;
+  return (v.audio_tracks || []).some(t =>
+    t.audio_status === 'generating' || t.final_video_status === 'generating' ||
+    t.subtitled_video_status === 'generating'
+  );
+}
+
+function showVideoSection(section) {
+  if (!['transcript', 'translation', 'audio', 'learning', 'downloads'].includes(section)) return;
+  currentDetailSection = section;
+  if (!currentDetailVideoData) return;
+  document.getElementById('videoDetailContent').innerHTML = renderVideoDetail(currentDetailVideoData);
+  if (currentDetailSection === 'audio' && currentDetailVideoData.status === 'completed') {
+    initPlayer(currentDetailVideoData.id);
+  }
+  if (currentDetailSection === 'learning') switchLearningTracks(currentDetailVideoData.id);
+  window.scrollTo(0, 0);
 }
 
 /* Foydalanuvchi harakatidan keyin (masalan "Bo'laklarga bo'lish" yoki "Tasdiqlash"
@@ -1763,13 +2302,20 @@ function renderPipelineStepper(v) {
     'transcription_approved', 'translation_ready', 'audio_processing', 'audio_ready', 'video_rendering', 'completed'];
   const idx = order.indexOf(v.status);
   const stages = [
-    { from: 0, to: 2, label: 'Yuklash' },
-    { from: 3, to: 5, label: 'Matn' },
-    { from: 6, to: 6, label: 'Tarjima' },
-    { from: 7, to: 8, label: 'Audio' },
-    { from: 9, to: 10, label: 'Yakuniy video' },
+    { from: 0, to: 5, section: 'transcript', label: 'Video → Matn' },
+    { from: 6, to: 6, section: 'translation', label: 'Matn → Tarjima' },
+    { from: 7, to: 10, section: 'audio', label: 'Matn → Video' },
+    { section: 'learning', label: "Ruscha o'rganish" },
+    { from: 0, to: 10, section: 'downloads', label: "Ma'lumotlar" },
   ];
   function state(stage) {
+    if (stage.section === 'learning') {
+      const learning = v.learning_track || {};
+      if (learning.audio_status === 'error' || learning.final_video_status === 'error') return 'error';
+      if (learning.final_video_status === 'ready') return 'done';
+      if (v.transcript_approved) return 'now';
+      return 'todo';
+    }
     if (v.status === 'completed') return 'done';
     if (idx > stage.to) return 'done';
     if (idx >= stage.from && idx <= stage.to) return v.blocked_reason ? 'error' : 'now';
@@ -1778,68 +2324,42 @@ function renderPipelineStepper(v) {
   const parts = stages.map((s, i) => {
     const st = state(s);
     const dotContent = st === 'done' ? '✓' : String(i + 1);
-    const stepHtml = `<span class="step">
+    return `<button class="workflow-tab ${currentDetailSection === s.section ? 'active' : ''}" onclick="showVideoSection('${s.section}')">
       <span class="step-dot ${st}">${dotContent}</span>
       <span class="step-label ${st === 'todo' ? 'dim' : ''}">${escapeHtml(s.label)}</span>
-    </span>`;
-    const lineHtml = i < stages.length - 1 ? `<span class="step-line ${st === 'done' ? 'done' : ''}"></span>` : '';
-    return stepHtml + lineHtml;
+    </button>`;
   }).join('');
-  return `<div class="card stepper">${parts}</div>`;
+  return `<div class="card workflow-nav" aria-label="Video ishlov bosqichlari">${parts}</div>`;
 }
 
 function renderOverviewPanel(v) {
-  const thumb = v.has_thumbnail
-    ? `<img class="video-frame-img" src="${API_BASE}/api/videos/${v.id}/thumbnail">`
-    : `<div class="video-frame-ph">🎬</div>`;
-  const matnHolati = v.transcript_approved ? 'Tasdiqlangan'
-    : v.status === 'transcribing' ? 'Jarayonda'
-    : ['transcription_ready', 'transcription_approved', 'translation_ready', 'audio_processing', 'audio_ready', 'video_rendering', 'completed'].includes(v.status) ? 'Tayyor'
-    : 'Boshlanmagan';
-  const tarjimaHolati = ['ready', 'uploaded', 'pasted'].includes(v.translation_status) ? 'Tayyor'
-    : v.translation_status === 'generating' ? 'Jarayonda'
-    : v.translation_status === 'failed' ? 'Xato'
-    : 'Boshlanmagan';
-  return `
-  <div class="overview-grid">
-    <div class="panel">
-      ${thumb}
-      <div class="panel-label">Loyiha holati</div>
-      <div class="fact-row"><div class="fact-k">Bo'laklar</div><div class="fact-v mono">${v.chunk_count || 0}</div></div>
-      <div class="fact-row"><div class="fact-k">Matn</div><div class="fact-v">${escapeHtml(matnHolati)}</div></div>
-      <div class="fact-row"><div class="fact-k">Tarjima</div><div class="fact-v" style="color:var(--accent)">${escapeHtml(tarjimaHolati)}</div></div>
-      <div class="fact-row"><div class="fact-k">Xarajat</div><div class="fact-v mono">${fmtUsd(v.cost_total)}${v.cost_total_som ? ' + ' + fmtSom(v.cost_total_som) : ''}</div></div>
-    </div>
-    <div class="panel">
-      <div class="ov-tabs"><span class="ov-tab active">Original / Tarjima</span></div>
-      <div id="ovSegments-${v.id}"><p class="hint">Yuklanmoqda...</p></div>
-    </div>
+  const text = v.transcript_text || '';
+  return `<div class="panel" style="margin-bottom:14px;">
+    <div class="panel-label">Original video</div>
+    <video class="original-video-player" controls preload="metadata" src="${API_BASE}/api/videos/${v.id}/original-stream"></video>
+    <div class="panel-label" style="margin-top:18px;">Original matn</div>
+    ${text
+      ? `<textarea class="original-text-preview" readonly>${escapeHtml(text)}</textarea>`
+      : `<p class="hint">Original matn hali olinmagan.</p>`}
   </div>`;
 }
 
 function renderVideoDetail(v) {
-  let html = `
-    <div class="card">
-      <div class="row" style="justify-content:space-between; margin-top:0;">
-        <h2 style="margin:0;">${escapeHtml(v.original_name)}</h2>
-        <div class="row" style="margin:0; gap:8px;">
-          <button class="small-btn" onclick="restartVideoFromDetail('${v.id}')" title="Transkripsiya, tarjima, audio va yakuniy videoni o'chirib, video yuklangandan keyingi holatga qaytaradi">↺ Qayta boshlash</button>
-          <button class="small-btn danger" onclick="deleteVideoFromDetail('${v.id}')">Videoni o'chirish</button>
-        </div>
-      </div>
-      <div class="status">${fmtBytes(v.file_size)} ${v.duration ? '· ' + fmtMinSec(v.duration) : ''}</div>
-      ${v.message ? `<div class="status">${escapeHtml(v.message)}</div>` : ''}
-      ${v.blocked_reason ? `<div class="warn-box">${escapeHtml(BLOCKED_LABELS[v.blocked_reason] || v.blocked_reason)}${v.repetition_info ? ': ' + escapeHtml(v.repetition_info) : ''}</div>` : ''}
-    </div>`;
-
-  html += renderPipelineStepper(v);
-  html += renderOverviewPanel(v);
-  html += renderSegmentStage(v);
-  html += renderTranscriptStage(v);
-  html += renderTranslationStage(v);
-  html += renderAudioStage(v);
-  html += renderRenderStage(v);
-  html += renderFilesAndLog(v);
+  let html = renderPipelineStepper(v);
+  if (currentDetailSection === 'transcript') {
+    html += renderOverviewPanel(v);
+    html += renderSegmentStage(v);
+    html += renderTranscriptStage(v);
+  } else if (currentDetailSection === 'translation') {
+    html += renderTranslationStage(v);
+  } else if (currentDetailSection === 'audio') {
+    html += renderAudioStage(v);
+    html += renderRenderStage(v);
+  } else if (currentDetailSection === 'learning') {
+    html += renderLearningStage(v);
+  } else if (currentDetailSection === 'downloads') {
+    html += renderFilesAndLog(v);
+  }
 
   return html;
 }
@@ -1864,7 +2384,7 @@ function renderSegmentStage(v) {
   } else if (reached) {
     badge = stageStatusBadge(`${v.chunk_count} ta segment tayyor`, 'done');
   }
-  return `<div class="stage"><div class="stage-head"><h3>1. Video segmentlari</h3>${badge}</div>${body}</div>`;
+  return `<div class="stage"><div class="stage-head"><h3>Video segmentlari</h3>${badge}</div>${body}</div>`;
 }
 
 const ISSUE_LABELS = { repetition: 'Takrorlanish ehtimoli', no_speech: 'Nutq aniqlanmadi', low_confidence: 'Ishonchlilik past', wrong_language: 'Til chalkashgan' };
@@ -2000,10 +2520,22 @@ function renderTranscriptStage(v) {
       </div>
       <label class="field">Qo'shimcha ko'rsatma (ixtiyoriy)</label>
       <input type="text" id="instr-${v.id}" placeholder="masalan: Bu darsda maxsus atamalar bor">
-      <button class="action" onclick="startTranscribe('${v.id}', this)" style="margin-top:10px;">Transkripsiyani boshlash</button>`;
+      <div class="row" style="margin-top:10px;">
+        <button class="action" onclick="startTranscribe('${v.id}', this)">Transkripsiyani boshlash</button>
+        <button class="secondary" type="button" id="transcriptSrtToggle-${v.id}" aria-expanded="false" onclick="toggleOriginalSrtForm('${v.id}', this)">SRT yuklash</button>
+      </div>
+      <div class="card" id="transcriptSrtForm-${v.id}" style="display:none; margin-top:14px; background:var(--work);">
+        <h4 style="margin-top:0;">Tayyor original SRT yuklash</h4>
+        <p class="hint">Shu videoning original tilidagi .srt faylini kompyuter, telefon yoki planshet xotirasidan tanlang. Fayldagi vaqt belgilari saqlanadi.</p>
+        <input type="file" id="transcriptSrt-${v.id}" accept=".srt,application/x-subrip">
+        <div class="row">
+          <button class="secondary" onclick="uploadOriginalTranscriptSrt('${v.id}', this)">SRT'ni yuklash</button>
+        </div>
+        <div class="status" id="transcriptSrtStatus-${v.id}"></div>
+      </div>`;
   } else if (status === 'transcribing') {
     badge = v.blocked_reason ? stageStatusBadge(BLOCKED_LABELS[v.blocked_reason], 'error') : stageStatusBadge('Ishlanmoqda...', 'active');
-    body = `<div class="progress-wrap"><div class="progress-bar" style="width:${v.progress || 0}%;"></div></div>`;
+    body = `<div class="progress-wrap"><div class="progress-bar" data-live-progress="transcription" style="width:${v.progress || 0}%;"></div></div>`;
     body += renderChunkDetailList(v.chunks);
     body += `<div class="row">`;
     if (v.blocked_reason) {
@@ -2022,8 +2554,7 @@ function renderTranscriptStage(v) {
   } else if (ready) {
     badge = stageStatusBadge('Tekshirishni kutmoqda', 'active');
     body = renderFlaggedIssuesSummary(v);
-    body += `<textarea readonly style="min-height:160px;">${escapeHtml(v.transcript_text || '')}</textarea>
-      ${chunksZipButtonHtml(v)}
+    body += `${chunksZipButtonHtml(v)}
       <details style="margin-top:8px;"><summary style="cursor:pointer; font-size:12.5px; color:var(--muted);">Bo'laklar bo'yicha batafsil</summary>${renderChunkDetailList(v.chunks)}</details>
       <div class="row">
         <button class="action" onclick="approveTranscript('${v.id}', this)">Tasdiqlash</button>
@@ -2035,9 +2566,7 @@ function renderTranscriptStage(v) {
     const langLabel = v.detected_language ? (TRANSCRIBE_LANGUAGE_LABELS[v.detected_language] || v.detected_language) : '';
     badge = stageStatusBadge(`✅ Tasdiqlangan ${langLabel ? '(' + langLabel + ')' : ''}`, 'done');
     body = renderFlaggedIssuesSummary(v);
-    body += `<details><summary style="cursor:pointer; font-size:12.5px; color:var(--muted);">Matnni ko'rish</summary>
-      <textarea readonly style="min-height:140px; margin-top:8px;">${escapeHtml(v.transcript_text || '')}</textarea></details>
-      ${chunksZipButtonHtml(v)}
+    body += `${chunksZipButtonHtml(v)}
       <details style="margin-top:8px;"><summary style="cursor:pointer; font-size:12.5px; color:var(--muted);">Bo'laklar bo'yicha batafsil (5 daqiqalik qismlar)</summary>${renderChunkDetailList(v.chunks)}</details>
       <div class="row">
         <button class="secondary" onclick="openTranscriptBlockEditor('${v.id}')">Bo'laklarni tahrirlash</button>
@@ -2045,7 +2574,39 @@ function renderTranscriptStage(v) {
       </div>
       <div id="transcript-block-editor-${v.id}"></div>`;
   }
-  return `<div class="stage ${before ? 'dim' : ''}"><div class="stage-head"><h3>2. Original matn</h3>${badge}</div>${body}</div>`;
+  return `<div class="stage ${before ? 'dim' : ''}"><div class="stage-head"><h3>Matn olish va tahrirlash</h3>${badge}</div>${body}</div>`;
+}
+
+function translationPanelCollapsed(videoId, key) {
+  return localStorage.getItem(`translation-panel-${videoId}-${key}`) === 'closed';
+}
+
+function toggleTranslationPanel(videoId, key) {
+  const body = document.getElementById(`translation-panel-body-${videoId}-${key}`);
+  const button = document.getElementById(`translation-panel-toggle-${videoId}-${key}`);
+  const badge = document.getElementById(`translation-panel-badge-${videoId}-${key}`);
+  if (!body || !button) return;
+  const closing = body.style.display !== 'none';
+  body.style.display = closing ? 'none' : '';
+  button.textContent = closing ? '▸ Ochish' : '▾ Berkitish';
+  button.setAttribute('aria-expanded', closing ? 'false' : 'true');
+  if (badge) badge.style.display = closing ? 'none' : '';
+  localStorage.setItem(`translation-panel-${videoId}-${key}`, closing ? 'closed' : 'open');
+}
+
+function renderFoldableTranslationPanel(v, key, title, badge, body, dim) {
+  const collapsed = translationPanelCollapsed(v.id, key);
+  return `<div class="stage ${dim ? 'dim' : ''}">
+    <div class="stage-head">
+      <div class="row" style="margin:0; gap:8px; align-items:center;">
+        <button class="tiny-btn" id="translation-panel-toggle-${v.id}-${key}" type="button"
+          aria-expanded="${collapsed ? 'false' : 'true'}" onclick="toggleTranslationPanel('${v.id}', '${key}')">${collapsed ? '▸ Ochish' : '▾ Berkitish'}</button>
+        <h3 style="margin:0;">${escapeHtml(title)}</h3>
+      </div>
+      <span id="translation-panel-badge-${v.id}-${key}" style="${collapsed ? 'display:none;' : ''}">${badge}</span>
+    </div>
+    <div id="translation-panel-body-${v.id}-${key}" style="${collapsed ? 'display:none;' : ''}">${body}</div>
+  </div>`;
 }
 
 function renderTranslationStage(v) {
@@ -2079,7 +2640,74 @@ function renderTranslationStage(v) {
       </div>
       <div id="translate-form-${v.id}"></div>`;
   }
-  return `<div class="stage ${before ? 'dim' : ''}"><div class="stage-head"><h3>3. O'zbekcha tarjima</h3>${badge}</div>${body}</div>`;
+
+  const uzbekPanel = renderFoldableTranslationPanel(
+    v, 'uzbek', "O'zbekcha tarjima", badge, body, before);
+
+  const learning = v.learning_track;
+  const learningReady = !!learning && learning.srt_status === 'uploaded';
+  let learningBadge = stageStatusBadge('Yo\'q', '');
+  let learningBody = '';
+  if (before) {
+    learningBody = `<p class="hint">Avval original matnni tasdiqlang.</p>`;
+  } else if (learningReady) {
+    learningBadge = stageStatusBadge('✅ Tayyor', 'done');
+    learningBody = `<details><summary style="cursor:pointer; font-size:12.5px; color:var(--muted);">Matnni ko'rish</summary>
+      <textarea readonly style="min-height:140px; margin-top:8px;">${escapeHtml(v.learning_text || '')}</textarea></details>
+      <div class="row">
+        <button class="action" onclick="openLearningBlockEditor('${v.id}')">Tahrirlash va audio</button>
+        <button class="secondary" onclick="showLearningTranslateForm('${v.id}')">Tayyor matn bilan almashtirish</button>
+        <button class="small-btn" onclick="resetLearningTranslation('${v.id}', this)">🔁 Qaytadan boshlash</button>
+      </div>
+      <div id="learning-translate-form-${v.id}"></div>
+      <div id="learning-block-editor-${v.id}"></div>`;
+  } else {
+    learningBody = `<div class="row" style="margin-top:0;">
+        <button class="secondary" onclick="showLearningTranslateForm('${v.id}')">Tayyor matn kiritish</button>
+      </div>
+      <div id="learning-translate-form-${v.id}"></div>`;
+  }
+  const learningPanel = renderFoldableTranslationPanel(
+    v, 'learning', "Ruscha o'rganish", learningBadge, learningBody, before);
+
+  return uzbekPanel + learningPanel;
+}
+
+function resizeExpandedTextarea(el) {
+  if (!el || el.dataset.expanded !== 'true') return;
+  el.style.height = 'auto';
+  el.style.height = `${el.scrollHeight + 2}px`;
+}
+
+function expandTextareaFromField(el, buttonId) {
+  if (!el || el.dataset.expanded === 'true') return;
+  toggleTextareaExpansion(el.id, document.getElementById(buttonId));
+}
+
+function toggleTextareaExpansion(textareaId, btn) {
+  const el = document.getElementById(textareaId);
+  if (!el) return;
+  const expanding = el.dataset.expanded !== 'true';
+  if (expanding) {
+    el.dataset.collapsedHeight = `${el.offsetHeight || 180}px`;
+    el.dataset.expanded = 'true';
+    el.style.maxHeight = 'none';
+    el.style.overflowY = 'hidden';
+    resizeExpandedTextarea(el);
+    if (btn) {
+      btn.textContent = '↖ Yig\'ish';
+      btn.setAttribute('aria-expanded', 'true');
+    }
+  } else {
+    el.dataset.expanded = 'false';
+    el.style.height = el.dataset.collapsedHeight || '180px';
+    el.style.maxHeight = '';
+    el.style.overflowY = 'auto';
+    if (btn) {
+      btn.textContent = '⛶ Kengaytirish';
+      btn.setAttribute('aria-expanded', 'false');
+    }
+  }
 }
 
 function showTranslateForm(id) {
@@ -2089,7 +2717,6 @@ function showTranslateForm(id) {
   el.innerHTML = `
     <div class="card" style="margin-top:10px; background:var(--work);">
       <h3 style="margin-top:0;">O'zbekcha SRT faylni yuklash</h3>
-      <p class="hint">Tayyorlagan o'zbekcha SRT faylingizni tanlang (kompyuter, telefon yoki iPad'dan) — o'z vaqt belgilari bilan to'g'ridan-to'g'ri ishlatiladi.</p>
       <div class="row">
         <input type="file" id="translateSrtDirect-${id}" accept=".srt">
         <button class="action" onclick="submitDirectSrt('${id}')">SRT'ni yuklash</button>
@@ -2098,7 +2725,10 @@ function showTranslateForm(id) {
       <div class="status" id="translateSrtDirectStatus-${id}"></div>
     </div>
     <p class="hint" style="margin-top:14px;">Yoki: har bir original segment uchun bitta bo'lak, bo'sh qator bilan ajratilgan holda matn kiriting (yoki original bilan bir xil sondagi SRT).</p>
-    <textarea id="translateText-${id}" placeholder="Birinchi segment tarjimasi
+    <div class="row" style="justify-content:flex-end; margin:0 0 6px;">
+      <button class="tiny-btn" id="expandTranslateText-${id}" type="button" aria-expanded="false" onclick="toggleTextareaExpansion('translateText-${id}', this)">⛶ Kengaytirish</button>
+    </div>
+    <textarea id="translateText-${id}" onfocus="expandTextareaFromField(this, 'expandTranslateText-${id}')" oninput="resizeExpandedTextarea(this)" placeholder="Birinchi segment tarjimasi
 
 Ikkinchi segment tarjimasi
 
@@ -2109,6 +2739,139 @@ Ikkinchi segment tarjimasi
       <button class="action" onclick="submitTranslateText('${id}')">Matnni saqlash</button>
     </div>
     <div class="status" id="translateFormStatus-${id}"></div>`;
+}
+
+function showLearningTranslateForm(id) {
+  const el = document.getElementById('learning-translate-form-' + id);
+  if (!el) return;
+  if (el.innerHTML) { el.innerHTML = ''; return; }
+  el.innerHTML = `
+    <div class="card" style="margin-top:10px; background:var(--work);">
+      <h3 style="margin-top:0;">Ruscha o'rganish SRT faylini yuklash</h3>
+      <div class="row">
+        <input type="file" id="learningTranslateSrtDirect-${id}" accept=".srt">
+        <button class="action" onclick="submitLearningDirectSrt('${id}')">SRT'ni yuklash</button>
+      </div>
+      <div class="status" id="learningTranslateSrtStatus-${id}"></div>
+    </div>
+    <p class="hint" style="margin-top:14px;">Yoki: har bir original segment uchun bitta bo'lak, bo'sh qator bilan ajratilgan holda ruscha o'rganish matnini kiriting.</p>
+    <div class="row" style="justify-content:flex-end; margin:0 0 6px;">
+      <button class="tiny-btn" id="expandLearningTranslateText-${id}" type="button" aria-expanded="false" onclick="toggleTextareaExpansion('learningTranslateText-${id}', this)">⛶ Kengaytirish</button>
+    </div>
+    <textarea id="learningTranslateText-${id}" onfocus="expandTextareaFromField(this, 'expandLearningTranslateText-${id}')" oninput="resizeExpandedTextarea(this)" placeholder="Birinchi segment matni
+
+Ikkinchi segment matni
+
+..."></textarea>
+    <div class="row">
+      <input type="file" id="learningTranslateFile-${id}" accept=".txt,.docx,.srt">
+      <button class="secondary" onclick="submitLearningTranslateFile('${id}')">Fayldan yuklash</button>
+      <button class="action" onclick="submitLearningTranslateText('${id}')">Matnni saqlash</button>
+    </div>
+    <div class="status" id="learningTranslateFormStatus-${id}"></div>`;
+}
+
+async function submitLearningDirectSrt(id) {
+  const fileInput = document.getElementById('learningTranslateSrtDirect-' + id);
+  if (!fileInput || !fileInput.files[0]) {
+    setStatus('learningTranslateSrtStatus-' + id, 'SRT fayl tanlanmagan.', 'err');
+    return;
+  }
+  try {
+    const form = new FormData();
+    form.append('file', fileInput.files[0]);
+    const r = await apiFetch(`/api/videos/${id}/learning/srt`, { method: 'POST', body: form });
+    setStatus('learningTranslateSrtStatus-' + id, `SRT yuklandi: ${r.segment_count} ta bo'lak.`, 'ok');
+    await loadVideoDetail(id);
+  } catch (e) {
+    setStatus('learningTranslateSrtStatus-' + id, 'Xato: ' + e.message, 'err');
+  }
+}
+
+async function submitLearningTranslateText(id) {
+  const text = document.getElementById('learningTranslateText-' + id).value.trim();
+  if (!text) { setStatus('learningTranslateFormStatus-' + id, 'Matn kiritilmagan.', 'err'); return; }
+  try {
+    const form = new FormData();
+    form.append('text', text);
+    const r = await apiFetch(`/api/videos/${id}/learning/text`, { method: 'POST', body: form });
+    setStatus('learningTranslateFormStatus-' + id, `${r.segment_count} ta bo'lak ruscha o'rganishga saqlandi.`, 'ok');
+    await loadVideoDetail(id);
+  } catch (e) {
+    setStatus('learningTranslateFormStatus-' + id, 'Xato: ' + e.message, 'err');
+  }
+}
+
+async function submitLearningTranslateFile(id) {
+  const fileInput = document.getElementById('learningTranslateFile-' + id);
+  if (!fileInput || !fileInput.files[0]) {
+    setStatus('learningTranslateFormStatus-' + id, 'Fayl tanlanmagan.', 'err');
+    return;
+  }
+  try {
+    const form = new FormData();
+    form.append('file', fileInput.files[0]);
+    const r = await apiFetch(`/api/videos/${id}/learning/file`, { method: 'POST', body: form });
+    setStatus('learningTranslateFormStatus-' + id, `${r.segment_count} ta bo'lak ruscha o'rganishga saqlandi.`, 'ok');
+    await loadVideoDetail(id);
+  } catch (e) {
+    setStatus('learningTranslateFormStatus-' + id, 'Xato: ' + e.message, 'err');
+  }
+}
+
+let learningBlockEditorData = [];
+
+async function openLearningBlockEditor(id) {
+  const el = document.getElementById('learning-block-editor-' + id);
+  if (!el) return;
+  if (el.innerHTML) { el.innerHTML = ''; return; }
+  try {
+    learningBlockEditorData = await apiFetch(`/api/videos/${id}/learning/blocks`);
+  } catch (e) {
+    el.innerHTML = `<p class="status err">Xato: ${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  el.innerHTML = `
+    <div class="card" style="margin-top:10px; background:var(--work);">
+      <h3 style="margin-top:0;">Tahrirlash va audio (${learningBlockEditorData.length} ta bo'lak)</h3>
+      <p class="hint">Bu matn faqat “Ruscha o'rganish” audiosi va videosi uchun ishlatiladi.</p>
+      <div style="max-height:420px; overflow-y:auto;">
+        ${learningBlockEditorData.map((b, i) => `
+          <div class="block-editor-row" style="grid-template-columns:72px 1fr;" id="learning-block-row-${id}-${i}">
+            <div class="bidx">${i + 1}<br>${fmtMinSec(b.start)}</div>
+            <textarea id="learning-block-text-${id}-${i}" oninput="document.getElementById('learning-block-row-${id}-${i}').classList.add('changed')">${escapeHtml(b.text || '')}</textarea>
+          </div>`).join('')}
+      </div>
+      <div class="row">
+        <button class="action" onclick="saveLearningBlockEdits('${id}')">Saqlash / Tugadi</button>
+        <button class="secondary" onclick="showVideoSection('learning')">Ruscha o'rganishga o'tish</button>
+        <button class="secondary" onclick="document.getElementById('learning-block-editor-${id}').innerHTML=''">Yopish</button>
+      </div>
+      <div class="status" id="learningBlockEditorStatus-${id}"></div>
+    </div>`;
+}
+
+async function saveLearningBlockEdits(id) {
+  const texts = learningBlockEditorData.map((b, i) => document.getElementById(`learning-block-text-${id}-${i}`).value);
+  try {
+    const r = await apiFetch(`/api/videos/${id}/learning/save-blocks`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ texts }),
+    });
+    setStatus('learningBlockEditorStatus-' + id,
+      `${r.changed_count} ta bo'lak saqlandi. Ruscha o'rganish audio/video natijalari yangidan yaratiladi.`, 'ok');
+    await loadVideoDetail(id);
+  } catch (e) {
+    setStatus('learningBlockEditorStatus-' + id, 'Xato: ' + e.message, 'err');
+  }
+}
+
+async function resetLearningTranslation(id, btnEl) {
+  if (!confirm("Ruscha o'rganish matni, audio va videosi tozalanadi. Davom etilsinmi?")) return;
+  await withBusyButton(btnEl, 'Tozalanmoqda...', async () => {
+    await apiFetch(`/api/videos/${id}/learning/reset`, { method: 'POST' });
+    await loadVideoDetail(id);
+  });
 }
 
 async function submitDirectSrt(id) {
@@ -2493,8 +3256,8 @@ function renderAudioStage(v) {
   } else if (v.status === 'audio_processing' && !v.blocked_reason) {
     badge = stageStatusBadge('Yaratilmoqda...', 'active');
     const tj = v.tts_job;
-    body = tj ? `<div class="progress-wrap"><div class="progress-bar" style="width:${tj.total_segments ? Math.round(tj.completed_segments / tj.total_segments * 100) : 0}%;"></div></div>
-      <p class="hint">${tj.completed_segments}/${tj.total_segments} segment tayyor.</p>` : '<p class="hint">Boshlanmoqda...</p>';
+    body = tj ? `<div class="progress-wrap"><div class="progress-bar" data-live-progress="tts" style="width:${tj.total_segments ? Math.round(tj.completed_segments / tj.total_segments * 100) : 0}%;"></div></div>
+      <p class="hint" data-live-counter="tts">${tj.completed_segments}/${tj.total_segments} segment tayyor.</p>` : '<p class="hint">Boshlanmoqda...</p>';
   } else if (v.audio_status === 'ready') {
     badge = stageStatusBadge('✅ Tayyor', 'done');
     body = `<audio controls src="${API_BASE}/api/tts/jobs/${v.tts_job_id}/download"></audio>
@@ -2514,7 +3277,7 @@ function renderAudioStage(v) {
     body += `<div id="audio-form-${v.id}"></div>
       <div class="row"><button class="secondary" onclick="showAudioForm('${v.id}')">${v.tts_job_id ? "Sozlamalarni ko'rish" : 'Audio sozlamalari'}</button></div>`;
   }
-  return `<div class="stage ${before ? 'dim' : ''}"><div class="stage-head"><h3>4. Audio</h3>${badge}</div>${body}</div>`;
+  return `<div class="stage ${before ? 'dim' : ''}"><div class="stage-head"><h3>Audio</h3>${badge}</div>${body}</div>`;
 }
 
 async function showAudioForm(id) {
@@ -2523,15 +3286,15 @@ async function showAudioForm(id) {
   if (el.innerHTML) { el.innerHTML = ''; return; }
   let settings = {};
   try { settings = await apiFetch('/api/settings'); } catch (e) {}
-  const savedAishaKey = localStorage.getItem('aisha_api_key') || '';
+  const savedAishaKey = localStorage.getItem(aishaStorageKey()) || '';
   el.innerHTML = `
     <div class="row" style="margin-top:10px;">
       <select id="audioProvider-${id}" onchange="toggleAudioProviderUI('${id}')">
+        <option value="openai" selected>OpenAI</option>
         <option value="aisha">Aisha AI</option>
-        <option value="openai">OpenAI</option>
       </select>
     </div>
-    <div id="audioAishaFields-${id}">
+    <div id="audioAishaFields-${id}" style="display:none;">
       <input type="password" id="audioAishaKey-${id}" placeholder="Aisha API kalit" value="${escapeHtml(savedAishaKey)}">
       <div class="grid2" style="margin-top:8px;">
         <div><label class="field">Kayfiyat</label><select id="audioMood-${id}">
@@ -2541,7 +3304,7 @@ async function showAudioForm(id) {
         <div><label class="field">Tezlik</label><input type="text" id="audioSpeed-${id}" value="${escapeHtml(settings.aisha_default_speed || '1.0')}"></div>
       </div>
     </div>
-    <div id="audioOpenaiFields-${id}" style="display:none;">
+    <div id="audioOpenaiFields-${id}">
       <label class="field">Ovoz</label>
       <select id="audioVoice-${id}">
         <option value="alloy">alloy</option><option value="echo">echo</option><option value="fable">fable</option>
@@ -2560,7 +3323,7 @@ function toggleAudioProviderUI(id) {
   document.getElementById('audioOpenaiFields-' + id).style.display = provider === 'openai' ? 'block' : 'none';
 }
 
-const PROVIDER_LABEL = { aisha: 'Aisha', openai: 'OpenAI' };
+const PROVIDER_LABEL = { aisha: 'Aisha', openai: 'OpenAI', learning: "Ruscha o'rganish" };
 
 async function showTrackAudioForm(id, provider) {
   const el = document.getElementById('track-audio-form-' + id);
@@ -2568,7 +3331,7 @@ async function showTrackAudioForm(id, provider) {
   if (el.innerHTML) { el.innerHTML = ''; return; }
   let settings = {};
   try { settings = await apiFetch('/api/settings'); } catch (e) {}
-  const savedAishaKey = localStorage.getItem('aisha_api_key') || '';
+  const savedAishaKey = localStorage.getItem(aishaStorageKey()) || '';
   let fieldsHtml;
   if (provider === 'aisha') {
     fieldsHtml = `
@@ -2607,7 +3370,7 @@ async function submitTrackAudioJob(id, provider) {
   if (provider === 'aisha') {
     const key = document.getElementById('trackAudioAishaKey-' + id).value.trim();
     if (!key) { setStatus('trackAudioFormStatus-' + id, 'Aisha API kalitni kiriting.', 'err'); return; }
-    localStorage.setItem('aisha_api_key', key);
+    localStorage.setItem(aishaStorageKey(), key);
     form.append('aisha_key', key);
     form.append('mood', document.getElementById('trackAudioMood-' + id).value);
     form.append('speed', document.getElementById('trackAudioSpeed-' + id).value || '1.0');
@@ -2628,7 +3391,7 @@ async function submitAudioJob(id) {
   if (provider === 'aisha') {
     const key = document.getElementById('audioAishaKey-' + id).value.trim();
     if (!key) { setStatus('audioFormStatus-' + id, 'Aisha API kalitni kiriting.', 'err'); return; }
-    localStorage.setItem('aisha_api_key', key);
+    localStorage.setItem(aishaStorageKey(), key);
     form.append('aisha_key', key);
     form.append('mood', document.getElementById('audioMood-' + id).value);
     form.append('speed', document.getElementById('audioSpeed-' + id).value || '1.0');
@@ -2783,7 +3546,7 @@ function renderRenderStage(v) {
       ${renderSubtitleBurnPanel(v.id, null, v.subtitled_video_status, v.subtitled_video_error)}`;
     body += renderAudioTracksPanel(v);
   }
-  return `<div class="stage ${before ? 'dim' : ''}"><div class="stage-head"><h3>5. Yakuniy video</h3>${badge}</div>${body}</div>`;
+  return `<div class="stage ${before ? 'dim' : ''}"><div class="stage-head"><h3>Yakuniy video</h3>${badge}</div>${body}</div>`;
 }
 
 function renderSubtitleBurnPanel(videoId, provider, status, errorMsg) {
@@ -2795,6 +3558,7 @@ function renderSubtitleBurnPanel(videoId, provider, status, errorMsg) {
   const btnId = provider ? `subBurnBtn-${videoId}-${provider}` : `subBurnBtn-${videoId}`;
   const statusId = provider ? `subBurnStatus-${videoId}-${provider}` : `subBurnStatus-${videoId}`;
   const providerArg = provider ? `'${provider}'` : 'null';
+  const subtitleName = provider === 'learning' ? "ruscha o'rganish subtitri" : "o'zbekcha subtitr";
   let inner;
   if (status === 'ready') {
     inner = `
@@ -2812,7 +3576,7 @@ function renderSubtitleBurnPanel(videoId, provider, status, errorMsg) {
       <div class="row"><button class="small-btn" id="${btnId}" onclick="burnSubtitles('${videoId}', ${providerArg})">Qayta urinish</button></div>`;
   } else {
     inner = `
-      <p class="hint">Ixtiyoriy: o'zbekcha subtitrni video piksellariga "kuydirib" (hardsub) yozib, alohida fayl sifatida yaratish mumkin - istalgan joyda (Telegram, telefon, boshqa pleyer) ko'rinadi. Asosiy videoga tegilmaydi.</p>
+      <p class="hint">Ixtiyoriy: ${subtitleName}ni video piksellariga "kuydirib" (hardsub) yozib, alohida fayl sifatida yaratish mumkin - istalgan joyda (Telegram, telefon, boshqa pleyer) ko'rinadi. Asosiy videoga tegilmaydi.</p>
       <div class="row"><button class="secondary" id="${btnId}" onclick="burnSubtitles('${videoId}', ${providerArg})">Subtitr bilan video yaratish</button></div>`;
   }
   return `<div class="stage" style="margin-top:10px;"><div class="stage-head"><h3>Subtitrli video${label}</h3></div>${inner}<div class="status" id="${statusId}"></div></div>`;
@@ -2859,6 +3623,295 @@ async function sendSubtitledToBot(videoId, provider, btnEl) {
   }
 }
 
+function renderLearningStage(v) {
+  const before = !v.transcript_approved;
+  const t = v.learning_track;
+  const srtReady = !!t && t.srt_status === 'uploaded';
+  const audioReady = srtReady && t.audio_status === 'ready';
+
+  let sourceBadge = stageStatusBadge('Yo\'q', '');
+  let sourceBody;
+  if (before) {
+    sourceBody = `<p class="hint">Avval o'zbekcha tarjimani tayyorlang.</p>`;
+  } else if (!srtReady) {
+    sourceBody = `
+      <p class="hint">Ruscha o'rganish uchun tayyorlangan .srt faylni tanlang.</p>
+      <div class="row">
+        <input type="file" id="learningSrtFile-${v.id}" accept=".srt">
+        <button class="action" onclick="uploadLearningSrt('${v.id}')">SRT'ni yuklash</button>
+      </div>
+      <div class="status" id="learningSrtStatus-${v.id}"></div>`;
+  } else {
+    sourceBadge = stageStatusBadge('✅ Tayyor', 'done');
+    sourceBody = `
+      <p class="status ok">${escapeHtml(t.srt_filename || '')} · ${t.segment_count || 0} ta segment</p>
+      <div class="row">
+        <a class="small-btn" style="text-decoration:none; display:inline-block;" href="${API_BASE}/api/videos/${v.id}/learning/srt-download">Yuklab olish</a>
+        <input type="file" id="learningSrtFile-${v.id}" accept=".srt">
+        <button class="secondary" onclick="uploadLearningSrt('${v.id}')">Qayta yuklash</button>
+      </div>
+      <div class="status" id="learningSrtStatus-${v.id}"></div>`;
+  }
+  const sourceStage = `<div class="stage ${before ? 'dim' : ''}"><div class="stage-head"><h3>Ruscha o'rganish matni</h3>${sourceBadge}</div>${sourceBody}</div>`;
+
+  let audioBadge = stageStatusBadge('Yaratilmagan', '');
+  let audioBody;
+  if (!srtReady) {
+    audioBody = `<p class="hint">Avval ruscha o'rganish SRT faylini yuklang.</p>`;
+  } else if (t.audio_status === 'generating') {
+    audioBadge = stageStatusBadge('Yaratilmoqda...', 'active');
+    const pct = t.total_segments ? Math.round((t.completed_segments || 0) / t.total_segments * 100) : 0;
+    audioBody = `<div class="progress-wrap"><div class="progress-bar" data-live-progress="learning" style="width:${pct}%;"></div></div>
+      <p class="hint" data-live-counter="learning">${t.completed_segments || 0}/${t.total_segments || 0} segment tayyor.</p>`;
+  } else if (audioReady) {
+    audioBadge = stageStatusBadge('✅ Tayyor', 'done');
+    audioBody = `<audio controls src="${API_BASE}/api/videos/${v.id}/learning/audio-download"></audio>
+      <div class="row">
+        <a class="small-btn" style="text-decoration:none; display:inline-block;" href="${API_BASE}/api/videos/${v.id}/learning/audio-download">Yuklab olish</a>
+        <button class="secondary" onclick="showLearningAudioForm('${v.id}')">Qayta yaratish</button>
+      </div>
+      <div id="learning-audio-form-${v.id}"></div>`;
+  } else {
+    if (t.audio_status === 'error') {
+      audioBadge = stageStatusBadge('Xato', 'error');
+      audioBody = `<p class="status err">${escapeHtml(t.error || 'Audio yaratishda xato yuz berdi.')}</p>`;
+    } else {
+      audioBody = '';
+    }
+    audioBody += `<div id="learning-audio-form-${v.id}"></div>
+      <div class="row"><button class="secondary" onclick="showLearningAudioForm('${v.id}')">Audio sozlamalari</button></div>`;
+  }
+  const audioStage = `<div class="stage ${!srtReady ? 'dim' : ''}"><div class="stage-head"><h3>Ruscha o'rganish audiosi</h3>${audioBadge}</div>${audioBody}</div>`;
+
+  let videoBadge = stageStatusBadge('Tayyor emas', '');
+  let videoBody;
+  if (!audioReady) {
+    videoBody = `<p class="hint">Avval audio tayyor bo'lishi kerak.</p>`;
+  } else if (t.final_video_status === 'generating') {
+    videoBadge = stageStatusBadge('Yig\'ilmoqda...', 'active');
+    videoBody = `<p class="hint">Server original video va audioni birlashtirmoqda...</p>`;
+  } else if (t.final_video_status === 'ready') {
+    videoBadge = stageStatusBadge('✅ Tayyor', 'done');
+    const lbase = `${API_BASE}/api/videos/${v.id}/learning`;
+    const hasWords = !!(v.learning_words && v.learning_words.tagged_blocks);
+    const wordsEmbedded = hasWords && t.export_status === 'ready';
+    const useIntroExport = wordsEmbedded && !!t.export_with_intro;
+    const playerUrl = wordsEmbedded ? `${lbase}/video-download` : `${lbase}/final-download`;
+    const trackSuffix = useIntroExport ? '?intro=1' : '';
+    videoBody = `
+      <div class="player-wrap">
+        <video id="learning-player-${v.id}" controls style="max-height:520px;" src="${playerUrl}">
+          <track kind="subtitles" label="Learning subtitr" srclang="ru" src="${lbase}/subtitles.vtt${trackSuffix}">
+          ${hasWords && !wordsEmbedded ? `<track kind="subtitles" label="So'zlar" srclang="uz" src="${lbase}/words.vtt" default>` : ''}
+        </video>
+        <div class="player-controls">
+          <label>Subtitr:
+            <select id="learningSubSel-${v.id}" onchange="switchLearningTracks('${v.id}')">
+              <option value="off">O'chirilgan</option>
+              <option value="on" selected>Learning</option>
+            </select>
+          </label>
+          ${hasWords ? `<span class="pill ok">✓ So'zlar doim yoqilgan${wordsEmbedded ? ' — videoga yozilgan' : ' — videoga yozilmoqda'}</span>` : ''}
+        </div>
+      </div>
+      <div class="row">
+        <a class="small-btn" style="text-decoration:none; display:inline-block;" href="${API_BASE}/api/videos/${v.id}/original-stream">Original videoni yuklab olish</a>
+        ${hasWords ? `<a class="small-btn" style="text-decoration:none; display:inline-block;" href="${lbase}/words.vtt?download=1">So'zlar treki (VTT)</a>` : ''}
+      </div>
+      <div class="row" id="telegramTrackRow-${v.id}-learning">
+        ${telegramTrackButtonHtml(v, 'learning')}
+      </div>
+      <div class="status" id="telegramTrackStatus-${v.id}-learning"></div>
+      ${renderLearningExportPanel(v)}
+      ${!hasWords || wordsEmbedded
+        ? renderSubtitleBurnPanel(v.id, 'learning', t.subtitled_video_status, t.subtitled_video_error)
+        : `<div class="stage" style="margin-top:10px;"><p class="hint">Learning subtitrli video so'zlar videoga to'liq yozilgach yaratiladi.</p></div>`}`;
+  } else if (t.final_video_status === 'error') {
+    videoBadge = stageStatusBadge('Xato', 'error');
+    videoBody = `<p class="status err">${escapeHtml(t.error || 'Video yig\'ishda xato yuz berdi.')}</p>
+      <button class="action" onclick="retryLearningRender('${v.id}', this)">Qayta urinish</button>`;
+  } else {
+    videoBody = `<button class="action" onclick="retryLearningRender('${v.id}', this)">Videoga audio qo'shish</button>`;
+  }
+  const videoStage = `<div class="stage ${!audioReady ? 'dim' : ''}"><div class="stage-head"><h3>Ruscha o'rganish videosi</h3>${videoBadge}</div>${videoBody}</div>`;
+
+  // So'zlar ro'yxati videodan keyin ko'rsatiladi: avval natijani ko'rish,
+  // keyin shu videoda ishlatilgan lug'atni tekshirish qulayroq.
+  return audioStage + videoStage + renderLearningWordsPanel(v);
+}
+
+function switchLearningTracks(id) {
+  const player = document.getElementById('learning-player-' + id);
+  if (!player || !player.textTracks) return;
+  const subSel = document.getElementById('learningSubSel-' + id);
+  for (const track of player.textTracks) {
+    // So'zlarni o'chirish mumkin emas. Eksport tayyor bo'lgach ular video
+    // kadrining o'ziga yoziladi va alohida trekka ehtiyoj qolmaydi.
+    if (track.label === "So'zlar") track.mode = 'showing';
+    else track.mode = (!subSel || subSel.value === 'on') ? 'showing' : 'hidden';
+  }
+}
+
+function renderLearningWordsPanel(v) {
+  const w = v.learning_words;
+  if (!w) return '';
+  const item = (x, cls) => `<li><span class="${cls}">${escapeHtml(x.lemma)}</span> — ${escapeHtml(x.meaning)} <span class="hint">· videoda ${Number(x.occurrences) || 0} marta</span></li>`;
+  const warnings = (w.warnings || []).map(x =>
+    `<li>${x.block ? `${escapeHtml(String(x.block))}-blok: ` : ''}${escapeHtml(x.reason)}</li>`).join('');
+  const body = (w.new_count || w.repeat_count) ? `
+      <div class="lw-counts">
+        <span>Yangi so'zlar: <b>${w.new_count}</b></span>
+        <span>Takror so'zlar: <b>${w.repeat_count}</b></span>
+        <span>Tegli bloklar: <b>${w.tagged_blocks}</b></span>
+      </div>
+      ${warnings ? `<details ${w.warnings.length <= 5 ? 'open' : ''}><summary style="cursor:pointer; font-size:12.5px; color:#a15c00;">⚠️ Ogohlantirishlar (${w.warnings.length})</summary><ul class="lw-warn">${warnings}</ul></details>` : ''}
+      <div class="lw-cols">
+        <div><b style="font-size:13px;">Yangi</b><ol class="lw-list">${w.new.map(x => item(x, 'lw-new')).join('') || '<li class="hint">Yo\'q</li>'}</ol></div>
+        <div><b style="font-size:13px;">Takror</b><ol class="lw-list">${w.repeat.map(x => item(x, '')).join('') || '<li class="hint">Yo\'q</li>'}</ol></div>
+      </div>`
+    : `<p class="hint">Learning SRT'da [yangi:LEMMA=MA'NO] / [takror:LEMMA=MA'NO] teglari topilmadi.</p>
+       ${warnings ? `<ul class="lw-warn">${warnings}</ul>` : ''}`;
+  return `<div class="stage"><div class="stage-head"><h3>So'zlar</h3></div>${body}</div>`;
+}
+
+function renderLearningExportPanel(v) {
+  const t = v.learning_track || {};
+  const url = `${API_BASE}/api/videos/${v.id}/learning/video-download`;
+  const retry = `<button class="small-btn" onclick="retryLearningExport('${v.id}', this)">Qayta yig'ish</button>`;
+  let inner;
+  if (t.export_status === 'generating') {
+    inner = `<p class="hint">⏳ So'zlar kadrga yozilmoqda${t.intro_status === 'ready' ? ' va intro ulanmoqda' : ''}...</p>`;
+  } else if (t.export_status === 'ready') {
+    inner = `<p class="status ok">✅ Tayyor${t.export_with_intro ? ' (intro bilan)' : ''}.</p>
+      ${t.export_error ? `<p class="hint">${escapeHtml(t.export_error)}</p>` : ''}
+      <div class="row"><a class="small-btn" style="text-decoration:none; display:inline-block;" href="${url}">Learning videosini yuklab olish (so'zlar bilan)</a>${retry}</div>`;
+  } else if (t.export_status === 'error') {
+    inner = `<p class="status err">Xato: ${escapeHtml(t.export_error || '')}</p><div class="row">${retry}</div>`;
+  } else if (t.export_status === 'skipped') {
+    inner = `<p class="hint">${escapeHtml(t.export_error || '')}</p>`;
+  } else {
+    inner = `<div class="row">${retry}</div>`;
+  }
+  return `<div class="stage" style="margin-top:10px;"><div class="stage-head"><h3>Yuklab olinadigan Learning videosi</h3></div>${inner}${renderLearningAutoIntroStatus(v)}</div>`;
+}
+
+async function retryLearningExport(id, btnEl) {
+  await withBusyButton(btnEl, 'Navbatga qo‘yilmoqda...', async () => {
+    await apiFetch(`/api/videos/${id}/learning/export`, { method: 'POST' });
+    await loadVideoDetail(id);
+  });
+}
+
+function renderLearningAutoIntroStatus(v) {
+  const t = v.learning_track || {};
+  const w = v.learning_words || {};
+  const hasWords = (w.new_count || 0) + (w.repeat_count || 0) > 0;
+  if (!hasWords || t.final_video_status !== 'ready') return '';
+  if (t.intro_status === 'generating') return `
+    <div style="margin-top:12px;"><div class="progress-wrap"><div class="progress-bar" data-live-progress="intro" style="width:${Number(t.intro_progress) || 0}%;"></div></div>
+    <p class="hint" data-live-counter="intro">OpenAI intro'ni avtomatik yaratmoqda: ${escapeHtml(t.intro_message || 'tayyorlanmoqda...')}</p></div>`;
+  if (t.intro_status === 'ready') return `<p class="status ok" style="margin-top:12px;">✅ OpenAI intro avtomatik tayyor (${Number(t.intro_duration || 0).toFixed(2)} s).</p>`;
+  if (t.intro_status === 'error') return `<div style="margin-top:12px;"><p class="status err">Avtomatik intro xatosi: ${escapeHtml(t.intro_error || '')}</p>
+    <button class="small-btn" onclick="startLearningIntro('${v.id}', this)">Qayta boshlash</button><div class="status" id="introStatus-${v.id}"></div></div>`;
+  return `<p class="hint" style="margin-top:12px;">Intro video tayyor bo‘lishi bilan OpenAI orqali avtomatik yaratiladi.</p>`;
+}
+
+async function startLearningIntro(id, btnEl) {
+  await withBusyButton(btnEl, 'Navbatga qo‘yilmoqda...', async () => {
+    await apiFetch(`/api/videos/${id}/learning/intro`, { method: 'POST' });
+    await loadVideoDetail(id);
+  });
+}
+
+async function retryLearningRender(id, btnEl) {
+  await withBusyButton(btnEl, 'Navbatga qo‘yilmoqda...', async () => {
+    await apiFetch(`/api/videos/${id}/learning/render`, { method: 'POST' });
+    await loadVideoDetail(id);
+  });
+}
+
+async function uploadLearningSrt(id) {
+  const fileInput = document.getElementById('learningSrtFile-' + id);
+  if (!fileInput || !fileInput.files[0]) { setStatus('learningSrtStatus-' + id, 'SRT fayl tanlanmagan.', 'err'); return; }
+  try {
+    const form = new FormData();
+    form.append('file', fileInput.files[0]);
+    const r = await apiFetch(`/api/videos/${id}/learning/srt`, { method: 'POST', body: form });
+    setStatus('learningSrtStatus-' + id, `SRT yuklandi: ${r.segment_count} ta bo'lak.`, 'ok');
+    if (currentDetailVideoId === id) loadVideoDetail(id);
+  } catch (e) {
+    setStatus('learningSrtStatus-' + id, 'Xato: ' + e.message, 'err');
+  }
+}
+
+async function showLearningAudioForm(id) {
+  const el = document.getElementById('learning-audio-form-' + id);
+  if (!el) return;
+  if (el.innerHTML) { el.innerHTML = ''; return; }
+  let settings = {};
+  try { settings = await apiFetch('/api/settings'); } catch (e) {}
+  const savedAishaKey = localStorage.getItem(aishaStorageKey()) || '';
+  el.innerHTML = `
+    <div class="row" style="margin-top:10px;">
+      <select id="learningProvider-${id}" onchange="toggleLearningProviderFields('${id}')">
+        <option value="openai" selected>OpenAI</option>
+        <option value="aisha">Aisha AI</option>
+      </select>
+    </div>
+    <div id="learningAishaFields-${id}" style="display:none;">
+      <input type="password" id="learningAishaKey-${id}" placeholder="Aisha API kalit" value="${escapeHtml(savedAishaKey)}">
+      <div class="grid2" style="margin-top:8px;">
+        <div><label class="field">Kayfiyat</label><select id="learningMood-${id}">
+          <option value="Neutral">Neutral</option><option value="Cheerful">Cheerful</option>
+          <option value="Happy">Happy</option><option value="Sad">Sad</option>
+        </select></div>
+        <div><label class="field">Tezlik</label><input type="text" id="learningSpeed-${id}" value="${escapeHtml(settings.aisha_default_speed || '1.0')}"></div>
+      </div>
+    </div>
+    <div id="learningOpenaiFields-${id}">
+      <label class="field">Ovoz</label>
+      <select id="learningVoice-${id}">
+        <option value="alloy">alloy</option><option value="echo">echo</option><option value="fable">fable</option>
+        <option value="onyx">onyx</option><option value="nova">nova</option><option value="shimmer">shimmer</option>
+      </select>
+    </div>
+    <div class="save-hint"><label><input type="checkbox" id="learningStretch-${id}" ${settings.default_stretch_to_fit !== 'false' ? 'checked' : ''}> Kerak bo'lgandagina siqish</label></div>
+    <div class="row"><button class="action" onclick="submitLearningAudioJob('${id}')">Audio yaratish</button></div>
+    <div class="status" id="learningAudioFormStatus-${id}"></div>`;
+  document.getElementById('learningMood-' + id).value = settings.aisha_default_mood || 'Neutral';
+}
+
+function toggleLearningProviderFields(id) {
+  const provider = document.getElementById('learningProvider-' + id).value;
+  document.getElementById('learningOpenaiFields-' + id).style.display = provider === 'openai' ? 'block' : 'none';
+  document.getElementById('learningAishaFields-' + id).style.display = provider === 'aisha' ? 'block' : 'none';
+}
+
+async function submitLearningAudioJob(id) {
+  const provider = document.getElementById('learningProvider-' + id).value;
+  const stretch = document.getElementById('learningStretch-' + id).checked;
+  const form = new FormData();
+  form.append('provider', provider);
+  form.append('stretch_to_fit', String(stretch));
+  if (provider === 'aisha') {
+    const key = document.getElementById('learningAishaKey-' + id).value.trim();
+    if (!key) { setStatus('learningAudioFormStatus-' + id, 'Aisha API kalitni kiriting.', 'err'); return; }
+    localStorage.setItem(aishaStorageKey(), key);
+    form.append('aisha_key', key);
+    form.append('mood', document.getElementById('learningMood-' + id).value);
+    form.append('speed', document.getElementById('learningSpeed-' + id).value || '1.0');
+  } else {
+    form.append('voice', document.getElementById('learningVoice-' + id).value);
+  }
+  try {
+    await apiFetch(`/api/videos/${id}/learning/audio`, { method: 'POST', body: form });
+    setStatus('learningAudioFormStatus-' + id, 'Learning audio yaratish boshlandi.', 'ok');
+    if (currentDetailVideoId === id) loadVideoDetail(id);
+  } catch (e) {
+    setStatus('learningAudioFormStatus-' + id, 'Xato: ' + e.message, 'err');
+  }
+}
+
 function renderAudioTracksPanel(v) {
   const primary = v.primary_tts_provider;
   const otherProvider = primary === 'aisha' ? 'openai' : (primary === 'openai' ? 'aisha' : null);
@@ -2891,10 +3944,15 @@ function renderAudioTracksPanel(v) {
 }
 
 function telegramTrackButtonHtml(v, provider) {
+  if (!currentUser || !currentUser.is_superadmin) return '';
+  if (provider === 'learning' && (!v.learning_track || v.learning_track.export_status !== 'ready')) {
+    return `<span class="hint">So'zlar videoga to'liq yozilgach botga yuborish ochiladi.</span>`;
+  }
   return `<button class="small-btn" id="telegramTrackBtn-${v.id}-${provider}" onclick="sendToBot('${v.id}', '${provider}')">${PROVIDER_LABEL[provider]} videosini botga yuborish</button>`;
 }
 
 function telegramButtonHtml(v) {
+  if (!currentUser || !currentUser.is_superadmin) return '';
   const parts = [];
   if (v.idea_flow_sent_at) parts.push(`<span class="pill ok">✓ Tarjima papkasiga yozildi</span>`);
   if (v.telegram_send_status === 'sending') {
@@ -2997,6 +4055,24 @@ function seekPlayer(videoId, deltaSeconds) {
   player.currentTime = target;
 }
 
+function renderProjectStatus(v) {
+  const matnHolati = v.transcript_approved ? 'Tasdiqlangan'
+    : v.status === 'transcribing' ? 'Jarayonda'
+    : ['transcription_ready', 'transcription_approved', 'translation_ready', 'audio_processing', 'audio_ready', 'video_rendering', 'completed'].includes(v.status) ? 'Tayyor'
+    : 'Boshlanmagan';
+  const tarjimaHolati = ['ready', 'uploaded', 'pasted'].includes(v.translation_status) ? 'Tayyor'
+    : v.translation_status === 'generating' ? 'Jarayonda'
+    : v.translation_status === 'failed' ? 'Xato'
+    : 'Boshlanmagan';
+  return `<div style="margin-top:18px;">
+    <div class="panel-label">Loyiha holati</div>
+    <div class="fact-row"><div class="fact-k">Bo'laklar</div><div class="fact-v mono">${v.chunk_count || 0}</div></div>
+    <div class="fact-row"><div class="fact-k">Matn</div><div class="fact-v">${escapeHtml(matnHolati)}</div></div>
+    <div class="fact-row"><div class="fact-k">Tarjima</div><div class="fact-v" style="color:var(--accent)">${escapeHtml(tarjimaHolati)}</div></div>
+    <div class="fact-row"><div class="fact-k">Xarajat</div><div class="fact-v mono">${fmtUsd(v.cost_total)}${v.cost_total_som ? ' + ' + fmtSom(v.cost_total_som) : ''}</div></div>
+  </div>`;
+}
+
 function renderFilesAndLog(v) {
   let files = '';
   if (v.results && v.results.length) {
@@ -3006,11 +4082,29 @@ function renderFilesAndLog(v) {
         <a class="small-btn" style="text-decoration:none; display:inline-block;" href="${API_BASE}/api/results/${r.id}/download">Yuklab olish</a>
       </div>`).join('');
   }
+  const mainVideo = v.final_video_status === 'ready'
+    ? `<a class="small-btn" style="text-decoration:none;" href="${API_BASE}/api/videos/${v.id}/final-download">O'zbekcha final videoni yuklab olish</a>` : '';
+  const learningVideo = v.learning_track && v.learning_track.export_status === 'ready'
+    ? `<a class="small-btn" style="text-decoration:none;" href="${API_BASE}/api/videos/${v.id}/learning/video-download">Learning videoni yuklab olish (so'zlar videoga yozilgan)</a>` : '';
+  const learningSrt = v.learning_track && v.learning_track.srt_status === 'uploaded'
+    ? `<a class="small-btn" style="text-decoration:none;" href="${API_BASE}/api/videos/${v.id}/learning/srt-download">Learning SRT'ni yuklab olish</a>` : '';
+  const learningAudio = v.learning_track && v.learning_track.audio_status === 'ready'
+    ? `<a class="small-btn" style="text-decoration:none;" href="${API_BASE}/api/videos/${v.id}/learning/audio-download">Learning audioni yuklab olish</a>` : '';
   const logs = (v.logs || []).map(l => `${l.ts}  ${l.message}`).join('\n');
   return `<div class="stage">
-    <div class="stage-head"><h3>Fayllar va jurnal</h3></div>
+    <div class="stage-head"><h3>Ma'lumotlar</h3></div>
+    <p class="hint">${fmtBytes(v.file_size)}${v.duration ? ' · ' + fmtMinSec(v.duration) : ''}${v.message ? ' · ' + escapeHtml(v.message) : ''}</p>
+    ${renderProjectStatus(v)}
+    ${(mainVideo || learningVideo || learningSrt || learningAudio) ? `<div class="row">${mainVideo}${learningVideo}${learningSrt}${learningAudio}</div>` : ''}
+    <h3 style="margin-top:20px;">Natija fayllari</h3>
     ${files || '<p class="hint">Hali natija fayllari yo\'q.</p>'}
+    <details class="process-log" style="margin-top:18px;"><summary>Jarayon jurnali</summary>
     <textarea readonly style="min-height:100px; font-family:ui-monospace,monospace; font-size:11.5px; margin-top:12px;">${escapeHtml(logs)}</textarea>
+    </details>
+    <div class="row" style="margin-top:20px; padding-top:16px; border-top:1px solid var(--line);">
+      <button class="small-btn" onclick="restartVideoFromDetail('${v.id}')" title="Barcha ishlov natijalarini tozalab, original videodan qayta boshlaydi">↺ Qayta boshlash</button>
+      <button class="small-btn danger" onclick="deleteVideoFromDetail('${v.id}')">Videoni o'chirish</button>
+    </div>
   </div>`;
 }
 
@@ -3104,6 +4198,40 @@ async function approveTranscript(id, btnEl) {
     await apiFetch(`/api/videos/${id}/approve`, { method: 'POST' });
     reloadVideoDetail(id);
   });
+}
+
+function toggleOriginalSrtForm(id, btnEl) {
+  const panel = document.getElementById('transcriptSrtForm-' + id);
+  if (!panel) return;
+  const opening = panel.style.display === 'none';
+  panel.style.display = opening ? 'block' : 'none';
+  if (btnEl) {
+    btnEl.textContent = opening ? 'SRT oynasini yopish' : 'SRT yuklash';
+    btnEl.setAttribute('aria-expanded', opening ? 'true' : 'false');
+  }
+  if (opening) panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+async function uploadOriginalTranscriptSrt(id, btnEl) {
+  const input = document.getElementById('transcriptSrt-' + id);
+  if (!input || !input.files[0]) {
+    setStatus('transcriptSrtStatus-' + id, 'SRT fayl tanlanmagan.', 'err');
+    return;
+  }
+  const originalText = btnEl ? btnEl.textContent : '';
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = 'Yuklanmoqda...'; }
+  try {
+    const form = new FormData();
+    form.append('file', input.files[0]);
+    form.append('language', document.getElementById('lang-' + id)?.value || '');
+    const result = await apiFetch(`/api/videos/${id}/transcript/srt-upload`, { method: 'POST', body: form });
+    setStatus('transcriptSrtStatus-' + id, `${result.segment_count} ta segment yuklandi.`, 'ok');
+    await loadVideoDetail(id);
+  } catch (e) {
+    setStatus('transcriptSrtStatus-' + id, 'Xato: ' + e.message, 'err');
+  } finally {
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = originalText; }
+  }
 }
 
 async function autoTranslate(id, provider) {
@@ -3331,7 +4459,10 @@ async function loadCosts() {
 /* ============================================================ */
 /*  BOSHLANG'ICH YUKLASH VA POLLING                               */
 /* ============================================================ */
-window.addEventListener('DOMContentLoaded', () => {
+window.addEventListener('DOMContentLoaded', async () => {
+  try { await loadIdentity(); } catch (e) { return; }
+  try { applyNavigationState(localStorage.getItem('darslik-nav-collapsed') === '1'); }
+  catch (e) { applyNavigationState(false); }
   setupUploadInput();
   pingServer();
   loadStorage();
@@ -3339,7 +4470,7 @@ window.addEventListener('DOMContentLoaded', () => {
   loadGlossaryGroups();
   loadFolders();
   loadVideos();
-  loadSplitVideos();
+  if (currentUser.is_superadmin) loadSplitVideos();
   loadTranscribeList();
   loadAudioList();
   loadJobsPanel();
@@ -3380,12 +4511,14 @@ window.addEventListener('DOMContentLoaded', () => {
         detailContentEl.querySelector('select[id^="topicGroup-"]')?.value ||
         detailContentEl.querySelector('input[id^="instr-"]')?.value.trim()
       ));
-      const anyPanelOpen = userTyping || anyDetailsOpen || anyModalOpen || transcribeFormDirty || Array.from(document.querySelectorAll(
-        '[id^="block-editor-"], [id^="translate-form-"], [id^="audio-form-"], [id^="transcript-block-editor-"]'
+      const mediaInUse = !!(detailContentEl && Array.from(detailContentEl.querySelectorAll('video, audio'))
+        .some(media => media.currentTime > 0 && !media.ended));
+      const anyPanelOpen = userTyping || anyDetailsOpen || anyModalOpen || transcribeFormDirty || mediaInUse || Array.from(document.querySelectorAll(
+        '[id^="block-editor-"], [id^="translate-form-"], [id^="learning-translate-form-"], [id^="learning-block-editor-"], [id^="audio-form-"], [id^="transcript-block-editor-"]'
       )).some(el => el.innerHTML.trim() !== '');
       if (currentDetailVideoId) {
-        if (currentDetailVideoStatus !== 'completed' && !currentDetailVideoBlockedReason && !anyPanelOpen)
-          loadVideoDetail(currentDetailVideoId);
+        if (videoDetailHasActiveWork(currentDetailVideoData) && !anyPanelOpen)
+          pollVideoDetail(currentDetailVideoId);
       } else loadVideos();
     } else if (id === 'page-transcribe') loadTranscribeList();
     else if (id === 'page-translate') {
@@ -3393,8 +4526,10 @@ window.addEventListener('DOMContentLoaded', () => {
       if (active && active.id === 'tarjima-inbox') loadCloudInbox();
     }
     else if (id === 'page-audio') loadAudioList();
-    else if (id === 'page-jobs') loadJobsPanel();
-    else if (id === 'page-settings') loadCosts();
+    else if (id === 'page-settings') {
+      loadCosts();
+      loadJobsPanel();
+    }
     else if (id === 'page-split') loadSplitVideos();
   }, 4000);
 });

@@ -122,10 +122,15 @@ async def _download_and_save_to_cloud(client: httpx.AsyncClient, file_id: str, o
         await _send_message(client, chat_id, f'"{name}" qabul qilinmadi - serverda joy yetarli emas.')
         return
 
+    admin = db.fetchone("SELECT id FROM users WHERE role = 'superadmin' ORDER BY created_at LIMIT 1")
+    if not admin:
+        dest_path.unlink(missing_ok=True)
+        await _send_message(client, chat_id, 'Super-admin hisobi topilmadi.')
+        return
     db.execute(
-        """INSERT INTO cloud_files (id, kind, original_name, filename, path, file_size, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (cloud_id, "video", name, dest_path.name, str(dest_path), total, db.now()),
+        """INSERT INTO cloud_files (id, kind, original_name, filename, path, file_size, created_at, owner_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (cloud_id, "video", name, dest_path.name, str(dest_path), total, db.now(), admin["id"]),
     )
     try:
         thumb_path = dest_dir / "thumb.jpg"

@@ -25,7 +25,7 @@ Bu versiyaga qo'shildi:
 Bu versiyada frontend endi faqat boshqaruv paneli. Barcha og'ir ish —
 video yuklash, ffmpeg preprocessing, Whisper transkripsiya, TTS — serverda
 persistent job sifatida bajariladi. Brauzerni yopsangiz, telefon o'chsa,
-internet uzilsa yoki Railway serverni qayta ishga tushirsa ham, ish
+internet uzilsa yoki Oracle serveri qayta ishga tushsa ham, ish
 to'xtagan joyidan davom etadi.
 
 FAYLLAR
@@ -41,33 +41,37 @@ FAYLLAR
     index.html                  - frontend (boshqaruv paneli)
     requirements.txt, Procfile
 
-TAYYORGARLIK (bir martalik)
-----------------------------
-1. https://railway.com saytida ro'yxatdan o'ting.
-2. Node.js o'rnating (agar yo'q bo'lsa), keyin:
+ASOSIY PRODUCTION: ORACLE CLOUD
+--------------------------------
+Bu repository Darslik Studiyasining asosiy versiyasi. Doimiy ma'lumotlar
+Oracle Cloud'dagi bitta 180 GB diskda saqlanadi. Barcha hisoblar aynan shu
+fizik diskdan foydalanadi, lekin dastur bazadagi owner_id orqali ularning
+video va papkalarini bir-biridan ajratadi.
 
-       npm install -g @railway/cli
+  - super-admin kvotasi: 95 GB;
+  - oddiy foydalanuvchi kvotasi: 10 GB;
+  - faol oddiy foydalanuvchilar: ko'pi bilan 5 ta;
+  - qolgan fizik joy segmentlar, audio, yakuniy video va vaqtinchalik
+    natijalar uchun zaxira bo'lib qoladi.
 
-PERSISTENT VOLUME QO'SHISH (MUHIM — bir martalik)
-----------------------------------------------------
-Bu versiya videolarni, natijalarni va bazani doimiy saqlash uchun
-Railway'ning **persistent volume** funksiyasidan foydalanadi. Buni
-albatta sozlang, aks holda har deploy/restartda barcha ma'lumot yo'qoladi:
+STORAGE_DIR Oracle'dagi doimiy diskka qarashi shart. Standart o'rnatish
+skripti `/opt/tarjima-storage` papkasidan foydalanadi. Agar 180 GB block
+volume boshqa manzilga mount qilingan bo'lsa, STORAGE_DIR'ni aynan o'sha
+mount ichidagi papkaga o'zgartiring. Source-kod papkasi yoki vaqtinchalik
+diskni STORAGE_DIR sifatida ishlatmang.
 
-1. Railway loyihangizni oching -> xizmatingizni tanlang -> "Settings" ->
-   "Volumes" bo'limi -> "New Volume".
-2. Mount path sifatida shuni yozing:
+ORACLE ENVIRONMENT VARIABLE'LAR
+---------------------------------
+systemd service ichida quyidagilarni sozlang:
 
-       /data
+    STORAGE_DIR=/opt/tarjima-storage
+        Oracle'dagi 180 GB doimiy volume ichidagi haqiqiy papka.
 
-3. Hajmni kamida 100 GB qilib belgilang (spetsifikatsiyaga mos).
-
-ENVIRONMENT VARIABLE'LAR
---------------------------
-Railway "Variables" bo'limida quyidagilarni sozlang:
-
-    STORAGE_DIR=/data
-        Yuqorida yaratgan volume mount pathi bilan bir xil bo'lishi shart.
+    APP_USERNAME=<super-admin login>
+    APP_PASSWORD=<super-adminning kuchli paroli>
+        Birinchi ishga tushishda super-admin yaratadi. Brauzerning HTTP Basic
+        Auth oynasi chiqmaydi; /login sahifasidagi forma va xavfsiz sessiya
+        cookie ishlatiladi. Mavjud videolar birinchi super-adminga biriktiriladi.
 
     APP_SECRET=<istalgan uzun tasodifiy matn>
         API kalitlarni shifrlash uchun. Bermasangiz ham ishlaydi (server
@@ -94,40 +98,35 @@ Railway "Variables" bo'limida quyidagilarni sozlang:
     MAX_ACTIVE_VIDEO_JOBS=1        (bir vaqtda nechta video faol ishlansin)
     MAX_ACTIVE_TTS_JOBS=1          (bir vaqtda nechta TTS ish faol ishlansin)
     MAX_UPLOAD_SIZE=21474836480    (20 GB, baytlarda)
-    STORAGE_LIMIT=102005473280     (95 GB, baytlarda — disk to'lib ketmasligi uchun)
+    STORAGE_LIMIT=193273528320     (180 GB umumiy hovuz, baytlarda)
+    TOTAL_STORAGE_LIMIT=193273528320 (foydalanuvchilarga ajratiladigan jami 180 GB)
+    ADMIN_STORAGE_LIMIT=102005473280 (super-admin uchun 95 GB)
+    USER_STORAGE_LIMIT=10737418240   (har yangi foydalanuvchi uchun 10 GB)
+    MAX_REGULAR_USERS=5              (bir vaqtda faol oddiy hisoblar soni)
     REPETITION_THRESHOLD=3         (necha marta ketma-ket takrorlansa shubhali)
     UPLOAD_CHUNK_SIZE=8388608      (8 MB — faqat ma'lumot uchun, frontend o'zi belgilaydi)
 
-JOYLASHTIRISH
---------------
-1. Ushbu papkani (barcha .py fayllar, index.html, glossary_data.py,
-   requirements.txt, Procfile) kompyuteringizga saqlang.
-2. cmd/terminalda shu papkaga o'ting.
-3. Railway hisobingizga kiring:
+ORACLE'GA JOYLASHTIRISH
+-------------------------
+Serverga SSH orqali kirib `scripts/setup_oracle_vm.sh` skriptini ishga
+tushiring. Birinchi ishga tushirishdan oldin kuchli super-admin login va
+parolini environment orqali bering. Skript repository'ni o'rnatadi, doimiy
+storage papkasini tayyorlaydi va systemd xizmatini yoqadi.
 
-       railway login
-
-4. Yangi loyiha yarating (agar hali yaratmagan bo'lsangiz):
-
-       railway init
-
-5. Yuqoridagi "Persistent volume" va "Environment variable"larni Railway
-   saytida sozlang (bir martalik).
-6. Joylashtiring:
-
-       railway up
-
-7. "Settings" -> "Generate Domain" orqali manzil oling. Frontend endi
-   backend bilan bir xil serverda ishlaydi — alohida "server manzili"
-   kiritish shart emas, faqat shu domenni brauzerda oching.
+180 GB volume `/opt/tarjima-storage` manziliga mount qilinganini va service
+foydalanuvchisi shu papkaga yozish huquqiga ega ekanini albatta tekshiring.
+Oddiy foydalanuvchilarning login/paroli keyinchalik saytning Sozlamalar ->
+Ulangan odamlar bo'limidan super-admin tomonidan yaratiladi.
 
 YANGILASH (kelajakda kod o'zgarganda)
 ----------------------------------------
-Xuddi shu papkada turib:
+Oracle serverida kodni yangilang va xizmatni qayta ishga tushiring:
 
-    railway up
+    sudo git -C /opt/tarjima pull
+    sudo systemctl restart tarjima
 
-Volume ichidagi ma'lumot (videolar, natijalar, baza) saqlanib qoladi.
+`/opt/tarjima-storage` ichidagi video, natija va baza kod deployidan alohida
+bo'lgani uchun saqlanib qoladi.
 
 ASOSIY ISHLASH PRINSIPI (yangi arxitektura)
 ----------------------------------------------
@@ -159,7 +158,7 @@ ko'rsatiladi: "paused" (foydalanuvchi to'xtatgan), "api_key" (kalit kerak),
 "error" (umumiy xato). Har biri "Davom ettirish"/"Qayta urinish" bilan
 davom ettiriladi.
 
-Server qayta ishga tushsa (Railway restart), faol (blocked_reason=None)
+Server qayta ishga tushsa (Oracle VM yoki service restart), faol (blocked_reason=None)
 bosqichlar avtomatik davom ettiriladi; foydalanuvchi ataylab to'xtatgan
 yoki xatoga uchragan bosqichlar esa qo'lda "Davom ettirish" kutadi -
 bu ataylab shunday qilingan, aks holda foydalanuvchining pauzasi
@@ -183,6 +182,53 @@ ESKI VERSIYADAN FARQI
   ko'rinadi.
 - Yuqorida kichik server holati indikatori (🟢/🔴) va tezkor "API"/"Aysha"
   sozlash tugmalari qo'shildi.
+
+RUSCHA O'RGANISH: SO'ZLAR VA INTRO
+-------------------------------------
+Learning SRT'ni foydalanuvchi o'zi tayyorlaydi. So'zlar blokning VAQT
+qatorida teg sifatida yoziladi (subtitr matnida teg bo'lmaydi):
+
+    12
+    00:00:10,000 --> 00:00:16,000 [yangi:че́люсть=jag‘] [takror:суста́в=bo‘g‘im]
+    Pastki челюстьning движениеsi суставga bog‘liq.
+
+  - yangi - shu videoda yangi so'z, takror - oldin o'rganilgan so'z.
+    LEMMA/MA'NO ichida [ ] = : bo'lmaydi; urg'u belgisi (U+0301) va
+    apostroflar mumkin. Boshqa teglar ([speed:fast]) o'zgarishsiz ishlaydi.
+  - Xato (yuklash rad etiladi, blok raqami bilan): yopilmagan qavs,
+    noto'g'ri formatdagi [yangi:/[takror: tegi.
+  - Ogohlantirish (yuklash davom etadi): so'z blok matnida topilmadi
+    (o'zak = lemma oxirgi 2 harfisiz, kamida 3 harf), bitta lemma turli
+    ma'noda, bitta lemma ham yangi ham takror, yangi so'zlar 20 tadan ko'p.
+
+Natijalar (ASOS = Learning SRT nomi, oxiridagi _LEARNING olib tashlanadi):
+  - Pleyerda "So'zlar" treki (yuqori o'ng burchak, yangi - sariq,
+    takror - oq) alohida yoqib-o'chiriladi: /learning/words.vtt.
+  - ASOS_learning.mp4 - so'zlar kadrga yozilgan (libass, ASS fayl) va
+    intro bo'lsa intro bilan yig'ilgan Learning videosi. Toza, intro'siz
+    Learning videosi alohida saqlanadi.
+  - ASOS_sozlar.vtt, ASOS_intro.mp4.
+  - Yuqoridagi fayl nomlari RFC 5987 (filename*=) bilan beriladi.
+
+Intro (Learning bo'limi -> "Intro yaratish"): faqat so'z teglaridan
+yig'iladi - "Takrorlash: N ta so'z" (2 s), takror so'zlar 8 tadan 2x4
+jadvalda (to'liq ekran 12 s, aks holda 3 + 1.2 x N, kamida 6 s, ovozsiz),
+"Yangi so'zlar: N ta" (2 s), har yangi so'z kartochkasi: 0.5 s jim +
+ORIGINAL + 0.6 s + O'ZBEKCHA + 0.6 s + ORIGINAL + 1.2 s jim.
+  - ORIGINAL: OpenAI TTS (kirill - ruscha, lotin - inglizcha), tezlik 1.0,
+    urg'u belgisi bilan; talaffuz buzilsa "Urg'u belgisisiz yuborish".
+  - O'ZBEKCHA: Aisha TTS (Learning audio Aisha bilan qilingan bo'lsa shu
+    kalit, aks holda formadagi kalit).
+  - Audio TTS keshida saqlanadi - qayta yaratishda pul sarflanmaydi.
+  - Intro Learning videosining o'lchami, fps, pikselformat, kodek va audio
+    parametrlari bilan render qilinadi. Intro bilan yig'ilgan video uchun
+    Learning subtitrlari va so'zlar treki (avval freeze-point, keyin intro
+    uzunligi) suriladi; intro paytida subtitr ko'rinmaydi.
+  - Server qayta ishga tushsa intro/eksport ishi davom ettiriladi.
+
+Yangi bog'liqlik: Pillow. Shrift: fonts/DejaVuSans*.ttf (Bitstream Vera
+litsenziyasi, fonts/LICENSE.txt). Testlar: `pip install pytest` va
+`python -m pytest tests`.
 
 TEKSHIRILGAN STSENARIYLAR
 ----------------------------

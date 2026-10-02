@@ -182,6 +182,37 @@ def init_db():
                 updated_at TEXT
             );
 
+            -- "Ruscha o'rganish" rejimi: foydalanuvchi qo'lda yuklagan tayyor
+            -- Learning SRT asosida, MAVJUD TTS va render mexanizmi orqali
+            -- yaratiladigan MUSTAQIL audio/video. Bitta video uchun bitta
+            -- Learning holat (video_id UNIQUE) - asosiy videos.* va
+            -- audio_tracks jadvaliga UMUMAN tegmaydi. Dastur bu yerga hech
+            -- qanday SRT YARATMAYDI - srt_path faqat foydalanuvchi yuklagan
+            -- faylni ko'rsatadi, o'zgartirilmasdan saqlanadi.
+            CREATE TABLE IF NOT EXISTS learning_tracks (
+                id TEXT PRIMARY KEY,
+                video_id TEXT,
+                srt_filename TEXT,
+                srt_path TEXT,
+                srt_status TEXT DEFAULT 'none',
+                segment_count INTEGER DEFAULT 0,
+                provider TEXT,
+                voice TEXT,
+                mood TEXT,
+                speed REAL DEFAULT 1.0,
+                instructions TEXT,
+                stretch_to_fit INTEGER DEFAULT 1,
+                tts_job_id TEXT,
+                audio_path TEXT,
+                audio_status TEXT DEFAULT 'none',
+                freeze_points TEXT,
+                final_video_path TEXT,
+                final_video_status TEXT DEFAULT 'none',
+                error TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            );
+
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT
@@ -207,6 +238,8 @@ def init_db():
             CREATE TABLE IF NOT EXISTS folders (
                 id TEXT PRIMARY KEY,
                 name TEXT,
+                parent_id TEXT,
+                sort_order INTEGER DEFAULT 0,
                 created_at TEXT
             );
 
@@ -234,12 +267,42 @@ def init_db():
                 created_at TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'user',
+                quota_bytes INTEGER NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT,
+                updated_at TEXT,
+                last_login_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS sessions (
+                token_hash TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                created_at TEXT,
+                expires_at TEXT,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS user_settings (
+                user_id TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT,
+                PRIMARY KEY(user_id, key),
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+
             CREATE INDEX IF NOT EXISTS idx_chunks_video ON chunks(video_id);
             CREATE INDEX IF NOT EXISTS idx_logs_video ON job_logs(video_id);
             CREATE INDEX IF NOT EXISTS idx_results_video ON results(video_id);
             CREATE INDEX IF NOT EXISTS idx_ttsseg_job ON tts_segments(job_id);
             CREATE INDEX IF NOT EXISTS idx_costs_video ON costs(video_id);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_audio_tracks_video_provider ON audio_tracks(video_id, provider);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_learning_tracks_video ON learning_tracks(video_id);
+            CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
             """
         )
     _migrate_columns()
@@ -250,6 +313,7 @@ def init_db():
 # ---------------------------------------------------------------------------
 
 _VIDEO_NEW_COLUMNS = {
+    "owner_id": "TEXT",
     "thumbnail_path": "TEXT",
     "blocked_reason": "TEXT",
     "transcript_text": "TEXT",
@@ -286,10 +350,12 @@ _VIDEO_NEW_COLUMNS = {
     "subtitled_video_error": "TEXT",
 }
 _UPLOAD_NEW_COLUMNS = {
+    "owner_id": "TEXT",
     "kind": "TEXT DEFAULT 'pipeline'",
     "file_kind": "TEXT DEFAULT 'video'",
 }
 _TTS_JOB_NEW_COLUMNS = {
+    "owner_id": "TEXT",
     "video_id": "TEXT",
     "freeze_points": "TEXT",
     # 1 = bu ish asosiy (primary) audio EMAS, balki video 'completed' bo'lgach
@@ -297,14 +363,26 @@ _TTS_JOB_NEW_COLUMNS = {
     # tugagach videos.* (asosiy) maydonlarga tegilmaydi, faqat audio_tracks
     # jadvali yangilanadi.
     "for_track": "INTEGER DEFAULT 0",
+    # 1 = bu for_track ish 'oddiy qo'shimcha provayder treki' EMAS, balki
+    # Learning treki uchun - sync_video_from_tts_job() shu belgi bilan
+    # ikkalasini bir-biridan ajratadi (audio_tracks vs learning_tracks).
+    "is_learning": "INTEGER DEFAULT 0",
 }
 _API_KEY_NEW_COLUMNS = {
+    "owner_id": "TEXT",
     "provider": "TEXT DEFAULT 'openai'",
 }
 _CLOUD_FILE_NEW_COLUMNS = {
+    "owner_id": "TEXT",
     "thumbnail_path": "TEXT",
 }
+_FOLDER_NEW_COLUMNS = {
+    "owner_id": "TEXT",
+    "parent_id": "TEXT",
+    "sort_order": "INTEGER DEFAULT 0",
+}
 _COSTS_NEW_COLUMNS = {
+    "owner_id": "TEXT",
     # Aisha TTS narxi so'mda beriladi (dollarga aylantirilmaydi - kurs
     # o'zgarib turishi mumkin, shuning uchun o'z valyutasida saqlanadi).
     # amount_usd ustuni bo'sh (0) qoladi - shunda umumiy $ summasi (cost_total)
@@ -345,6 +423,34 @@ _CHUNK_NEW_COLUMNS = {
     "force_split": "INTEGER DEFAULT 0",
 }
 
+_MEMORY_NEW_COLUMNS = {"owner_id": "TEXT"}
+_USER_NEW_COLUMNS = {"display_name": "TEXT DEFAULT ''"}
+_LEARNING_TRACK_NEW_COLUMNS = {
+    # Learning SRT vaqt qatoridagi [yangi:..]/[takror:..] teglari (translation.parse_learning_srt)
+    "words_json": "TEXT",
+    "warnings_json": "TEXT",
+    # So'zlar kadrga kuydirilgan (ixtiyoriy intro bilan) yuklab olinadigan Learning videosi.
+    # final_video_path (intro'siz, toza) o'zgarmaydi - pleyer shuni ishlatadi.
+    "export_status": "TEXT DEFAULT 'none'",
+    "export_video_path": "TEXT",
+    "export_with_intro": "INTEGER DEFAULT 0",
+    "export_error": "TEXT",
+    "intro_status": "TEXT DEFAULT 'none'",
+    "intro_progress": "REAL DEFAULT 0",
+    "intro_message": "TEXT",
+    "intro_error": "TEXT",
+    "intro_duration": "REAL DEFAULT 0",
+    "intro_video_path": "TEXT",
+    "intro_slides_json": "TEXT",
+    "intro_strip_stress": "INTEGER DEFAULT 0",
+    "intro_aisha_key_encrypted": "TEXT",
+    # Learning videosi uchun ham asosiy Matn -> Video oqimidagi kabi alohida
+    # hardsub nusxa yaratiladi. Toza/export video o'zgartirilmaydi.
+    "subtitled_video_status": "TEXT DEFAULT 'none'",
+    "subtitled_video_path": "TEXT",
+    "subtitled_video_error": "TEXT",
+}
+
 
 def _migrate_columns():
     with tx() as c:
@@ -368,6 +474,10 @@ def _migrate_columns():
         for col, decl in _CLOUD_FILE_NEW_COLUMNS.items():
             if col not in existing_cloud:
                 c.execute(f"ALTER TABLE cloud_files ADD COLUMN {col} {decl}")
+        existing_folders = {row[1] for row in c.execute("PRAGMA table_info(folders)").fetchall()}
+        for col, decl in _FOLDER_NEW_COLUMNS.items():
+            if col not in existing_folders:
+                c.execute(f"ALTER TABLE folders ADD COLUMN {col} {decl}")
         existing_chunks = {row[1] for row in c.execute("PRAGMA table_info(chunks)").fetchall()}
         for col, decl in _CHUNK_NEW_COLUMNS.items():
             if col not in existing_chunks:
@@ -384,6 +494,18 @@ def _migrate_columns():
         for col, decl in _TTS_SEGMENT_NEW_COLUMNS.items():
             if col not in existing_tts_segments:
                 c.execute(f"ALTER TABLE tts_segments ADD COLUMN {col} {decl}")
+        for table in ("translation_memory_chat", "translation_memory_notes"):
+            existing_memory = {row[1] for row in c.execute(f"PRAGMA table_info({table})").fetchall()}
+            for col, decl in _MEMORY_NEW_COLUMNS.items():
+                if col not in existing_memory:
+                    c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+        existing_learning = {row[1] for row in c.execute("PRAGMA table_info(learning_tracks)").fetchall()}
+        for col, decl in _LEARNING_TRACK_NEW_COLUMNS.items():
+            if col not in existing_learning:
+                c.execute(f"ALTER TABLE learning_tracks ADD COLUMN {col} {decl}")
+        for table in ("videos", "uploads", "api_keys", "tts_jobs", "costs", "folders", "cloud_files",
+                      "translation_memory_chat", "translation_memory_notes"):
+            c.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_owner ON {table}(owner_id)")
 
 
 # ---------------------------------------------------------------------------
@@ -428,14 +550,19 @@ def get_logs(video_id: str, limit: int = 300):
     )[::-1]
 
 
-def add_cost(video_id: str, kind: str, amount_usd: float, detail: str = "", amount_som: float = 0):
+def add_cost(video_id: str, kind: str, amount_usd: float, detail: str = "", amount_som: float = 0,
+             owner_id: str = None):
     """amount_usd - AQSH dollarida (OpenAI, Claude va h.k.). amount_som - o'zbek
     so'mida (masalan Aisha TTS) - ikkalasi turli valyuta, shuning uchun
     ARALASHTIRILMAYDI: har biri o'z ustunida (va videoning o'z cost_total/
     cost_total_som ustunida) alohida yig'iladi."""
+    if not owner_id and video_id:
+        video = fetchone("SELECT owner_id FROM videos WHERE id = ?", (video_id,))
+        owner_id = video["owner_id"] if video else None
     execute(
-        "INSERT INTO costs (id, video_id, kind, amount_usd, amount_som, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (new_id(), video_id, kind, amount_usd, amount_som, detail, now()),
+        "INSERT INTO costs (id, video_id, kind, amount_usd, amount_som, detail, created_at, owner_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (new_id(), video_id, kind, amount_usd, amount_som, detail, now(), owner_id),
     )
     if video_id:
         execute("UPDATE videos SET cost_total = COALESCE(cost_total, 0) + ?, "
@@ -451,3 +578,13 @@ def get_setting(key: str, default=None):
 def set_setting(key: str, value: str):
     execute("INSERT INTO settings (key, value) VALUES (?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, value))
+
+
+def get_user_setting(user_id: str, key: str, default=None):
+    r = fetchone("SELECT value FROM user_settings WHERE user_id = ? AND key = ?", (user_id, key))
+    return r["value"] if r else default
+
+
+def set_user_setting(user_id: str, key: str, value: str):
+    execute("INSERT INTO user_settings (user_id, key, value) VALUES (?, ?, ?) "
+            "ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value", (user_id, key, value))
