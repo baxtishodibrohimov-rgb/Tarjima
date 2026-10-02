@@ -81,9 +81,9 @@
   .brand { display:flex; align-items:center; gap:10px; padding:0 8px; flex:none; }
   .brand-mark { width:30px; height:30px; border-radius:9px; background:var(--accent-chip); color:var(--accent);
     display:grid; place-items:center; font-size:16px; flex:none; }
-  .brand-name { font-weight:600; font-size:15px; }
-  .side-nav { display:flex; flex-direction:row; flex-wrap:nowrap; gap:3px; overflow-x:auto; }
-  .global-nav-actions { margin-left:auto; display:flex; align-items:center; flex:none; }
+  .brand-name { font-weight:600; font-size:15px; white-space:nowrap; }
+  .side-nav { display:flex; flex:1; min-width:0; flex-direction:row; flex-wrap:nowrap; gap:3px; overflow-x:auto; }
+  .global-nav-actions { margin-left:auto; display:flex; align-items:center; gap:6px; flex:none; }
   .sidebar .nav-btn { min-height:34px; padding:0 9px; font-size:13px; }
   .sidebar .icon-btn { width:34px; height:34px; }
   .side-widget { margin-top:auto; display:flex; flex-direction:column; gap:9px; padding:13px; border-radius:12px; background:var(--surface); }
@@ -105,6 +105,7 @@
     text-overflow:ellipsis; white-space:nowrap; color:var(--muted); font-size:13px; font-weight:500; }
 
   .nav { display:flex; gap:8px; flex-wrap:wrap; }
+  .side-nav.nav { flex-wrap:nowrap; }
   .nav-btn { display:flex; align-items:center; gap:11px; min-height:44px; padding:0 12px; border:none;
     background:transparent; border-radius:var(--radius-sm); font:inherit; font-size:14px; color:var(--muted);
     cursor:pointer; text-align:left; white-space:nowrap; }
@@ -143,6 +144,18 @@
   .add-video-btn:hover { background:var(--accent-chip); }
   .avatar { width:36px; height:36px; border-radius:999px; background:var(--accent-chip); color:var(--accent);
     display:flex; align-items:center; justify-content:center; font-weight:600; font-size:13px; flex:none; }
+  .account-trigger { width:34px; height:34px; padding:3px; border:none; border-radius:999px;
+    background:var(--surface); color:var(--text); display:grid; place-items:center; cursor:pointer;
+    font:500 12.5px/1.2 inherit; box-shadow:var(--shadow); }
+  .account-trigger:hover { background:var(--accent-soft); }
+  .account-avatar { width:28px; height:28px; border-radius:999px; display:grid; place-items:center; flex:none;
+    background:var(--accent-chip); color:var(--accent); font-size:12px; font-weight:700; text-transform:uppercase; }
+  .account-popover { display:none; position:fixed; top:50px; right:14px; z-index:35; width:min(300px,calc(100vw - 28px));
+    padding:14px; border:1px solid var(--border); border-radius:14px; background:var(--surface);
+    box-shadow:0 14px 38px rgba(31,36,48,.18); }
+  .account-popover.open { display:block; }
+  .account-popover-name { font-size:14px; font-weight:600; overflow-wrap:anywhere; }
+  .account-popover-login { margin-top:3px; color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
   .back-link { min-height:40px; padding:0 16px; border-radius:999px; border:none; background:var(--panel);
     color:var(--accent); font-size:13px; font-weight:600; display:inline-flex; align-items:center; margin-bottom:14px; }
   .back-link:hover { background:var(--accent-chip); }
@@ -410,6 +423,8 @@
     .nav-btn svg.icon { width:20px; height:20px; }
     .sidebar .nav-btn { min-height:32px; }
     .sidebar .icon-btn { width:32px; height:32px; }
+    .account-trigger { padding:3px; }
+    .account-avatar { width:28px; height:28px; }
     .topbar { top:44px; }
     body.nav-collapsed .nav-toggle { top:7px; }
     body.nav-collapsed .topbar { top:0; padding-left:48px; }
@@ -440,9 +455,18 @@
 
     <div class="global-nav-actions">
       <button class="icon-btn" onclick="openGlobalSearch()" title="Video qidirish" aria-label="Video qidirish"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></button>
+      <button class="account-trigger" id="accountMenuButton" type="button" onclick="toggleAccountMenu(event)" aria-haspopup="true" aria-expanded="false" title="Akkaunt ma’lumotlari">
+        <span class="account-avatar" id="navAccountAvatar">?</span>
+      </button>
     </div>
 
   </aside>
+
+  <div class="account-popover" id="accountPopover" role="dialog" aria-label="Akkaunt ma’lumotlari">
+    <div class="account-popover-name" id="accountPopoverName">—</div>
+    <div class="account-popover-login" id="accountPopoverLogin">—</div>
+    <div class="row"><button class="small-btn" onclick="logoutApp()">Chiqish</button></div>
+  </div>
 
   <div class="main">
     <div class="topbar">
@@ -534,6 +558,23 @@
   <input type="hidden" id="renameVideoId">
   <div class="row"><button class="action" onclick="submitVideoRename()">Saqlash</button></div>
   <div class="status" id="renameVideoStatus"></div>
+</div>
+
+<div class="modal-backdrop" id="editUserModal-backdrop" onclick="closeModal('editUserModal')"></div>
+<div class="modal" id="editUserModal">
+  <div class="modal-head">
+    <h2>Foydalanuvchini tahrirlash</h2>
+    <button class="tiny-btn" onclick="closeModal('editUserModal')" title="Yopish">×</button>
+  </div>
+  <input type="hidden" id="editUserId">
+  <label class="field">Ism-familiya</label>
+  <input type="text" id="editUserDisplayName" maxlength="120" autocomplete="name">
+  <label class="field" style="margin-top:10px;">Login</label>
+  <input type="text" id="editUserLogin" maxlength="120" autocomplete="off">
+  <label class="field" style="margin-top:10px;">Yangi parol</label>
+  <input type="password" id="editUserPassword" autocomplete="new-password" placeholder="O‘zgartirmaslik uchun bo‘sh qoldiring">
+  <div class="row"><button class="action" onclick="saveConnectedUserEdit()">Saqlash</button></div>
+  <div class="status" id="editUserStatus"></div>
 </div>
 
 <div class="modal-backdrop" id="retryModal-backdrop" onclick="closeModal('retryModal')"></div>
@@ -737,18 +778,21 @@
     </div>
   </details>
 
-  <div class="card admin-only" id="usersAdminCard">
-    <h2>Ulangan odamlar</h2>
-    <p class="hint">Ko‘pi bilan 5 ta faol foydalanuvchi ulanishi mumkin. Har biriga standart 10 GB joy beriladi; login va parolni faqat super-admin yaratadi.</p>
+  <details class="card settings-collapsible admin-only" id="usersAdminCard">
+    <summary>Ulangan odamlar</summary>
+    <div class="settings-panel-body">
+    <p class="hint">Bu 180 GB asosiy server: super-admin uchun 95 GB, ko‘pi bilan 5 ta faol foydalanuvchining har biriga 10 GB beriladi.</p>
     <div id="usersList"><p class="hint">Yuklanmoqda...</p></div>
     <h3 style="margin-top:18px;">Yangi odam qo‘shish</h3>
     <div class="grid2">
+      <div><label class="field">Ism-familiya</label><input id="newUserDisplayName" autocomplete="name" placeholder="masalan: Dilshod Karimov"></div>
       <div><label class="field">Login</label><input id="newUserLogin" autocomplete="off" placeholder="masalan: shifokor01"></div>
       <div><label class="field">Parol</label><input id="newUserPassword" type="password" autocomplete="new-password" placeholder="kamida 8 belgi"></div>
     </div>
     <div class="row"><button class="action" onclick="createConnectedUser()">Qo‘shish (10 GB)</button></div>
     <div class="status" id="usersAdminStatus"></div>
-  </div>
+    </div>
+  </details>
 
   <details class="card settings-collapsible">
     <summary>Navbat</summary>
@@ -793,8 +837,9 @@
     </div>
   </details>
 
-  <div class="card">
-    <h2>Tarjimon xotirasi (Claude bilan chat)</h2>
+  <details class="card settings-collapsible">
+    <summary>Tarjimon xotirasi (Claude bilan chat)</summary>
+    <div class="settings-panel-body">
     <p class="hint">Claude bilan yozishib, tarjima qoidalarini o'rgating. Muhim javoblarni "Xotiraga qo'shish" bilan belgilang — shundan keyin ular barcha keyingi tarjimalarga avtomatik qo'shiladi.</p>
     <div id="memoryChatMessages" style="max-height:320px; overflow-y:auto; border:1px solid var(--border); border-radius:8px; padding:10px; margin-bottom:10px; background:var(--bg);"></div>
     <div class="row">
@@ -805,10 +850,12 @@
 
     <h3 style="margin-top:18px;">Saqlangan qoidalar (xotira)</h3>
     <div id="memoryNotesList"><p class="hint">Hali qoida qo'shilmagan.</p></div>
-  </div>
+    </div>
+  </details>
 
-  <div class="card">
-    <h2>OpenAI TTS standart qiymatlari</h2>
+  <details class="card settings-collapsible">
+    <summary>OpenAI TTS standart qiymatlari</summary>
+    <div class="settings-panel-body">
     <div class="grid2">
       <div>
         <label class="field">Standart ovoz</label>
@@ -836,7 +883,8 @@
       <button class="action" onclick="saveGeneralSettings()">Saqlash</button>
     </div>
     <div class="status" id="generalSettingsStatus"></div>
-  </div>
+    </div>
+  </details>
   <div class="card">
     <h2>Server holati</h2>
     <div class="row" style="margin:10px 0 14px;">
@@ -1435,15 +1483,40 @@ async function handleUploadFiles(fileList, kind) {
 }
 
 let currentUser = null;
+let connectedUsers = [];
 function aishaStorageKey() { return 'aisha_api_key:' + (currentUser ? currentUser.id : 'guest'); }
 async function loadIdentity() {
   currentUser = await apiFetch('/api/auth/me');
   document.body.classList.toggle('is-superadmin', currentUser.is_superadmin);
   document.querySelectorAll('.admin-only').forEach(el => { el.style.display = currentUser.is_superadmin ? '' : 'none'; });
   const name = document.getElementById('currentUsername');
-  if (name) name.textContent = currentUser.username + (currentUser.is_superadmin ? ' · super-admin' : '');
+  const displayName = currentUser.display_name || currentUser.username;
+  if (name) name.textContent = displayName + (currentUser.is_superadmin ? ' · super-admin' : '');
+  document.getElementById('navAccountAvatar').textContent = ([...displayName.trim()][0] || '?').toLocaleUpperCase('uz-UZ');
+  document.getElementById('accountPopoverName').textContent = displayName;
+  document.getElementById('accountPopoverLogin').textContent = 'Login: ' + currentUser.username;
   if (currentUser.is_superadmin) await loadConnectedUsers();
 }
+
+function closeAccountMenu() {
+  document.getElementById('accountPopover').classList.remove('open');
+  document.getElementById('accountMenuButton').setAttribute('aria-expanded', 'false');
+}
+
+function toggleAccountMenu(event) {
+  if (event) event.stopPropagation();
+  const popover = document.getElementById('accountPopover');
+  const opening = !popover.classList.contains('open');
+  popover.classList.toggle('open', opening);
+  document.getElementById('accountMenuButton').setAttribute('aria-expanded', String(opening));
+}
+
+document.addEventListener('click', event => {
+  const popover = document.getElementById('accountPopover');
+  const button = document.getElementById('accountMenuButton');
+  if (popover.classList.contains('open') && !popover.contains(event.target) && !button.contains(event.target)) closeAccountMenu();
+});
+document.addEventListener('keydown', event => { if (event.key === 'Escape') closeAccountMenu(); });
 
 async function logoutApp() {
   await apiFetch('/api/auth/logout', {method:'POST'});
@@ -1454,32 +1527,50 @@ async function loadConnectedUsers() {
   if (!currentUser || !currentUser.is_superadmin) return;
   try {
     const users = await apiFetch('/api/admin/users');
+    connectedUsers = users;
     const el = document.getElementById('usersList');
     el.innerHTML = users.map(user => `<div class="key-row">
-      <strong>${escapeHtml(user.username)}</strong>
+      <span style="min-width:180px;"><strong>${escapeHtml(user.display_name || user.username)}</strong>${user.display_name ? `<br><span class="hint">${escapeHtml(user.username)}</span>` : ''}</span>
       <span class="pill ${user.active ? 'ok' : 'off'}">${user.role === 'superadmin' ? 'Super-admin' : (user.active ? 'Faol' : 'O‘chirilgan')}</span>
       <span class="hint">${fmtBytes(user.usage_bytes)} / ${fmtBytes(user.quota_bytes)}</span>
-      ${user.role === 'superadmin' ? '' : `<button class="small-btn" onclick="resetConnectedUserPassword('${user.id}')">Parol</button>
-      <button class="small-btn" onclick="toggleConnectedUser('${user.id}',${!user.active})">${user.active ? 'O‘chirish' : 'Yoqish'}</button>`}
+      <button class="small-btn" onclick="editConnectedUser('${user.id}')">Tahrirlash</button>
+      ${user.role === 'superadmin' ? '' : `<button class="small-btn" onclick="toggleConnectedUser('${user.id}',${!user.active})">${user.active ? 'O‘chirish' : 'Yoqish'}</button>`}
     </div>`).join('');
   } catch(error) { setStatus('usersAdminStatus', 'Xato: '+error.message, 'err'); }
 }
 
 async function createConnectedUser() {
+  const display_name=document.getElementById('newUserDisplayName').value.trim();
   const username=document.getElementById('newUserLogin').value.trim();
   const password=document.getElementById('newUserPassword').value;
   try {
-    await apiFetch('/api/admin/users',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password,quota_gb:10})});
-    document.getElementById('newUserLogin').value=''; document.getElementById('newUserPassword').value='';
+    await apiFetch('/api/admin/users',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({display_name,username,password})});
+    document.getElementById('newUserDisplayName').value=''; document.getElementById('newUserLogin').value=''; document.getElementById('newUserPassword').value='';
     setStatus('usersAdminStatus','Foydalanuvchi qo‘shildi.','ok'); await loadConnectedUsers();
   } catch(error){setStatus('usersAdminStatus','Xato: '+error.message,'err')}
 }
 
-async function resetConnectedUserPassword(userId) {
-  const password=prompt('Yangi parol (kamida 8 belgi):'); if(!password) return;
-  try { await apiFetch('/api/admin/users/'+userId,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({password})});
-    setStatus('usersAdminStatus','Parol yangilandi.','ok');
-  } catch(error){setStatus('usersAdminStatus','Xato: '+error.message,'err')}
+function editConnectedUser(userId) {
+  const user=connectedUsers.find(item => item.id === userId); if(!user) return;
+  document.getElementById('editUserId').value=user.id;
+  document.getElementById('editUserDisplayName').value=user.display_name || user.username;
+  document.getElementById('editUserLogin').value=user.username;
+  document.getElementById('editUserPassword').value='';
+  setStatus('editUserStatus','');
+  openModal('editUserModal');
+}
+
+async function saveConnectedUserEdit() {
+  const userId=document.getElementById('editUserId').value;
+  const display_name=document.getElementById('editUserDisplayName').value.trim();
+  const username=document.getElementById('editUserLogin').value.trim();
+  const password=document.getElementById('editUserPassword').value;
+  const payload={display_name,username};
+  if(password) payload.password=password;
+  try { await apiFetch('/api/admin/users/'+userId,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    closeModal('editUserModal');
+    setStatus('usersAdminStatus','Foydalanuvchi ma’lumotlari yangilandi.','ok'); await loadConnectedUsers();
+  } catch(error){setStatus('editUserStatus','Xato: '+error.message,'err')}
 }
 
 async function toggleConnectedUser(userId,active) {

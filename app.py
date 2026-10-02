@@ -244,8 +244,11 @@ async def admin_users():
 async def admin_create_user(request: Request):
     auth.require_superadmin()
     payload = await request.json()
+    display_name = str(payload.get("display_name", "")).strip()
     username = str(payload.get("username", "")).strip()
     password = str(payload.get("password", ""))
+    if not (2 <= len(display_name) <= 120):
+        raise HTTPException(400, "Ism-familiya 2-120 belgidan iborat bo'lishi kerak.")
     if not re.fullmatch(r"[A-Za-z0-9@._+-]{3,120}", username):
         raise HTTPException(400, "Login 3-120 belgi bo'lsin; harf, raqam, @ . _ + - ishlatish mumkin.")
     if len(password) < 8:
@@ -264,9 +267,9 @@ async def admin_create_user(request: Request):
         raise HTTPException(409, "Bu login band.")
     user_id = db.new_id()
     db.execute(
-        "INSERT INTO users (id, username, password_hash, role, quota_bytes, active, created_at, updated_at) "
-        "VALUES (?, ?, ?, 'user', ?, 1, ?, ?)",
-        (user_id, username, auth.hash_password(password), quota_bytes, db.now(), db.now()),
+        "INSERT INTO users (id, username, display_name, password_hash, role, quota_bytes, active, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, 'user', ?, 1, ?, ?)",
+        (user_id, username, display_name, auth.hash_password(password), quota_bytes, db.now(), db.now()),
     )
     return auth.public_user(db.fetchone("SELECT * FROM users WHERE id = ?", (user_id,)))
 
@@ -278,12 +281,40 @@ async def admin_update_user(user_id: str, request: Request):
     if not user:
         raise HTTPException(404, "Foydalanuvchi topilmadi.")
     payload = await request.json()
+    display_name = None
+    username = None
+    password = None
+    credentials_changed = False
+    if "display_name" in payload:
+        display_name = str(payload["display_name"]).strip()
+        if not (2 <= len(display_name) <= 120):
+            raise HTTPException(400, "Ism-familiya 2-120 belgidan iborat bo'lishi kerak.")
+    if "username" in payload:
+        username = str(payload["username"]).strip()
+        if not re.fullmatch(r"[A-Za-z0-9@._+-]{3,120}", username):
+            raise HTTPException(400, "Login 3-120 belgi bo'lsin; harf, raqam, @ . _ + - ishlatish mumkin.")
+        duplicate = db.fetchone(
+            "SELECT id FROM users WHERE username = ? COLLATE NOCASE AND id <> ?",
+            (username, user_id),
+        )
+        if duplicate:
+            raise HTTPException(409, "Bu login band.")
     if "password" in payload and str(payload["password"]):
         password = str(payload["password"])
         if len(password) < 8:
             raise HTTPException(400, "Parol kamida 8 belgidan iborat bo'lishi kerak.")
+    if display_name is not None:
+        db.execute("UPDATE users SET display_name = ?, updated_at = ? WHERE id = ?",
+                   (display_name, db.now(), user_id))
+    if username is not None and username != str(user["username"]):
+        db.execute("UPDATE users SET username = ?, updated_at = ? WHERE id = ?",
+                   (username, db.now(), user_id))
+        credentials_changed = True
+    if password is not None:
         db.execute("UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
                    (auth.hash_password(password), db.now(), user_id))
+        credentials_changed = True
+    if credentials_changed:
         db.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
     if "active" in payload:
         if user_id == admin["id"] and not bool(payload["active"]):

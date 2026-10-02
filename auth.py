@@ -43,7 +43,8 @@ def verify_password(password: str, encoded: str) -> bool:
 
 def public_user(user: dict) -> dict:
     return {
-        "id": user["id"], "username": user["username"], "role": user["role"],
+        "id": user["id"], "username": user["username"],
+        "display_name": user.get("display_name") or "", "role": user["role"],
         "is_superadmin": user["role"] == "superadmin",
         "quota_bytes": int(user["quota_bytes"] or 0), "active": bool(user["active"]),
         "created_at": user.get("created_at"), "last_login_at": user.get("last_login_at"),
