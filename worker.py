@@ -2062,7 +2062,6 @@ async def run_learning_export(video_id: str):
 
 
 async def run_learning_intro(video_id: str):
-    import intro
     track = db.fetchone("SELECT * FROM learning_tracks WHERE video_id = ?", (video_id,))
     video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
     if not track or not video or track["intro_status"] != "generating":
@@ -2073,6 +2072,10 @@ async def run_learning_intro(video_id: str):
                    "WHERE id = ?", (round(pct, 1), message, db.now(), track["id"]))
 
     try:
+        # Importni try ichida saqlaymiz: Pillow kabi intro bog'liqligi
+        # o'rnatilmagan bo'lsa vazifa abadiy "Navbatda" qolmasdan aniq
+        # xato holatiga o'tishi kerak.
+        import intro
         clean = Path(track["final_video_path"] or "")
         if track["final_video_status"] != "ready":
             raise RuntimeError("Intro Learning videosining parametrlari bilan yaratiladi - avval Learning "

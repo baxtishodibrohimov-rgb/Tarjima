@@ -157,3 +157,25 @@ def test_strip_stress_setting(setup, fake_tts):
     assert worker.enqueue_learning_intro(vid, strip_stress=True)
     _run(vid)
     assert [c[0] for c in fake_tts["openai"]] == ["челюсть"]  # enamel keshdan
+
+
+def test_missing_intro_dependency_sets_error_instead_of_staying_queued(setup, monkeypatch):
+    """Pillow/intro importi yiqilsa vazifa abadiy ``generating`` qolmasin."""
+    import builtins
+
+    vid, _ = setup
+    assert worker.enqueue_learning_intro(vid)
+    original_import = builtins.__import__
+
+    def fail_intro_import(name, *args, **kwargs):
+        if name == "intro":
+            raise ModuleNotFoundError("No module named 'PIL'")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fail_intro_import)
+    asyncio.run(worker.run_learning_intro(vid))
+    track = db.fetchone("SELECT intro_status, intro_message, intro_error FROM learning_tracks WHERE video_id = ?", (vid,))
+    assert track["intro_status"] == "error"
+    assert track["intro_message"] is None
+    assert "No module named 'PIL'" in track["intro_error"]
+    worker.LEARNING_EXTRA_QUEUE = asyncio.Queue()
