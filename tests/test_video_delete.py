@@ -54,6 +54,19 @@ def test_delete_removes_every_derived_file(client):
     assert db.fetchone("SELECT 1 FROM tts_jobs WHERE video_id IS NULL")
 
 
+def test_costs_survive_delete_for_reports(client):
+    vid, _ = make_project()
+    owner = db.fetchone("SELECT id FROM users WHERE username = 'admin'")["id"]
+    before = client.get("/api/costs").json()["all_time"]["usd"]
+    db.execute("INSERT INTO costs (id, video_id, kind, amount_usd, created_at, owner_id) "
+               "VALUES (?, ?, 'translation', 1.25, ?, ?)", (db.new_id(), vid, db.now(), owner))
+    client.delete(f"/api/videos/{vid}")
+    costs = client.get("/api/costs").json()
+    assert costs["all_time"]["usd"] == pytest.approx(before + 1.25)
+    row = next(r for r in costs["per_video"] if r["id"] == vid)
+    assert row["deleted"] and row["original_name"] == "dars.mp4 (o'chirilgan)" and row["translation"] == 1.25
+
+
 def test_cleanup_script_finds_leftovers_of_old_deletes(client, capsys):
     vid, jobs = make_project()
     db.execute("DELETE FROM videos WHERE id = ?", (vid,))  # eski versiyadagi to'liq bo'lmagan o'chirish

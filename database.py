@@ -551,6 +551,9 @@ _COSTS_NEW_COLUMNS = {
     # amount_usd ustuni bo'sh (0) qoladi - shunda umumiy $ summasi (cost_total)
     # buzilmaydi.
     "amount_som": "REAL DEFAULT 0",
+    # Video o'chirilganda xarajat yozuvlari hisobot uchun saqlanadi - videoning
+    # nomi shu yerga yozib qo'yiladi (videos jadvalida endi yo'q).
+    "video_name": "TEXT",
 }
 _AUDIO_TRACK_NEW_COLUMNS = {
     # Shu (ikkinchi provayder) trekning yakuniy videosiga subtitr "kuydirilgan"

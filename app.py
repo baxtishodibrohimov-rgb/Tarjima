@@ -711,7 +711,8 @@ async def delete_video(video_id: str, mode: str = "full"):
 def delete_video_completely(v: dict):
     """Kutubxona loyihasini barcha fayllari va yozuvlari bilan o'chiradi:
     asl video, bo'laklar, matn/tarjima/SRT natijalari, barcha TTS audiolari
-    (asosiy, ikkinchi provayder va ruscha o'rganish treklari) va yakuniy videolar."""
+    (asosiy, ikkinchi provayder va ruscha o'rganish treklari) va yakuniy videolar.
+    Xarajatlar O'CHIRILMAYDI - hisobot uchun video nomi bilan saqlanib qoladi."""
     import tts as tts_module
     from storage import TTS_DIR
     video_id = v["id"]
@@ -727,8 +728,9 @@ def delete_video_completely(v: dict):
         db.execute("DELETE FROM tts_segments WHERE job_id = ?", (job_id,))
         db.execute("DELETE FROM tts_jobs WHERE id = ?", (job_id,))
         shutil.rmtree(TTS_DIR / job_id, ignore_errors=True)
-    for table in ("audio_tracks", "freeze_point_events", "chunks", "results", "job_logs", "costs"):
+    for table in ("audio_tracks", "freeze_point_events", "chunks", "results", "job_logs"):
         db.execute(f"DELETE FROM {table} WHERE video_id = ?", (video_id,))
+    db.execute("UPDATE costs SET video_name = ? WHERE video_id = ?", (v["original_name"], video_id))
     db.execute("DELETE FROM videos WHERE id = ?", (video_id,))
     for base in (VIDEOS_DIR, CHUNKS_DIR, RESULTS_DIR, SPLIT_DIR):
         shutil.rmtree(base / video_id, ignore_errors=True)
@@ -3024,12 +3026,26 @@ async def get_costs():
            SUM(CASE WHEN c.kind='tts_aisha' THEN c.amount_som ELSE 0 END) as tts_aisha_som
            FROM videos v LEFT JOIN costs c ON c.video_id = v.id
            WHERE v.owner_id = ? GROUP BY v.id ORDER BY v.created_at DESC""", (owner_id,))
+    # O'chirilgan videolarning xarajatlari ham hisobotda qoladi.
+    deleted = db.fetchall(
+        """SELECT c.video_id as id, MAX(c.video_name) as original_name, COALESCE(SUM(c.amount_usd),0) as total,
+           COALESCE(SUM(c.amount_som),0) as total_som,
+           SUM(CASE WHEN c.kind='transcription' THEN c.amount_usd ELSE 0 END) as transcription,
+           SUM(CASE WHEN c.kind='translation' THEN c.amount_usd ELSE 0 END) as translation,
+           SUM(CASE WHEN c.kind IN ('tts_openai','tts') THEN c.amount_usd ELSE 0 END) as tts_openai,
+           SUM(CASE WHEN c.kind='tts_aisha' THEN c.amount_som ELSE 0 END) as tts_aisha_som
+           FROM costs c WHERE c.owner_id = ? AND c.video_id IS NOT NULL
+           AND c.video_id NOT IN (SELECT id FROM videos)
+           GROUP BY c.video_id ORDER BY MAX(c.created_at) DESC""", (owner_id,))
+    for r in deleted:
+        r["original_name"] = f"{r['original_name'] or 'Nomi saqlanmagan video'} (o'chirilgan)"
+        r["deleted"] = True
     return {
         "today": total_since(today_start),
         "week": total_since(week_start),
         "month": total_since(month_start),
         "all_time": total_since("0000-01-01T00:00:00"),
-        "per_video": [dict(r) for r in per_video],
+        "per_video": [dict(r) for r in per_video] + [dict(r) for r in deleted],
     }
 
 
