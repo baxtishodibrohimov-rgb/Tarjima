@@ -253,12 +253,23 @@ async def upload_from_library(video_id: str = Form(...), variant: str = Form("fi
         raise HTTPException(404, "Video topilmadi.")
     if v["bot_upload_status"] == "uploading":
         raise HTTPException(409, "Bu video hozir botga yuklanmoqda.")
-    if variant not in VARIANTS:
-        raise HTTPException(400, "Noto'g'ri variant.")
-    column, suffix = VARIANTS[variant]
-    path = v[column]
-    if not path or not Path(path).exists():
-        raise HTTPException(400, "Bu variant uchun video fayli serverda yo'q.")
+    parts = None
+    if v["kind"] == "split_only":
+        # "Video bo'lish"dagi video: tayyor qismlar bo'lsa - qayta bo'linmaydi.
+        import app
+        if v["split_status"] in ("splitting", "restoring") or v["telegram_send_status"] == "sending":
+            raise HTTPException(409, "Video hozir qayta ishlanmoqda - tugashini kuting.")
+        path, suffix = v["path"], ""
+        parts = app._ready_split_parts(v) or None
+        if not parts and not (path and Path(path).exists()):
+            raise HTTPException(400, "Video fayli serverda topilmadi.")
+    else:
+        if variant not in VARIANTS:
+            raise HTTPException(400, "Noto'g'ri variant.")
+        column, suffix = VARIANTS[variant]
+        path = v[column]
+        if not path or not Path(path).exists():
+            raise HTTPException(400, "Bu variant uchun video fayli serverda yo'q.")
     if folder_id:
         _folder(owner, folder_id)
 
@@ -266,18 +277,20 @@ async def upload_from_library(video_id: str = Form(...), variant: str = Form("fi
     db.execute("UPDATE videos SET bot_upload_status = 'uploading', bot_upload_error = NULL, bot_upload_progress = '', "
                "bot_upload_folder_id = ?, bot_upload_title = ? WHERE id = ?", (folder_id or None, title, video_id))
     asyncio.create_task(_upload_job(video_id, path, title, folder_id or None, remove_from_library,
-                                    owner["id"], owner["telegram_chat_id"]))
+                                    owner["id"], owner["telegram_chat_id"], parts))
     return {"ok": True}
 
 
-async def _upload_job(video_id, path, title, folder_id, remove_from_library, owner_id, chat_id):
+async def _upload_job(video_id, path, title, folder_id, remove_from_library, owner_id, chat_id, parts=None):
+    """parts berilsa ("Video bo'lish"da tayyor qismlar) - qayta bo'linmaydi."""
     import app
     split_dir = SPLIT_DIR / f"bot_{video_id}"
     try:
-        async with app._SPLIT_LOCK:
-            shutil.rmtree(split_dir, ignore_errors=True)
-            parts = await asyncio.get_event_loop().run_in_executor(
-                None, transcription.split_video_by_size, Path(path), split_dir)
+        if not parts:
+            async with app._SPLIT_LOCK:
+                shutil.rmtree(split_dir, ignore_errors=True)
+                parts = await asyncio.get_event_loop().run_in_executor(
+                    None, transcription.split_video_by_size, Path(path), split_dir)
         total = len(parts)
         location = "🎬 Video Baza / " + ideaflow_bot.folder_path(owner_id, folder_id)
         uploaded = []

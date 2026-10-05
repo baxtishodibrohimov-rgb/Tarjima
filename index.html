@@ -324,6 +324,8 @@
     .workflow-tab .step-dot::before { content:attr(data-step-number); font-size:11px; }
   }
   .stage.dim { opacity:.5; }
+  #splitVideoList .job-row > div:first-child { min-width:0; max-width:100%; }
+  #splitVideoList .pill { white-space:normal; max-width:100%; overflow-wrap:anywhere; }
   .stage-head { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:6px; }
   .stage-head h3 { margin:0; font-size:15.5px; }
 
@@ -557,13 +559,15 @@
     <button class="tiny-btn modal-close-btn" onclick="closeModal('botAddModal')" title="Yopish" aria-label="Yopish">×</button>
   </div>
   <p class="hint">Video Telegram botdagi "🎬 Video Baza"ga, tanlangan papkaga yuklanadi va saytdagi "Bot" bo'limida ham ko'rinadi.</p>
-  <label class="field">Qaysi video</label>
-  <select id="botAddVariant"></select>
+  <div id="botAddVariantWrap">
+    <label class="field">Qaysi video</label>
+    <select id="botAddVariant"></select>
+  </div>
   <label class="field" style="margin-top:10px;">Qaysi papkaga</label>
   <select id="botAddFolder"></select>
   <label style="display:flex; gap:8px; align-items:flex-start; margin-top:12px; font-size:13.5px;">
     <input type="checkbox" id="botAddRemove" checked style="margin-top:3px;">
-    <span>Yuklangach Kutubxonadan o'chirish — serverda joy bo'shaydi, video faqat botda qoladi va "Bot" bo'limida havola bo'lib turadi.</span>
+    <span id="botAddRemoveText">Yuklangach Kutubxonadan o'chirish — serverda joy bo'shaydi, video faqat botda qoladi va "Bot" bo'limida havola bo'lib turadi.</span>
   </label>
   <div class="row">
     <button class="action" id="botAddSubmit" onclick="submitBotAdd()">Botga yuklash</button>
@@ -712,7 +716,7 @@
 <!--   PAGE: VIDEO BO'LISH (tarjimasiz, faqat bo'lib botga yuborish) -->
 <!-- ============================================================ -->
 <div class="page" id="page-split">
-  <p class="subtitle">Bu yerga yuklangan videolar tarjima qilinmaydi - agar 1.9 GB'dan katta bo'lsa avtomatik 1.9 GB'dan kichik qismlarga bo'linadi. Tayyor bo'lgach, "Botga jo'natish" tugmasini bosing - shundagina Telegram botga yuboriladi.</p>
+  <p class="subtitle">Bu yerga yuklangan video 1.9 GB'dan katta bo'lsa avtomatik 1.9 GB'dan kichik qismlarga bo'linadi. Joy tejash uchun asl video o'chiriladi va video qismlarda saqlanadi — kerak bo'lsa "↩️ Asliga qaytarish" uni qayta bitta faylga yig'adi. Har bir videoni Telegram botga, Bot bo'limiga (Video Baza papkasiga) yoki Kutubxonaga (tarjima uchun) jo'natishingiz mumkin.</p>
 
   <button class="add-video-btn" onclick="document.getElementById('splitUploadFile').click()">+ Video qo'shish (qismlarga bo'lish)</button>
   <button class="small-btn" onclick="openCloudPicker('video', useCloudVideoInSplit)">☁ Bulutdan olish</button>
@@ -1829,6 +1833,11 @@ async function loadSplitVideos() {
   }
 }
 
+function splitVideoBusy(v) {
+  return v.split_status === 'splitting' || v.split_status === 'restoring'
+    || v.telegram_send_status === 'sending' || v.bot_upload_status === 'uploading';
+}
+
 function renderSplitVideoList(videos) {
   const list = document.getElementById('splitVideoList');
   if (!list) return;
@@ -1838,44 +1847,81 @@ function renderSplitVideoList(videos) {
   }
   list.innerHTML = videos.map(v => {
     const n = v.split_total_parts;
-    let statusHtml;
-    let actionHtml = '';
-    if (v.telegram_send_status === 'sending') {
-      const progress = n > 1 ? ` (${v.split_parts_sent}/${n} qism)` : '';
-      statusHtml = `<span class="pill">⏳ Botga yuborilmoqda...${progress}</span>`;
-    } else if (v.split_status === 'splitting') {
-      statusHtml = `<span class="pill">⏳ Qismlarga bo'linmoqda...</span>`;
+    const ready = v.split_status === 'ready' && n > 0;
+    const pills = [];
+    // Saqlanish holati
+    if (v.split_status === 'splitting') {
+      pills.push(`<span class="pill">⏳ Qismlarga bo'linmoqda...</span>`);
+    } else if (v.split_status === 'restoring') {
+      pills.push(`<span class="pill">⏳ ${v.split_restore_target === 'library'
+        ? "Kutubxonaga o'tkazilmoqda..." : 'Asliga qaytarilmoqda...'}</span>`);
     } else if (v.split_status === 'error') {
-      statusHtml = `<span class="pill err">✗ Bo'lishda xato: ${escapeHtml(v.split_error || '')}</span>`;
-      actionHtml = `<button class="small-btn" onclick="postSplitAction('${v.id}', 'split', this)">Qayta bo'lish</button>`;
+      pills.push(`<span class="pill err">✗ Bo'lishda xato: ${escapeHtml(v.split_error || '')}</span>`);
+    } else if (ready && !v.original_exists) {
+      pills.push(`<span class="pill ok">📦 ${n} ta qismda saqlanmoqda (asl video o'chirilgan)</span>`);
+    } else if (ready) {
+      pills.push(`<span class="pill ok">✓ Bo'lish shart emas (1.9 GB'dan kichik)</span>`);
+    }
+    if (ready && v.split_error) pills.push(`<span class="pill err">✗ ${escapeHtml(v.split_error)}</span>`);
+    // Telegram bot
+    const partial = v.telegram_send_status === 'error' && v.split_parts_sent > 0 && v.split_parts_sent < n;
+    if (v.telegram_send_status === 'sending') {
+      pills.push(`<span class="pill">⏳ Telegram botga yuborilmoqda...${n > 1 ? ` (${v.split_parts_sent}/${n} qism)` : ''}</span>`);
     } else if (v.telegram_send_status === 'sent') {
-      statusHtml = `<span class="pill ok">✓ Botga yuborildi${n > 1 ? ` (${n} qismda)` : ''}</span>`;
-      actionHtml = `<button class="small-btn" onclick="resendSplitVideo('${v.id}', this)">Qayta jo'natish</button>`;
-    } else {
-      const readyHtml = v.split_status === 'ready'
-        ? `<span class="pill ok">✓ ${n > 1 ? `${n} ta qismga bo'lindi (har biri 1.9 GB'dan kichik)` : "Bo'lish shart emas (1.9 GB'dan kichik)"}</span> `
-        : '';
-      const partial = v.telegram_send_status === 'error' && v.split_parts_sent > 0 && v.split_parts_sent < n;
-      const errHtml = v.telegram_send_status === 'error'
-        ? `<span class="pill err">✗ Yuborishda xato${partial ? ` (${v.split_parts_sent}/${n} qism yuborilgan)` : ''}: ${escapeHtml(v.telegram_send_error || '')}</span>`
-        : '';
-      statusHtml = readyHtml + errHtml;
-      const label = partial ? `📤 Davom ettirish (${v.split_parts_sent + 1}-qismdan)` : "📤 Botga jo'natish";
-      actionHtml = `<button class="small-btn" onclick="postSplitAction('${v.id}', 'send', this)">${label}</button>`;
+      pills.push(`<span class="pill ok">✓ Telegram botga yuborildi${n > 1 ? ` (${n} qismda)` : ''}</span>`);
+    } else if (v.telegram_send_status === 'error') {
+      pills.push(`<span class="pill err">✗ Telegram'ga yuborishda xato${partial ? ` (${v.split_parts_sent}/${n} qism yuborilgan)` : ''}: ${escapeHtml(v.telegram_send_error || '')}</span>`);
+    }
+    // Bot bo'limi
+    if (v.bot_upload_status === 'uploading') {
+      pills.push(`<span class="pill">⏳ Bot bo'limiga yuklanmoqda... ${escapeHtml(v.bot_upload_progress || '')}</span>`);
+    } else if (v.bot_upload_status === 'done') {
+      pills.push(`<span class="pill ok">✓ Bot bo'limiga yuklandi</span>`);
+    } else if (v.bot_upload_status === 'error') {
+      pills.push(`<span class="pill err">✗ Bot bo'limiga yuklashda xato: ${escapeHtml(v.bot_upload_error || '')}</span>`);
+    }
+
+    const buttons = [];
+    if (!splitVideoBusy(v)) {
+      if (v.original_exists && (v.split_status === 'none' || v.split_status === 'error')) {
+        buttons.push(`<button class="small-btn" onclick="postSplitAction('${v.id}', 'split', this)">✂️ ${v.split_status === 'error' ? "Qayta bo'lish" : "Bo'lish"}</button>`);
+      }
+      if (v.original_exists || ready) {
+        const tgLabel = partial ? `📤 Telegram botga (${v.split_parts_sent + 1}-qismdan davom)`
+          : v.telegram_send_status === 'sent' ? "📤 Telegram botga qayta" : '📤 Telegram botga';
+        const tgClick = v.telegram_send_status === 'sent'
+          ? `resendSplitVideo('${v.id}', this)` : `postSplitAction('${v.id}', 'send', this)`;
+        buttons.push(`<button class="small-btn" onclick="${tgClick}">${tgLabel}</button>`);
+        buttons.push(`<button class="small-btn" onclick="openBotAdd('${v.id}', true)">🤖 Bot bo'limiga</button>`);
+        buttons.push(`<button class="small-btn" onclick="moveSplitVideoToLibrary('${v.id}', this)">📚 Kutubxonaga</button>`);
+      }
+      if (ready && !v.original_exists) {
+        buttons.push(`<button class="small-btn" onclick="restoreSplitVideo('${v.id}', this)">↩️ Asliga qaytarish</button>`);
+      }
+      buttons.push(`<button class="small-btn danger" onclick="deleteSplitVideo('${v.id}')">O'chirish</button>`);
     }
     return `
     <div class="job-row">
       <div>
         <strong>${escapeHtml(v.original_name)}</strong>
         <div class="hint">${fmtBytes(v.file_size)} ${v.duration ? '· ' + fmtMinSec(v.duration) : ''}</div>
-        <div style="margin-top:4px;">${statusHtml}</div>
+        <div style="margin-top:4px; display:flex; flex-wrap:wrap; gap:4px;">${pills.join('')}</div>
       </div>
-      <div class="row" style="margin-top:0; gap:6px;">
-        ${actionHtml}
-        <button class="small-btn danger" onclick="deleteSplitVideo('${v.id}')">O'chirish</button>
-      </div>
+      <div class="row" style="margin-top:0; gap:6px; flex-wrap:wrap;">${buttons.join('')}</div>
     </div>`;
   }).join('');
+}
+
+function restoreSplitVideo(videoId, btnEl) {
+  showConfirm("Qismlar qayta bitta asl videoga yig'iladi (sifat o'zgarmaydi). Buning uchun serverda video hajmicha " +
+    "bo'sh joy kerak. Tayyor bo'lgach qismlar o'chiriladi. Davom etilsinmi?",
+    () => postSplitAction(videoId, 'restore', btnEl));
+}
+
+function moveSplitVideoToLibrary(videoId, btnEl) {
+  showConfirm("Video Kutubxonaga (tarjima uchun) o'tkaziladi va bu ro'yxatdan chiqadi. Asl video o'chirilgan " +
+    "bo'lsa, avval qismlardan tiklanadi. Davom etilsinmi?",
+    () => postSplitAction(videoId, 'to-library', btnEl));
 }
 
 async function postSplitAction(videoId, action, btnEl) {
@@ -1890,7 +1936,7 @@ async function postSplitAction(videoId, action, btnEl) {
 }
 
 function resendSplitVideo(videoId, btnEl) {
-  showConfirm("Bu video botga allaqachon yuborilgan. Barcha qismlarni qaytadan jo'natilsinmi?",
+  showConfirm("Bu video Telegram botga allaqachon yuborilgan. Barcha qismlarni qaytadan jo'natilsinmi?",
     () => postSplitAction(videoId, 'send', btnEl));
 }
 
@@ -1901,6 +1947,7 @@ let botTree = null;
 let botFolderId = null;
 let botMoveState = null;
 let botAddVideoId = null;
+let botAddFromSplit = false;
 
 async function loadBotTree() {
   try {
@@ -2165,13 +2212,19 @@ function botUploadPanelHtml(v) {
   return parts.join(' ');
 }
 
-async function openBotAdd(videoId) {
+async function openBotAdd(videoId, fromSplit = false) {
   botAddVideoId = videoId;
+  botAddFromSplit = fromSplit;
   const v = currentDetailVideoData && currentDetailVideoData.id === videoId ? currentDetailVideoData : {};
   const labels = { final: "O'zbekcha (tarjima qilingan yakuniy video)", subtitled: "O'zbekcha, subtitrli",
     original: 'Asl video (tarjimasiz)' };
-  document.getElementById('botAddVariant').innerHTML = (v.bot_variants || []).map(x =>
-    `<option value="${x}">${labels[x] || x}</option>`).join('');
+  // "Video bo'lish"dagi videoning bitta varianti bor - tanlov ko'rsatilmaydi.
+  document.getElementById('botAddVariantWrap').style.display = fromSplit ? 'none' : '';
+  document.getElementById('botAddVariant').innerHTML = fromSplit ? '<option value="original"></option>'
+    : (v.bot_variants || []).map(x => `<option value="${x}">${labels[x] || x}</option>`).join('');
+  document.getElementById('botAddRemoveText').textContent = fromSplit
+    ? "Yuklangach serverdan o'chirish — video faqat botda qoladi va \"Bot\" bo'limida havola bo'lib turadi."
+    : "Yuklangach Kutubxonadan o'chirish — serverda joy bo'shaydi, video faqat botda qoladi va \"Bot\" bo'limida havola bo'lib turadi.";
   document.getElementById('botAddRemove').checked = true;
   document.getElementById('botAddSubmit').disabled = false;
   setStatus('botAddStatus', '', '');
@@ -2200,7 +2253,9 @@ async function submitBotAdd() {
       folder_id: folderId, remove_from_library: remove ? 'true' : 'false',
     });
     closeModal('botAddModal');
-    if (remove) {
+    if (botAddFromSplit) {
+      loadSplitVideos();
+    } else if (remove) {
       closeVideoDetail();
       botFolderId = folderId || null;
       switchPage('page-bot');

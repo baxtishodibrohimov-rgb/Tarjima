@@ -82,7 +82,11 @@ def _ffprobe_exe():
 
 def _plan_keyframe_cuts(input_path: Path, budget: int):
     """Videoni bir marta skanerlab (ffprobe, qayta kodlashsiz), har bir qism
-    `budget` baytdan oshmaydigan kesish vaqtlarini KALIT KADRLARDA tanlaydi.
+    `budget` baytdan oshmaydigan kesish nuqtalarini KALIT KADRLARDA tanlaydi.
+    Nuqtalar vaqt emas, video kadrining tartib raqami (segment muxer'ning
+    -segment_frames'i uchun): vaqt bilan kesishda konteyner vaqt siljishlari
+    (masalan, qismlardan qayta yig'ilgan videoda audio "priming" tufayli 23 ms)
+    kalit kadrni o'tkazib yuborib, qismni limitdan oshirib yuborardi.
     `-c copy` bilan video faqat kalit kadrda kesilishi mumkin - shuning uchun
     o'rtacha bitreytdan "har X soniyada kes" deb hisoblash ishonchsiz: ma'ruza/
     ekran yozuvlarida kalit kadrlar siyrak bo'lsa, ffmpeg kesish nuqtalarini
@@ -92,33 +96,30 @@ def _plan_keyframe_cuts(input_path: Path, budget: int):
     if not ffprobe:
         return None
     probe = subprocess.run(
-        [ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=index:format=start_time",
+        [ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=index",
          "-of", "default=noprint_wrappers=1", str(input_path)],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="ignore", timeout=FFMPEG_PROBE_TIMEOUT)
     info = dict(line.split("=", 1) for line in probe.stdout.splitlines() if "=" in line)
     if "index" not in info:
         return None
     video_index = info["index"]
-    # ffmpeg CLI kirish vaqtlarini format start_time'ga nisbatan suradi -
-    # segment muxer'ga beriladigan vaqtlar ham shunga moslashtiriladi.
-    try:
-        start_time = float(info.get("start_time", "0"))
-    except ValueError:
-        start_time = 0.0
 
     proc = subprocess.Popen(
         [ffprobe, "-v", "error", "-show_entries", "packet=stream_index,pts_time,size,flags",
          "-of", "csv=p=0", str(input_path)],
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, errors="ignore")
-    points = []  # (kalit kadr vaqti, shu kadrgacha bo'lgan baytlar)
+    points = []  # (kalit kadrning video kadrlari orasidagi tartib raqami, shu kadrgacha bo'lgan baytlar)
     total = 0
+    video_packets = 0
     for line in proc.stdout:
         fields = line.strip().split(",")
         if len(fields) < 4:
             continue
-        stream_index, pts_time, size, flags = fields[:4]
-        if stream_index == video_index and flags.startswith("K") and pts_time not in ("", "N/A"):
-            points.append((float(pts_time) - start_time, total))
+        stream_index, _pts_time, size, flags = fields[:4]
+        if stream_index == video_index:
+            if flags.startswith("K"):
+                points.append((video_packets, total))
+            video_packets += 1
         if size.isdigit():
             total += int(size)
     if proc.wait() != 0 or not points:
@@ -164,8 +165,8 @@ def split_video_by_size(input_path: Path, out_dir: Path, max_bytes: int = TELEGR
         cmd = [ffmpeg_exe(), "-y", "-i", str(input_path), "-c", "copy", "-map", "0", "-f", "segment",
                "-reset_timestamps", "1"]
         if cuts:
-            # Kalit kadr vaqtidan 1 ms oldin - muxer aynan shu kalit kadrda kesadi.
-            cmd += ["-segment_times", ",".join(f"{max(c - 0.001, 0):.6f}" for c in cuts)]
+            # Muxer aynan shu tartib raqamli (kalit) kadrda yangi qism boshlaydi.
+            cmd += ["-segment_frames", ",".join(str(c) for c in cuts)]
         else:
             cmd += ["-segment_time", "1000000"]
         cmd.append(pattern)
@@ -209,6 +210,41 @@ def split_video_by_size(input_path: Path, out_dir: Path, max_bytes: int = TELEGR
             f"(video bitreyti juda notekis) - qo'lda kichikroq qismlarga bo'lib yuklang."
         )
     return parts
+
+
+def join_video_parts(parts: list, output_path: Path, expected_duration: float = 0) -> None:
+    """split_video_by_size qismlarini qayta bitta videoga yig'adi ("Asliga
+    qaytarish"). Qayta kodlanmaydi (-c copy), shuning uchun sifat o'zgarmaydi.
+    Avval vaqtinchalik faylga yoziladi - xatoda qismlar va eski holat saqlanadi."""
+    parts = [Path(p) for p in parts]
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    total = sum(p.stat().st_size for p in parts)
+    free = shutil.disk_usage(output_path.parent).free
+    if free < total + 512 * 1024 ** 2:
+        raise RuntimeError(
+            f"Serverda joy yetarli emas: asliga qaytarish uchun {(total + 512 * 1024 ** 2) / 1024 ** 3:.1f} GB "
+            f"bo'sh joy kerak, hozir {free / 1024 ** 3:.1f} GB bor.")
+
+    tmp_path = output_path.with_name(output_path.stem + ".joining" + output_path.suffix)
+    list_path = output_path.with_name(output_path.stem + ".parts.txt")
+    quote = lambda p: "'" + str(p.resolve()).replace("'", "'\\''") + "'"
+    list_path.write_text("".join(f"file {quote(p)}\n" for p in parts), encoding="utf-8")
+    try:
+        cmd = [ffmpeg_exe(), "-y", "-f", "concat", "-safe", "0", "-i", str(list_path),
+               "-c", "copy", "-map", "0", str(tmp_path)]
+        _run_ffmpeg(cmd, "qismlarni bitta videoga yig'ish", timeout=max(FFMPEG_TIMEOUT, total // (10 * 1024 ** 2)))
+        if not tmp_path.exists() or tmp_path.stat().st_size < total * 0.9:
+            raise RuntimeError("Yig'ilgan video fayli to'liq emas.")
+        if expected_duration and expected_duration > 0:
+            got = get_duration_seconds(tmp_path)
+            if abs(got - expected_duration) > max(3.0, expected_duration * 0.01):
+                raise RuntimeError(f"Yig'ilgan video davomiyligi mos kelmadi ({got:.0f}s, kutilgan "
+                                   f"{expected_duration:.0f}s).")
+        tmp_path.replace(output_path)
+    finally:
+        list_path.unlink(missing_ok=True)
+        tmp_path.unlink(missing_ok=True)
 
 
 def source_time_to_final_time(source_time: float, freeze_points: list) -> float:

@@ -497,6 +497,7 @@ _VIDEO_NEW_COLUMNS = {
     "bot_upload_folder_id": "TEXT",
     "bot_upload_title": "TEXT",
     "bot_item_id": "TEXT",
+    "split_restore_target": "TEXT",
     # Asosiy yakuniy videoga subtitr "kuydirilgan" (hardsub) nusxasi - ixtiyoriy,
     # foydalanuvchi so'rasa yaratiladi, asosiy final_video_path'ga UMUMAN tegmaydi.
     # Xatosi ham ALOHIDA ustunda (umumiy `error` maydonini "band" qilib

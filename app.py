@@ -147,6 +147,8 @@ async def on_startup():
     # Server qayta ishga tushganda yarimda qolgan "Video bo'lish" ishlari.
     for row in db.fetchall("SELECT id FROM videos WHERE kind = 'split_only' AND split_status = 'splitting'"):
         asyncio.create_task(_prepare_split_video(row["id"]))
+    for row in db.fetchall("SELECT id FROM videos WHERE kind = 'split_only' AND split_status = 'restoring'"):
+        asyncio.create_task(_restore_split_video(row["id"]))
     db.execute("UPDATE videos SET telegram_send_status = 'error', telegram_send_error = ? "
                "WHERE kind = 'split_only' AND telegram_send_status = 'sending'",
                ("Server qayta ishga tushdi - yuborish to'xtab qoldi. \"Davom ettirish\"ni bosing.",))
@@ -520,7 +522,10 @@ def split_video_public(v: dict) -> dict:
         "telegram_send_status": v["telegram_send_status"] or "none", "telegram_send_error": v["telegram_send_error"],
         "split_total_parts": v["split_total_parts"] or 0, "split_parts_sent": v["split_parts_sent"] or 0,
         "split_status": v["split_status"] or "none", "split_error": v["split_error"],
-        "idea_flow_sent_at": v["idea_flow_sent_at"],
+        "split_restore_target": v["split_restore_target"] or "",
+        "original_exists": bool(v["path"] and Path(v["path"]).exists()),
+        "bot_upload_status": v["bot_upload_status"] or "none", "bot_upload_error": v["bot_upload_error"],
+        "bot_upload_progress": v["bot_upload_progress"] or "",
         "has_thumbnail": bool(v["thumbnail_path"]),
         "created_at": v["created_at"], "updated_at": v["updated_at"],
     }
@@ -1949,6 +1954,18 @@ async def _prepare_split_video(video_id: str):
     "Botga jo'natish" bosilguncha SPLIT_DIR'da saqlaydi. Telegram'ga hech narsa
     yubormaydi. Xatoda None qaytaradi (holat bazaga yoziladi)."""
     split_dir = SPLIT_DIR / video_id
+    v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    if not v:
+        return None
+    if not (v["path"] and Path(v["path"]).exists()):
+        # Asl video bo'lingach o'chirilgan - mavjud qismlar bilan ishlaymiz.
+        parts = _ready_split_parts({**v, "split_status": "ready"})
+        if parts:
+            db.execute("UPDATE videos SET split_status = 'ready' WHERE id = ?", (video_id,))
+            return parts
+        db.execute("UPDATE videos SET split_status = 'error', split_error = ? WHERE id = ?",
+                   ("Asl video ham, qismlar ham serverda topilmadi.", video_id))
+        return None
     db.execute("UPDATE videos SET split_status = 'splitting', split_error = NULL, split_total_parts = 0, "
                "split_parts_sent = 0 WHERE id = ?", (video_id,))
     try:
@@ -1966,7 +1983,51 @@ async def _prepare_split_video(video_id: str):
         return None
     db.execute("UPDATE videos SET split_status = 'ready', split_total_parts = ? WHERE id = ?", (len(parts), video_id))
     db.log_line(video_id, f"Video {len(parts)} qismga bo'lindi - botga jo'natishga tayyor.")
+    if len(parts) > 1:
+        # Joy tejash: endi video qismlarda saqlanadi. Kerak bo'lsa "Asliga
+        # qaytarish" qismlarni qayta bitta faylga yig'adi.
+        Path(v["path"]).unlink(missing_ok=True)
+        db.log_line(video_id, "Asl video o'chirildi (qismlar saqlanadi) - kerak bo'lsa \"Asliga qaytarish\".")
     return parts
+
+
+async def _restore_split_video(video_id: str):
+    """Qismlarni qayta asl videoga yig'adi. split_restore_target='library' bo'lsa,
+    keyin videoni Kutubxonaga (tarjima quvuriga) o'tkazadi."""
+    split_dir = SPLIT_DIR / video_id
+    try:
+        async with _SPLIT_LOCK:
+            v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+            if not v:
+                return
+            original = Path(v["path"])
+            if not original.exists():
+                parts = _ready_split_parts({**v, "split_status": "ready"})
+                if not parts:
+                    raise RuntimeError("Qismlar serverda topilmadi - videoni tiklab bo'lmaydi.")
+                await asyncio.get_event_loop().run_in_executor(
+                    None, transcription.join_video_parts, parts, original, v["duration"] or 0)
+                db.log_line(video_id, "Video qismlardan asliga qaytarildi.")
+    except Exception as e:
+        reason = str(e)
+        if len(reason) > 400:  # ffmpeg chiqishining oxiri - haqiqiy xato o'sha yerda
+            reason = "..." + reason[-400:]
+        db.execute("UPDATE videos SET split_status = 'ready', split_restore_target = NULL, split_error = ? "
+                   "WHERE id = ?", (f"Asliga qaytarib bo'lmadi: {reason}", video_id))
+        db.log_line(video_id, f"Asliga qaytarishda xato: {e}")
+        return
+
+    shutil.rmtree(split_dir, ignore_errors=True)
+    if v["split_restore_target"] == "library":
+        db.execute("UPDATE videos SET kind = 'pipeline', status = 'uploaded', message = ?, split_status = 'none', "
+                   "split_error = NULL, split_total_parts = 0, split_parts_sent = 0, split_restore_target = NULL, "
+                   "telegram_send_status = 'none', telegram_send_error = NULL, updated_at = ? WHERE id = ?",
+                   ("Video bo'lishdan ko'chirildi. Bo'laklarga avtomatik bo'linmoqda...", db.now(), video_id))
+        db.log_line(video_id, "Video \"Video bo'lish\"dan Kutubxonaga ko'chirildi.")
+        worker.enqueue_segment(video_id)
+    else:
+        db.execute("UPDATE videos SET split_status = 'none', split_error = NULL, split_total_parts = 0, "
+                   "split_parts_sent = 0, split_restore_target = NULL WHERE id = ?", (video_id,))
 
 
 def _ready_split_parts(v: dict) -> list:
@@ -1986,7 +2047,7 @@ async def _send_split_video(video_id: str, start: int):
         return
     parts = _ready_split_parts(v)
     if not parts:
-        # Qismlar avval yuborilib o'chirilgan (qayta jo'natish) - qaytadan bo'linadi.
+        # Video hali bo'linmagan (yoki asliga qaytarilgan) - avval bo'linadi.
         start = 1
         parts = await _prepare_split_video(video_id)
         if parts is None:
@@ -1999,7 +2060,6 @@ async def _send_split_video(video_id: str, start: int):
         _mark_telegram_error(video_id, e)
         return
     _mark_telegram_sent(video_id, len(parts))
-    shutil.rmtree(SPLIT_DIR / video_id, ignore_errors=True)
 
 
 @app.post("/api/videos/{video_id}/send-to-bot")
@@ -2069,18 +2129,24 @@ def _get_split_video(video_id: str) -> dict:
     v = db.fetchone("SELECT * FROM videos WHERE id = ? AND kind = 'split_only'", (video_id,))
     if not v:
         raise HTTPException(404, "Video topilmadi.")
-    if not v["path"] or not Path(v["path"]).exists():
-        raise HTTPException(400, "Video fayli topilmadi.")
     if v["split_status"] == "splitting":
         raise HTTPException(409, "Video hali qismlarga bo'linmoqda - tugashini kuting.")
+    if v["split_status"] == "restoring":
+        raise HTTPException(409, "Video hozir asliga qaytarilmoqda - tugashini kuting.")
     if v["telegram_send_status"] == "sending":
         raise HTTPException(409, "Video hozir botga yuborilmoqda - tugashini kuting.")
+    if v["bot_upload_status"] == "uploading":
+        raise HTTPException(409, "Video hozir Bot bo'limiga yuklanmoqda - tugashini kuting.")
+    if not (v["path"] and Path(v["path"]).exists()) and not _ready_split_parts(v):
+        raise HTTPException(400, "Video fayli serverda topilmadi.")
     return v
 
 
 @app.post("/api/split-videos/{video_id}/split")
 async def split_video_endpoint(video_id: str):
-    _get_split_video(video_id)
+    v = _get_split_video(video_id)
+    if not Path(v["path"]).exists():
+        raise HTTPException(400, "Video allaqachon qismlarga bo'lingan.")
     db.execute("UPDATE videos SET split_status = 'splitting', split_error = NULL WHERE id = ?", (video_id,))
     asyncio.create_task(_prepare_split_video(video_id))
     return {"ok": True}
@@ -2097,6 +2163,29 @@ async def send_split_video_endpoint(video_id: str):
     db.execute("UPDATE videos SET telegram_send_status = 'sending', telegram_send_error = NULL WHERE id = ?",
                (video_id,))
     asyncio.create_task(_send_split_video(video_id, start))
+    return {"ok": True}
+
+
+@app.post("/api/split-videos/{video_id}/restore")
+async def restore_split_video_endpoint(video_id: str):
+    """Qismlarni qayta bitta asl videoga yig'adi."""
+    v = _get_split_video(video_id)
+    if Path(v["path"]).exists():
+        raise HTTPException(400, "Asl video serverda bor - qaytarish shart emas.")
+    db.execute("UPDATE videos SET split_status = 'restoring', split_error = NULL, split_restore_target = NULL "
+               "WHERE id = ?", (video_id,))
+    asyncio.create_task(_restore_split_video(video_id))
+    return {"ok": True}
+
+
+@app.post("/api/split-videos/{video_id}/to-library")
+async def split_video_to_library_endpoint(video_id: str):
+    """Videoni Kutubxonaga (tarjima quvuriga) o'tkazadi; asli o'chirilgan bo'lsa
+    avval qismlardan tiklanadi."""
+    _get_split_video(video_id)
+    db.execute("UPDATE videos SET split_status = 'restoring', split_error = NULL, split_restore_target = 'library' "
+               "WHERE id = ?", (video_id,))
+    asyncio.create_task(_restore_split_video(video_id))
     return {"ok": True}
 
 
