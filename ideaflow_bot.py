@@ -24,6 +24,7 @@ from storage import IDEA_BOT_API_URL, IDEA_BOT_TOKEN
 
 POLL_TIMEOUT = 30
 LAST_UPDATE_ID_KEY = "ideaflow_bot_last_update_id"
+BOT_USERNAME_KEY = "ideaflow_bot_username"
 
 MAIN_KEYBOARD = [
     ["📅 Bugun", "💡 Ideyalar"],
@@ -175,7 +176,7 @@ async def flash(chat_id, text, ms=4000):
 
 # ------------------------------------------------------------------ access
 
-def _owner_profile():
+def owner_profile():
     """Ma'lumot egasi - barcha ulangan akkauntlar shu profil ma'lumotini ko'radi."""
     return db.fetchone("SELECT * FROM idea_profiles WHERE telegram_user_id IS NOT NULL "
                        "ORDER BY is_admin DESC, created_at ASC LIMIT 1")
@@ -210,7 +211,7 @@ def chats_for_owner(owner_id):
 
 def resolve_profile(frm, chat_id):
     tg_id = int((frm or {}).get("id") or 0)
-    owner = _owner_profile()
+    owner = owner_profile()
     # birinchi ulangan odam - admin va ma'lumot egasi
     if not owner:
         return _create_profile_for(frm or {}, chat_id, True)
@@ -424,22 +425,39 @@ async def show_base(p, chat_id, root_type, folder_id=None):
         None, rows)
 
     # Har bir element alohida xabar; media bo'lsa faylning o'zi yuboriladi.
-    attach_by_item = {}
-    if items:
-        ids = [i["id"] for i in items]
-        for a in db.fetchall(
-                f"SELECT related_id, file_kind, telegram_file_id FROM idea_attachments WHERE user_id = ? "
-                f"AND related_type = 'item' AND telegram_file_id IS NOT NULL "
-                f"AND related_id IN ({', '.join('?' * len(ids))})", (p["id"], *ids)):
-            attach_by_item.setdefault(a["related_id"], a)
     icon = "🎬" if root_type == "video_base" else "📄"
     for i in items:
-        caption = f"{icon} <b>{escape_html(i['title'])}</b>" + ("\n" + escape_html(i["url"]) if i["url"] else "")
-        keyboard = item_keyboard(i["id"])
-        att = attach_by_item.get(i["id"])
-        if att and await send_media(chat_id, att["file_kind"], att["telegram_file_id"], caption, keyboard):
-            continue
+        await send_item(chat_id, i, icon)
+
+
+async def send_item(chat_id, item, icon, location=None):
+    """Elementni yuboradi: media bo'lsa fayl(lar)ning o'zi (1.9 GB'dan katta video
+    bir necha qism bo'lib saqlangan bo'ladi - hammasi ketma-ket), aks holda matn."""
+    parts = db.fetchall("SELECT file_kind, telegram_file_id FROM idea_attachments WHERE related_type = 'item' "
+                        "AND related_id = ? AND telegram_file_id IS NOT NULL ORDER BY rowid", (item["id"],))
+    caption = f"{icon} <b>{escape_html(item['title'])}</b>" + ("\n" + escape_html(item["url"]) if item["url"] else "")
+    if location:
+        caption += f"\n📍 {escape_html(location)}"
+    keyboard = item_keyboard(item["id"])
+    sent_any = False
+    for n, att in enumerate(parts, start=1):
+        part_caption = f"{caption}\n<i>{n}/{len(parts)}-qism</i>" if len(parts) > 1 else caption
+        if await send_media(chat_id, att["file_kind"], att["telegram_file_id"], part_caption,
+                            keyboard if n == 1 else None):
+            sent_any = True
+    if not sent_any:
         await send_message(chat_id, caption, keyboard)
+
+
+async def show_item_by_link(p, chat_id, item_id):
+    """Saytdagi "Botda ochish" havolasi (/start v_<id>) - shu videoni topib yuboradi."""
+    item = db.fetchone("SELECT * FROM idea_items WHERE id = ? AND user_id = ?", (item_id, p["id"]))
+    if not item:
+        await send_message(chat_id, "❌ Bu video topilmadi (o'chirilgan bo'lishi mumkin).", None, MAIN_KEYBOARD)
+        return
+    root_label = {"base": "📚 Baza", "video_base": "🎬 Video Baza", "tarjima": "🌐 Tarjima"}.get(item["root_type"], "")
+    location = f"{root_label} / {folder_path(p['id'], item['folder_id'])}" if item["root_type"] != "tarjima" else root_label
+    await send_item(chat_id, item, "🎬" if item["type"] == "video" else "📄", location)
 
 
 def is_browse_button(text):
@@ -721,6 +739,9 @@ async def handle_message(msg):
     if lower.startswith("/") or text in MENU_TEXTS:
         set_state(profile["id"], None, None)
 
+    deep_link = re.match(r"^/start\s+v_([0-9a-f-]+)$", lower)
+    if deep_link:
+        return await show_item_by_link(profile, chat_id, deep_link.group(1))
     if lower.startswith(("/start", "/help", "/yordam")):
         await send_message(chat_id, HELP, None, MAIN_KEYBOARD)
         return
@@ -1125,7 +1146,7 @@ async def run_daily_reviews():
 def add_tarjima_video(title: str, url: str) -> bool:
     """Tarjima dasturidagi tayyor videoni botning "🌐 Tarjima" bo'limiga yozadi
     (avval Lovable'dagi /api/public/darslik/videos shu ishni qilardi)."""
-    owner = _owner_profile() or db.fetchone("SELECT id FROM idea_profiles ORDER BY created_at LIMIT 1")
+    owner = owner_profile() or db.fetchone("SELECT id FROM idea_profiles ORDER BY created_at LIMIT 1")
     if not owner:
         return False
     _insert("idea_items", user_id=owner["id"], root_type="tarjima", folder_id=None, type="video",
@@ -1146,6 +1167,7 @@ async def _poll():
     try:
         me = await tg("getMe")
         print(f"[ideaflow_bot] Ulandi: @{me.get('username')} (id={me.get('id')})", flush=True)
+        db.set_setting(BOT_USERNAME_KEY, me.get("username") or "")
         # Lovable webhook'ini o'chiramiz - aks holda getUpdates ishlamaydi.
         await tg("deleteWebhook")
         await tg("setMyCommands", {"commands": [

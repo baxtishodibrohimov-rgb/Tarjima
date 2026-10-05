@@ -448,6 +448,7 @@
       <button class="nav-btn active" data-page="page-videos" onclick="switchPage('page-videos')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Kutubxona</button>
       <button class="nav-btn admin-only" data-page="page-split" onclick="switchPage('page-split')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></svg>Video bo'lish</button>
       <button class="nav-btn admin-only" data-page="page-translate" onclick="switchPage('page-translate')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 16.58A5 5 0 0 0 18 7h-1.26A8 8 0 1 0 4 15.25"/><polyline points="12 12 12 21"/><polyline points="9 18 12 21 15 18"/></svg>Bulut</button>
+      <button class="nav-btn admin-only" data-page="page-bot" onclick="switchPage('page-bot')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>Bot</button>
       <button class="nav-btn" data-page="page-settings" onclick="switchPage('page-settings')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>Sozlamalar</button>
       <button class="nav-btn" data-page="page-transcribe" onclick="switchPage('page-transcribe')" style="display:none;">Video → Matn</button>
       <button class="nav-btn" data-page="page-audio" onclick="switchPage('page-audio')" style="display:none;">Audio</button>
@@ -515,6 +516,52 @@
     <button class="action" onclick="addApiKey('claude')">Qo'shish</button>
   </div>
   <div class="status" id="keyStatus-claude"></div>
+</div>
+
+<div class="modal-backdrop" id="botPlayerModal-backdrop" onclick="closeBotPlayer()"></div>
+<div class="modal" id="botPlayerModal">
+  <div class="modal-head">
+    <h2 id="botPlayerTitle">Video</h2>
+    <button class="tiny-btn modal-close-btn" onclick="closeBotPlayer()" title="Yopish" aria-label="Yopish">×</button>
+  </div>
+  <div class="row" id="botPlayerParts" style="margin-top:0;"></div>
+  <video id="botPlayerVideo" controls preload="metadata" style="width:100%; max-height:70vh; background:#000; border-radius:10px; margin-top:8px;"></video>
+  <p class="hint">Video Telegram'dan olinmoqda. Katta video birinchi marta ochilganda bir necha daqiqa kutish kerak bo'lishi mumkin.</p>
+</div>
+
+<div class="modal-backdrop" id="botMoveModal-backdrop" onclick="closeModal('botMoveModal')"></div>
+<div class="modal" id="botMoveModal">
+  <div class="modal-head">
+    <h2 id="botMoveTitle">Qayerga ko'chiramiz?</h2>
+    <button class="tiny-btn modal-close-btn" onclick="closeModal('botMoveModal')" title="Yopish" aria-label="Yopish">×</button>
+  </div>
+  <label class="field">Papka</label>
+  <select id="botMoveTarget"></select>
+  <div class="row">
+    <button class="action" onclick="submitBotMove()">Ko'chirish</button>
+  </div>
+  <div class="status" id="botMoveStatus"></div>
+</div>
+
+<div class="modal-backdrop" id="botAddModal-backdrop" onclick="closeModal('botAddModal')"></div>
+<div class="modal" id="botAddModal">
+  <div class="modal-head">
+    <h2>Bot bo'limiga qo'shish</h2>
+    <button class="tiny-btn modal-close-btn" onclick="closeModal('botAddModal')" title="Yopish" aria-label="Yopish">×</button>
+  </div>
+  <p class="hint">Video Telegram botdagi "🎬 Video Baza"ga, tanlangan papkaga yuklanadi va saytdagi "Bot" bo'limida ham ko'rinadi.</p>
+  <label class="field">Qaysi video</label>
+  <select id="botAddVariant"></select>
+  <label class="field" style="margin-top:10px;">Qaysi papkaga</label>
+  <select id="botAddFolder"></select>
+  <label style="display:flex; gap:8px; align-items:flex-start; margin-top:12px; font-size:13.5px;">
+    <input type="checkbox" id="botAddRemove" checked style="margin-top:3px;">
+    <span>Yuklangach Kutubxonadan o'chirish — serverda joy bo'shaydi, video faqat botda qoladi va "Bot" bo'limida havola bo'lib turadi.</span>
+  </label>
+  <div class="row">
+    <button class="action" id="botAddSubmit" onclick="submitBotAdd()">Botga yuklash</button>
+  </div>
+  <div class="status" id="botAddStatus"></div>
 </div>
 
 <div class="modal-backdrop" id="folderModal-backdrop" onclick="closeModal('folderModal')"></div>
@@ -670,6 +717,14 @@
   </div>
 
   <div id="splitVideoList"><p class="hint">Yuklanmoqda...</p></div>
+</div>
+
+<!-- ============================================================ -->
+<!--   PAGE: BOT (Telegram botdagi "Video Baza" bilan bir xil)     -->
+<!-- ============================================================ -->
+<div class="page" id="page-bot">
+  <p class="subtitle">Bu bo'lim Telegram botdagi "🎬 Video Baza" bilan bitta: shu yerda qilingan o'zgarish botda, botda qilingan o'zgarish shu yerda ko'rinadi. Videolar Telegram'da saqlanadi — serverda faqat havolasi turadi. Kutubxonadagi videoni bu yerga qo'shish uchun video sahifasida "🤖 Bot bo'limiga qo'shish"ni bosing.</p>
+  <div id="botPageContent"><p class="hint">Yuklanmoqda...</p></div>
 </div>
 
 <!-- ============================================================ -->
@@ -1006,7 +1061,7 @@ function switchPage(pageId) {
   if (target) target.classList.add('active');
   document.querySelectorAll('.nav-btn[data-page]').forEach(b => b.classList.toggle('active', b.dataset.page === pageId));
   const titles = { 'page-videos': 'Kutubxona', 'page-split': "Video bo'lish",
-    'page-translate': 'Bulut', 'page-settings': 'Sozlamalar', 'page-transcribe': 'Video → Matn',
+    'page-translate': 'Bulut', 'page-bot': 'Bot', 'page-settings': 'Sozlamalar', 'page-transcribe': 'Video → Matn',
     'page-audio': 'Audio', 'page-merge': 'Birlashtirish' };
   const titleEl = document.getElementById('topbarTitle');
   if (titleEl && titles[pageId]) {
@@ -1025,6 +1080,7 @@ function switchPage(pageId) {
   const folderBar = document.getElementById('folderBar');
   if (folderBar) folderBar.style.display = pageId === 'page-videos' && !currentDetailVideoId ? 'flex' : 'none';
   if (pageId === 'page-translate') loadCloudInbox();
+  if (pageId === 'page-bot') loadBotTree();
 }
 
 function switchTab(group, tabId) {
@@ -1832,6 +1888,325 @@ function resendSplitVideo(videoId, btnEl) {
     () => postSplitAction(videoId, 'send', btnEl));
 }
 
+/* ============================================================ */
+/*  BOT - Telegram botdagi "🎬 Video Baza" bilan bitta ma'lumot  */
+/* ============================================================ */
+let botTree = null;
+let botFolderId = null;
+let botMoveState = null;
+let botAddVideoId = null;
+
+async function loadBotTree() {
+  try {
+    botTree = await apiFetch('/api/bot/tree');
+  } catch (e) {
+    const el = document.getElementById('botPageContent');
+    if (el) el.innerHTML = `<p class="status err">Xato: ${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  if (botFolderId && !botTree.folders.some(f => f.id === botFolderId)) botFolderId = null;
+  renderBotPage();
+}
+
+function botFolderById(id) {
+  return botTree ? botTree.folders.find(f => f.id === id) : null;
+}
+
+function botFolderPath(folderId) {
+  const path = [];
+  const seen = new Set();
+  let id = folderId;
+  while (id && !seen.has(id)) {
+    seen.add(id);
+    const folder = botFolderById(id);
+    if (!folder) break;
+    path.unshift(folder);
+    id = folder.parent_folder_id;
+  }
+  return path;
+}
+
+function botFlatFolders(parentId = null, depth = 0, exclude = new Set()) {
+  const result = [];
+  for (const f of botTree.folders.filter(f => (f.parent_folder_id || null) === parentId)) {
+    if (exclude.has(f.id)) continue;
+    result.push({ folder: f, depth });
+    result.push(...botFlatFolders(f.id, depth + 1, exclude));
+  }
+  return result;
+}
+
+function botDescendants(folderId) {
+  const found = new Set([folderId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const f of botTree.folders) {
+      if (!found.has(f.id) && found.has(f.parent_folder_id)) { found.add(f.id); changed = true; }
+    }
+  }
+  return found;
+}
+
+function botFolderOptions(exclude = new Set()) {
+  return `<option value="">🎬 Video Baza (asosiy)</option>` + botFlatFolders(null, 0, exclude).map(({ folder, depth }) =>
+    `<option value="${folder.id}">${'— '.repeat(depth + 1)}${escapeHtml(folder.name)}</option>`).join('');
+}
+
+function renderBotPage() {
+  const el = document.getElementById('botPageContent');
+  if (!el || !botTree) return;
+  if (!botTree.linked) {
+    el.innerHTML = `<p class="status err">Bot hali ulanmagan: Telegram'da botga /start yozing, keyin bu sahifani yangilang.</p>`;
+    return;
+  }
+  const crumbs = `<span class="folder-chip ${botFolderId === null ? 'active' : ''}" onclick="openBotFolder(null)">🎬 Video Baza</span>` +
+    botFolderPath(botFolderId).map(f =>
+      `<span style="color:var(--muted); flex:none;">›</span><span class="folder-chip active" onclick="openBotFolder('${f.id}')">${escapeHtml(f.name)}</span>`
+    ).join('');
+  const current = botFolderId ? botFolderById(botFolderId) : null;
+  const toolbar = `<div class="row" style="gap:6px;">
+      <button class="small-btn" onclick="createBotFolder()">＋ Papka</button>
+      ${current ? `<button class="small-btn" onclick="renameBotFolder('${current.id}')">✏️ Nomini o'zgartirish</button>
+        <button class="small-btn" onclick="openBotMove('folder', '${current.id}')">📦 Ko'chirish</button>
+        <button class="small-btn danger" onclick="deleteBotFolder('${current.id}')">🗑 Papkani o'chirish</button>` : ''}
+    </div>`;
+
+  const subfolders = botTree.folders.filter(f => (f.parent_folder_id || null) === botFolderId);
+  const folderHtml = subfolders.map(f => {
+    const subCount = botTree.folders.filter(x => x.parent_folder_id === f.id).length;
+    const videoCount = botTree.items.filter(i => i.folder_id === f.id).length;
+    const counts = [subCount ? `${subCount} papka` : '', `${videoCount} video`].filter(Boolean).join(' · ');
+    return `<div class="job-row" style="cursor:pointer;" onclick="openBotFolder('${f.id}')">
+      <strong>📁 ${escapeHtml(f.name)}</strong><span class="hint">${counts}</span></div>`;
+  }).join('');
+
+  const uploadHtml = botTree.uploads.filter(u => (u.bot_upload_folder_id || null) === botFolderId).map(u => {
+    const title = escapeHtml(u.bot_upload_title || u.original_name || '');
+    if (u.bot_upload_status === 'uploading') {
+      const progress = u.bot_upload_progress ? ` (${escapeHtml(u.bot_upload_progress)} qism yuborildi)` : '';
+      return `<div class="job-row"><div><strong>🎬 ${title}</strong>
+        <div style="margin-top:4px;"><span class="pill">⏳ Botga yuklanmoqda${progress}</span></div></div></div>`;
+    }
+    return `<div class="job-row"><div><strong>🎬 ${title}</strong>
+      <div style="margin-top:4px;"><span class="pill err">✗ Botga yuklashda xato: ${escapeHtml(u.bot_upload_error || '')}</span></div></div>
+      <button class="small-btn" onclick="openVideoFromBot('${u.id}')">Kutubxonada ochish</button></div>`;
+  }).join('');
+
+  const itemHtml = botTree.items.filter(i => (i.folder_id || null) === botFolderId).map(i => {
+    const n = i.parts.length;
+    const size = i.parts.reduce((sum, p) => sum + (p.file_size || 0), 0);
+    const meta = [n > 1 ? `${n} qism` : '', size ? fmtBytes(size) : '', (i.created_at || '').slice(0, 10)]
+      .filter(Boolean).join(' · ');
+    const safeUrl = i.url && /^https?:\/\//i.test(i.url) ? i.url : '';
+    const botLink = botTree.bot_username ? `https://t.me/${encodeURIComponent(botTree.bot_username)}?start=v_${i.id}` : '';
+    const viewBtn = n
+      ? `<button class="small-btn" onclick="openBotPlayer('${i.id}')">▶ Ko'rish</button>`
+      : (safeUrl ? `<a class="small-btn" style="text-decoration:none;" href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener">🔗 Havola</a>` : '');
+    return `<div class="job-row">
+      <div style="min-width:0;"><strong>${i.type === 'video' ? '🎬' : '📄'} ${escapeHtml(i.title)}</strong>
+        <div class="hint">${meta}</div></div>
+      <div class="row" style="margin-top:0; gap:6px;">
+        ${viewBtn}
+        ${botLink ? `<a class="small-btn" style="text-decoration:none;" href="${botLink}" target="_blank" rel="noopener">📲 Botda ochish</a>` : ''}
+        <button class="small-btn" onclick="openBotMove('item', '${i.id}')" title="Ko'chirish">📦</button>
+        <button class="small-btn" onclick="renameBotItem('${i.id}')" title="Nomini o'zgartirish">✏️</button>
+        <button class="small-btn danger" onclick="deleteBotItem('${i.id}')" title="O'chirish">🗑</button>
+      </div></div>`;
+  }).join('');
+
+  const empty = folderHtml || uploadHtml || itemHtml ? '' : `<p class="hint">Bu papka bo'sh.</p>`;
+  el.innerHTML = `<div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center;">${crumbs}</div>
+    ${toolbar}<div style="margin-top:12px;">${folderHtml}${uploadHtml}${itemHtml}${empty}</div>`;
+}
+
+function openBotFolder(folderId) {
+  botFolderId = folderId;
+  renderBotPage();
+}
+
+async function botPost(path, fields) {
+  const form = new FormData();
+  for (const [k, v] of Object.entries(fields)) form.append(k, v);
+  return apiFetch(path, { method: 'POST', body: form });
+}
+
+async function createBotFolder() {
+  const name = prompt('Yangi papka nomi:');
+  if (!name || !name.trim()) return;
+  try {
+    await botPost('/api/bot/folders', { name: name.trim(), parent_id: botFolderId || '' });
+    await loadBotTree();
+  } catch (e) { alert('Xato: ' + e.message); }
+}
+
+async function renameBotFolder(folderId) {
+  const folder = botFolderById(folderId);
+  const name = prompt('Papkaning yangi nomi:', folder ? folder.name : '');
+  if (!name || !name.trim()) return;
+  try {
+    await botPost(`/api/bot/folders/${folderId}/rename`, { name: name.trim() });
+    await loadBotTree();
+  } catch (e) { alert('Xato: ' + e.message); }
+}
+
+function deleteBotFolder(folderId) {
+  const folder = botFolderById(folderId);
+  if (!folder) return;
+  showConfirm(`"${folder.name}" papkasini o'chirmoqchimisiz? U botda ham o'chadi. Ichidagi videolar o'chmaydi — asosiy bo'limga chiqadi.`, async () => {
+    try {
+      await apiFetch(`/api/bot/folders/${folderId}`, { method: 'DELETE' });
+      botFolderId = folder.parent_folder_id || null;
+      await loadBotTree();
+    } catch (e) { alert('Xato: ' + e.message); }
+  });
+}
+
+async function renameBotItem(itemId) {
+  const item = botTree.items.find(i => i.id === itemId);
+  const title = prompt('Videoning yangi nomi:', item ? item.title : '');
+  if (!title || !title.trim()) return;
+  try {
+    await botPost(`/api/bot/items/${itemId}/rename`, { title: title.trim() });
+    await loadBotTree();
+  } catch (e) { alert('Xato: ' + e.message); }
+}
+
+function deleteBotItem(itemId) {
+  const item = botTree.items.find(i => i.id === itemId);
+  if (!item) return;
+  showConfirm(`"${item.title}" videosini o'chirmoqchimisiz? U botdagi Video Bazadan ham o'chadi.`, async () => {
+    try {
+      await apiFetch(`/api/bot/items/${itemId}`, { method: 'DELETE' });
+      await loadBotTree();
+    } catch (e) { alert('Xato: ' + e.message); }
+  });
+}
+
+function openBotMove(kind, id) {
+  botMoveState = { kind, id };
+  const exclude = kind === 'folder' ? botDescendants(id) : new Set();
+  const select = document.getElementById('botMoveTarget');
+  select.innerHTML = botFolderOptions(exclude);
+  const current = kind === 'folder' ? (botFolderById(id) || {}).parent_folder_id : (botTree.items.find(i => i.id === id) || {}).folder_id;
+  select.value = current || '';
+  document.getElementById('botMoveTitle').textContent = kind === 'folder' ? "Papkani qayerga ko'chiramiz?" : "Videoni qayerga ko'chiramiz?";
+  setStatus('botMoveStatus', '', '');
+  openModal('botMoveModal');
+}
+
+async function submitBotMove() {
+  if (!botMoveState) return;
+  const target = document.getElementById('botMoveTarget').value;
+  try {
+    if (botMoveState.kind === 'folder') {
+      await botPost(`/api/bot/folders/${botMoveState.id}/move`, { parent_id: target });
+    } else {
+      await botPost(`/api/bot/items/${botMoveState.id}/move`, { folder_id: target });
+    }
+    closeModal('botMoveModal');
+    await loadBotTree();
+  } catch (e) { setStatus('botMoveStatus', 'Xato: ' + e.message, 'err'); }
+}
+
+function openBotPlayer(itemId) {
+  const item = botTree.items.find(i => i.id === itemId);
+  if (!item) return;
+  document.getElementById('botPlayerTitle').textContent = item.title;
+  const n = item.parts.length;
+  document.getElementById('botPlayerParts').innerHTML = n > 1
+    ? item.parts.map((_, idx) => `<button class="small-btn" id="botPart-${idx + 1}" onclick="playBotPart('${itemId}', ${idx + 1})">${idx + 1}-qism</button>`).join('')
+    : '';
+  openModal('botPlayerModal');
+  playBotPart(itemId, 1);
+}
+
+function playBotPart(itemId, part) {
+  const video = document.getElementById('botPlayerVideo');
+  video.src = `${API_BASE}/api/bot/items/${itemId}/stream?part=${part}`;
+  video.play().catch(() => {});
+  document.querySelectorAll('#botPlayerParts .small-btn').forEach(b => b.classList.toggle('active', b.id === `botPart-${part}`));
+}
+
+function closeBotPlayer() {
+  const video = document.getElementById('botPlayerVideo');
+  video.pause();
+  video.removeAttribute('src');
+  video.load();
+  closeModal('botPlayerModal');
+}
+
+function openVideoFromBot(videoId) {
+  switchPage('page-videos');
+  openVideoDetail(videoId);
+}
+
+function botUploadPanelHtml(v) {
+  if (!currentUser || !currentUser.is_superadmin) return '';
+  if (v.bot_upload_status === 'uploading') {
+    const progress = v.bot_upload_progress ? ` (${escapeHtml(v.bot_upload_progress)} qism yuborildi)` : '';
+    return `<span class="pill">⏳ Botga yuklanmoqda${progress}</span>`;
+  }
+  const parts = [];
+  if (v.bot_upload_status === 'done') {
+    parts.push(`<span class="pill ok">✓ Bot bo'limiga yuklangan</span>`);
+  } else if (v.bot_upload_status === 'error') {
+    parts.push(`<span class="pill err">✗ Botga yuklashda xato: ${escapeHtml(v.bot_upload_error || '')}</span>`);
+  }
+  if ((v.bot_variants || []).length) {
+    parts.push(`<button class="small-btn" onclick="openBotAdd('${v.id}')">🤖 Bot bo'limiga qo'shish</button>`);
+  }
+  return parts.join(' ');
+}
+
+async function openBotAdd(videoId) {
+  botAddVideoId = videoId;
+  const v = currentDetailVideoData && currentDetailVideoData.id === videoId ? currentDetailVideoData : {};
+  const labels = { final: "O'zbekcha (tarjima qilingan yakuniy video)", subtitled: "O'zbekcha, subtitrli",
+    original: 'Asl video (tarjimasiz)' };
+  document.getElementById('botAddVariant').innerHTML = (v.bot_variants || []).map(x =>
+    `<option value="${x}">${labels[x] || x}</option>`).join('');
+  document.getElementById('botAddRemove').checked = true;
+  document.getElementById('botAddSubmit').disabled = false;
+  setStatus('botAddStatus', '', '');
+  const folderSelect = document.getElementById('botAddFolder');
+  folderSelect.innerHTML = '<option value="">Yuklanmoqda...</option>';
+  openModal('botAddModal');
+  try {
+    botTree = await apiFetch('/api/bot/tree');
+    folderSelect.innerHTML = botFolderOptions();
+    folderSelect.value = botFolderId || '';
+    if (!botTree.linked) {
+      setStatus('botAddStatus', "Bot hali ulanmagan: avval Telegram'da botga /start yozing.", 'err');
+      document.getElementById('botAddSubmit').disabled = true;
+    }
+  } catch (e) { setStatus('botAddStatus', 'Xato: ' + e.message, 'err'); }
+}
+
+async function submitBotAdd() {
+  const remove = document.getElementById('botAddRemove').checked;
+  const folderId = document.getElementById('botAddFolder').value;
+  const btn = document.getElementById('botAddSubmit');
+  btn.disabled = true;
+  try {
+    await botPost('/api/bot/upload', {
+      video_id: botAddVideoId, variant: document.getElementById('botAddVariant').value,
+      folder_id: folderId, remove_from_library: remove ? 'true' : 'false',
+    });
+    closeModal('botAddModal');
+    if (remove) {
+      closeVideoDetail();
+      botFolderId = folderId || null;
+      switchPage('page-bot');
+    } else {
+      loadVideoDetail(botAddVideoId);
+    }
+  } catch (e) {
+    btn.disabled = false;
+    setStatus('botAddStatus', 'Xato: ' + e.message, 'err');
+  }
+}
+
 async function deleteSplitVideo(videoId) {
   showConfirm("Bu videoni o'chirmoqchimisiz?", async () => {
     try {
@@ -2319,6 +2694,7 @@ async function pollVideoDetail(id) {
 
 function videoDetailHasActiveWork(v) {
   if (!v) return false;
+  if (v.bot_upload_status === 'uploading') return true;
   if (v.status !== 'completed' && !v.blocked_reason) return true;
   const learning = v.learning_track || {};
   if (learning.audio_status === 'generating' || learning.final_video_status === 'generating' ||
@@ -3643,6 +4019,7 @@ function renderRenderStage(v) {
         </div>
         <div class="row" id="telegramRow-${v.id}">
           ${telegramButtonHtml(v)}
+          ${botUploadPanelHtml(v)}
         </div>
         <div class="status" id="telegramStatus-${v.id}"></div>
       </div>
@@ -4177,6 +4554,7 @@ function renderProjectStatus(v) {
 }
 
 function renderFilesAndLog(v) {
+  const botPanel = botUploadPanelHtml(v);
   let files = '';
   if (v.results && v.results.length) {
     files += v.results.map(r => `
@@ -4198,6 +4576,7 @@ function renderFilesAndLog(v) {
     <div class="stage-head"><h3>Ma'lumotlar</h3></div>
     <p class="hint">${fmtBytes(v.file_size)}${v.duration ? ' · ' + fmtMinSec(v.duration) : ''}${v.message ? ' · ' + escapeHtml(v.message) : ''}</p>
     ${renderProjectStatus(v)}
+    ${botPanel ? `<div class="row">${botPanel}</div>` : ''}
     ${(mainVideo || learningVideo || learningSrt || learningAudio) ? `<div class="row">${mainVideo}${learningVideo}${learningSrt}${learningAudio}</div>` : ''}
     <h3 style="margin-top:20px;">Natija fayllari</h3>
     ${files || '<p class="hint">Hali natija fayllari yo\'q.</p>'}
@@ -4620,6 +4999,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       loadJobsPanel();
     }
     else if (id === 'page-split') loadSplitVideos();
+    else if (id === 'page-bot' && !document.querySelector('.modal.open')) loadBotTree();
   }, 4000);
 });
 

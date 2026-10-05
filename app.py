@@ -30,6 +30,7 @@ import learning
 import tts
 import worker
 import ideaflow_bot
+import bot_section
 from storage import (VIDEOS_DIR, RESULTS_DIR, UPLOADS_DIR, CHUNKS_DIR, SPLIT_DIR, CLOUD_DIR, MAX_UPLOAD_SIZE, ADMIN_TOKEN,
                       UPLOAD_CHUNK_SIZE, CHUNK_SECONDS, MAX_WHISPER_CONCURRENCY, MAX_ACTIVE_VIDEO_JOBS,
                       MAX_ACTIVE_TTS_JOBS, REPETITION_THRESHOLD, DARSLIK_API_KEY,
@@ -101,6 +102,7 @@ def range_file_response(request: Request, path: Path, media_type: str):
 
 
 app = FastAPI(title="Darslik Studiyasi - Cloud")
+app.include_router(bot_section.router)
 
 # Diqqat: production uchun bu yerga faqat o'zingizning sayt manzilingizni yozing
 app.add_middleware(
@@ -151,6 +153,7 @@ async def on_startup():
     if INBOUND_BOT_TOKEN:
         import telegram_bot
         asyncio.create_task(telegram_bot.poll_updates())
+    bot_section.recover_interrupted_uploads()
     ideaflow_bot.start()
 
 
@@ -450,6 +453,10 @@ def video_public(v: dict) -> dict:
         "audio_status": v["audio_status"], "final_video_status": v["final_video_status"],
         "subtitled_video_status": v["subtitled_video_status"] or "none",
         "subtitled_video_error": v["subtitled_video_error"],
+        "bot_upload_status": v["bot_upload_status"] or "none", "bot_upload_error": v["bot_upload_error"],
+        "bot_upload_progress": v["bot_upload_progress"], "bot_item_id": v["bot_item_id"],
+        "bot_variants": [name for name, (column, _) in bot_section.VARIANTS.items()
+                         if v[column] and Path(v[column]).exists()],
         "cost_total": v["cost_total"] or 0,
         "cost_total_som": v["cost_total_som"] or 0,
         "has_thumbnail": bool(v["thumbnail_path"]),
@@ -689,24 +696,30 @@ async def delete_video(video_id: str, mode: str = "full"):
         db.execute("UPDATE chunks SET status='pending', transcript=NULL WHERE video_id = ?", (video_id,))
         worker._update_video(video_id, status="segments_ready", blocked_reason=None)
     else:
-        worker.CANCEL_FLAGS[video_id] = True
-        worker.cleanup_learning_track(video_id, delete_record=True)
-        if v["tts_job_id"]:
-            db.execute("DELETE FROM tts_segments WHERE job_id = ?", (v["tts_job_id"],))
-            db.execute("DELETE FROM tts_jobs WHERE id = ?", (v["tts_job_id"],))
-        db.execute("DELETE FROM chunks WHERE video_id = ?", (video_id,))
-        db.execute("DELETE FROM results WHERE video_id = ?", (video_id,))
-        db.execute("DELETE FROM job_logs WHERE video_id = ?", (video_id,))
-        db.execute("DELETE FROM costs WHERE video_id = ?", (video_id,))
-        db.execute("DELETE FROM videos WHERE id = ?", (video_id,))
-        shutil.rmtree(VIDEOS_DIR / video_id, ignore_errors=True)
-        shutil.rmtree(CHUNKS_DIR / video_id, ignore_errors=True)
-        shutil.rmtree(RESULTS_DIR / video_id, ignore_errors=True)
-        shutil.rmtree(SPLIT_DIR / video_id, ignore_errors=True)
-        from storage import TTS_DIR
-        if v["tts_job_id"]:
-            shutil.rmtree(TTS_DIR / v["tts_job_id"], ignore_errors=True)
+        delete_video_completely(v)
     return {"ok": True}
+
+
+def delete_video_completely(v: dict):
+    """Kutubxona loyihasini barcha fayllari va yozuvlari bilan o'chiradi."""
+    video_id = v["id"]
+    worker.CANCEL_FLAGS[video_id] = True
+    worker.cleanup_learning_track(video_id, delete_record=True)
+    if v["tts_job_id"]:
+        db.execute("DELETE FROM tts_segments WHERE job_id = ?", (v["tts_job_id"],))
+        db.execute("DELETE FROM tts_jobs WHERE id = ?", (v["tts_job_id"],))
+    db.execute("DELETE FROM chunks WHERE video_id = ?", (video_id,))
+    db.execute("DELETE FROM results WHERE video_id = ?", (video_id,))
+    db.execute("DELETE FROM job_logs WHERE video_id = ?", (video_id,))
+    db.execute("DELETE FROM costs WHERE video_id = ?", (video_id,))
+    db.execute("DELETE FROM videos WHERE id = ?", (video_id,))
+    shutil.rmtree(VIDEOS_DIR / video_id, ignore_errors=True)
+    shutil.rmtree(CHUNKS_DIR / video_id, ignore_errors=True)
+    shutil.rmtree(RESULTS_DIR / video_id, ignore_errors=True)
+    shutil.rmtree(SPLIT_DIR / video_id, ignore_errors=True)
+    from storage import TTS_DIR
+    if v["tts_job_id"]:
+        shutil.rmtree(TTS_DIR / v["tts_job_id"], ignore_errors=True)
 
 
 @app.post("/api/videos/{video_id}/restart")

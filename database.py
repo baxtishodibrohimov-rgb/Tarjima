@@ -489,6 +489,13 @@ _VIDEO_NEW_COLUMNS = {
     # "Botga jo'natish" bosilguncha saqlanadi.
     "split_status": "TEXT DEFAULT 'none'",
     "split_error": "TEXT",
+    # Saytdagi "Bot" bo'limiga (Telegram botdagi Video Baza) yuklash holati.
+    "bot_upload_status": "TEXT DEFAULT 'none'",
+    "bot_upload_error": "TEXT",
+    "bot_upload_progress": "TEXT",
+    "bot_upload_folder_id": "TEXT",
+    "bot_upload_title": "TEXT",
+    "bot_item_id": "TEXT",
     # Asosiy yakuniy videoga subtitr "kuydirilgan" (hardsub) nusxasi - ixtiyoriy,
     # foydalanuvchi so'rasa yaratiladi, asosiy final_video_path'ga UMUMAN tegmaydi.
     # Xatosi ham ALOHIDA ustunda (umumiy `error` maydonini "band" qilib

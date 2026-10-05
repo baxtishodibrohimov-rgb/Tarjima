@@ -188,7 +188,7 @@ def authorize_resource(request: Request, user: dict):
     if user["role"] == "superadmin":
         return
 
-    admin_prefixes = ("/api/admin", "/api/debug", "/api/split-videos", "/api/cloud-files")
+    admin_prefixes = ("/api/admin", "/api/debug", "/api/split-videos", "/api/cloud-files", "/api/bot/")
     if path.startswith(admin_prefixes) or path.endswith("/send-to-bot"):
         raise HTTPException(403, "Bu bo'lim faqat super-admin uchun.")
 
