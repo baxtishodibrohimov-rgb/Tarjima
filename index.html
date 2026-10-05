@@ -100,6 +100,9 @@
   .topbar-back:hover { background:var(--accent-chip); }
   .topbar-actions { margin-left:auto; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
   #headerFolderButton { width:34px; height:34px; font-size:14px; }
+  body.on-bot-page .topbar { display:none; }
+  #botPageContent .card-foot { flex-wrap:wrap; min-width:0; }
+  #botPageContent .status-pill { white-space:normal; max-width:100%; overflow-wrap:anywhere; }
   #topbarTitle { display:none; }
   .topbar-video-name { display:none; min-width:0; max-width:min(56vw,720px); overflow:hidden;
     text-overflow:ellipsis; white-space:nowrap; color:var(--muted); font-size:13px; font-weight:500; }
@@ -603,6 +606,24 @@
   <div class="status" id="folderModalStatus"></div>
 </div>
 
+<div class="modal-backdrop" id="botFolderModal-backdrop" onclick="closeModal('botFolderModal')"></div>
+<div class="modal" id="botFolderModal">
+  <div class="modal-head">
+    <h2>Papkalarni boshqarish</h2>
+    <button class="tiny-btn modal-close-btn" onclick="closeModal('botFolderModal')" title="Yopish" aria-label="Yopish">×</button>
+  </div>
+  <div id="botFolderManagerList" class="folder-manager-list"></div>
+  <h3 style="margin-top:18px;">Yangi papka</h3>
+  <label class="field">Papka nomi</label>
+  <input type="text" id="newBotFolderName" placeholder="Masalan: MARPE" onkeydown="if(event.key==='Enter') submitNewBotFolder();">
+  <label class="field" style="margin-top:10px;">Qaysi papka ichida</label>
+  <select id="newBotFolderParent"></select>
+  <div class="row">
+    <button class="action" onclick="submitNewBotFolder()">Yaratish</button>
+  </div>
+  <div class="status" id="botFolderModalStatus"></div>
+</div>
+
 <div class="modal-backdrop" id="confirmModal-backdrop" onclick="closeModal('confirmModal')"></div>
 <div class="modal" id="confirmModal">
   <div class="modal-head">
@@ -767,7 +788,6 @@
 <!--   PAGE: BOT (Telegram botdagi "Video Baza" bilan bir xil)     -->
 <!-- ============================================================ -->
 <div class="page" id="page-bot">
-  <p class="subtitle">Bu bo'lim Telegram botdagi "🎬 Video Baza" bilan bitta: shu yerda qilingan o'zgarish botda, botda qilingan o'zgarish shu yerda ko'rinadi. Videolar Telegram'da saqlanadi — serverda faqat havolasi turadi. Kutubxonadagi videoni bu yerga qo'shish uchun video sahifasida "🤖 Bot bo'limiga qo'shish"ni bosing.</p>
   <div id="botPageContent"><p class="hint">Yuklanmoqda...</p></div>
 </div>
 
@@ -1099,7 +1119,10 @@ function toggleTheme() {
   if (btn) btn.textContent = document.documentElement.getAttribute('data-theme') === 'dark' ? '☀️' : '🌙';
 })();
 
+let currentPageId = 'page-videos';
 function switchPage(pageId) {
+  currentPageId = pageId;
+  document.body.classList.toggle('on-bot-page', pageId === 'page-bot');
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   const target = document.getElementById(pageId);
   if (target) target.classList.add('active');
@@ -1110,7 +1133,7 @@ function switchPage(pageId) {
   const titleEl = document.getElementById('topbarTitle');
   if (titleEl && titles[pageId]) {
     titleEl.textContent = titles[pageId];
-    titleEl.style.display = (pageId === 'page-videos' || pageId === 'page-translate') ? 'none' : 'block';
+    titleEl.style.display = (pageId === 'page-videos' || pageId === 'page-translate' || pageId === 'page-bot') ? 'none' : 'block';
   }
   const backBtn = document.getElementById('videoBackButton');
   if (backBtn) {
@@ -1123,6 +1146,7 @@ function switchPage(pageId) {
   if (videoName) videoName.style.display = pageId === 'page-videos' && currentDetailVideoData ? 'block' : 'none';
   const folderBar = document.getElementById('folderBar');
   if (folderBar) folderBar.style.display = pageId === 'page-videos' && !currentDetailVideoId ? 'flex' : 'none';
+  if (pageId === 'page-videos' && typeof allFoldersCache !== 'undefined') renderFolderBar();
   if (pageId === 'page-translate') loadCloudInbox();
   if (pageId === 'page-bot') loadBotTree();
 }
@@ -2051,11 +2075,13 @@ function renderBotPage() {
       `<span style="color:var(--muted); flex:none;">›</span><span class="folder-chip active" onclick="openBotFolder('${f.id}')">${escapeHtml(f.name)}</span>`
     ).join('');
   const current = botFolderId ? botFolderById(botFolderId) : null;
-  const toolbar = `<div class="row" style="gap:6px;">
-      <button class="small-btn" onclick="createBotFolder()">＋ Papka</button>
-      ${current ? `<button class="small-btn" onclick="renameBotFolder('${current.id}')">✏️ Nomini o'zgartirish</button>
-        <button class="small-btn" onclick="openBotMove('folder', '${current.id}')">📦 Ko'chirish</button>
-        <button class="small-btn danger" onclick="deleteBotFolder('${current.id}')">🗑 Papkani o'chirish</button>` : ''}
+  const parentName = current && current.parent_folder_id ? (botFolderById(current.parent_folder_id) || {}).name : '';
+  const gearBtn = `<button class="icon-btn" style="width:34px; height:34px; font-size:14px;" onclick="openBotFolderManager()" title="Papkalarni boshqarish" aria-label="Papkalarni boshqarish">⚙</button>`;
+  const toolbar = `<div class="row" style="gap:6px; margin-top:0; align-items:center;">
+      ${current ? `<button class="small-btn" onclick="openBotFolder(${current.parent_folder_id ? `'${current.parent_folder_id}'` : 'null'})">← ${escapeHtml(parentName || 'Orqaga')}</button>
+      <strong>📁 ${escapeHtml(current.name)}</strong>` : ''}
+      <span style="margin-left:auto;"></span>
+      ${gearBtn}
     </div>`;
 
   const subfolders = botTree.folders.filter(f => (f.parent_folder_id || null) === botFolderId);
@@ -2067,48 +2093,115 @@ function renderBotPage() {
       <strong>📁 ${escapeHtml(f.name)}</strong><span class="hint">${counts}</span></div>`;
   }).join('');
 
+  const botFolderSelect = (it) => {
+    const opts = ['<option value="">— Papkasiz —</option>'].concat(botFlatFolders().map(({ folder, depth }) =>
+      `<option value="${folder.id}" ${it.folder_id === folder.id ? 'selected' : ''}>${'— '.repeat(depth)}${escapeHtml(folder.name)}</option>`));
+    return `<div class="vcard-folder-select" onclick="event.stopPropagation()">
+      <select onchange="moveBotItemTo('${it.id}', this.value)">${opts.join('')}</select></div>`;
+  };
+
   const uploadHtml = botTree.uploads.filter(u => (u.bot_upload_folder_id || null) === botFolderId).map(u => {
     const title = escapeHtml(u.bot_upload_title || u.original_name || '');
-    if (u.bot_upload_status === 'uploading') {
-      const progress = u.bot_upload_progress ? ` (${escapeHtml(u.bot_upload_progress)} qism yuborildi)` : '';
-      return `<div class="job-row"><div><strong>🎬 ${title}</strong>
-        <div style="margin-top:4px;"><span class="pill">⏳ Botga yuklanmoqda${progress}</span></div></div></div>`;
-    }
-    return `<div class="job-row"><div><strong>🎬 ${title}</strong>
-      <div style="margin-top:4px;"><span class="pill err">✗ Botga yuklashda xato: ${escapeHtml(u.bot_upload_error || '')}</span></div></div>
-      <button class="small-btn" onclick="openVideoFromBot('${u.id}')">Kutubxonada ochish</button></div>`;
+    const uploading = u.bot_upload_status === 'uploading';
+    const progress = uploading && u.bot_upload_progress ? ` (${escapeHtml(u.bot_upload_progress)} qism)` : '';
+    return `
+    <div class="vcard ${uploading ? 'status-progress' : 'status-error'}" onclick="${uploading ? '' : `openVideoFromBot('${u.id}')`}">
+      <div class="thumb">Video</div>
+      <div class="vbody">
+        <div class="vcard-name-row"><p class="vname">${title}</p></div>
+        <div class="card-foot">
+          ${uploading ? `<span class="status-pill run">⏳ Botga yuklanmoqda${progress}</span>`
+                      : `<span class="status-pill err">✗ Xato: ${escapeHtml(u.bot_upload_error || '')}</span>`}
+        </div>
+      </div>
+    </div>`;
   }).join('');
 
   const itemHtml = botTree.items.filter(i => (i.folder_id || null) === botFolderId).map(i => {
     const n = i.parts.length;
     const size = i.parts.reduce((sum, p) => sum + (p.file_size || 0), 0);
-    const meta = [n > 1 ? `${n} qism` : '', size ? fmtBytes(size) : '', (i.created_at || '').slice(0, 10)]
-      .filter(Boolean).join(' · ');
+    const meta = [size ? fmtBytes(size) : '', n > 1 ? `${n} qism` : '', (i.created_at || '').slice(0, 10)].filter(Boolean).join(' · ');
     const safeUrl = i.url && /^https?:\/\//i.test(i.url) ? i.url : '';
     const botLink = botTree.bot_username ? `https://t.me/${encodeURIComponent(botTree.bot_username)}?start=v_${i.id}` : '';
-    const viewBtn = n
-      ? `<button class="small-btn" onclick="openBotPlayer('${i.id}')">▶ Ko'rish</button>`
-      : (safeUrl ? `<a class="small-btn" style="text-decoration:none;" href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener">🔗 Havola</a>` : '');
-    return `<div class="job-row">
-      <div style="min-width:0;"><strong>${i.type === 'video' ? '🎬' : '📄'} ${escapeHtml(i.title)}</strong>
-        <div class="hint">${meta}</div></div>
-      <div class="row" style="margin-top:0; gap:6px;">
-        ${viewBtn}
-        ${botLink ? `<a class="small-btn" style="text-decoration:none;" href="${botLink}" target="_blank" rel="noopener">📲 Botda ochish</a>` : ''}
-        <button class="small-btn" onclick="openBotMove('item', '${i.id}')" title="Ko'chirish">📦</button>
-        <button class="small-btn" onclick="renameBotItem('${i.id}')" title="Nomini o'zgartirish">✏️</button>
-        <button class="small-btn danger" onclick="deleteBotItem('${i.id}')" title="O'chirish">🗑</button>
-      </div></div>`;
+    const open = n ? `openBotPlayer('${i.id}')` : (safeUrl ? `window.open(this.dataset.url, '_blank', 'noopener')` : '');
+    return `
+    <div class="vcard" data-url="${escapeHtml(safeUrl)}" onclick="${open}">
+      <div class="thumb">${n ? '▶ Video' : (i.type === 'video' ? 'Video' : '🔗 Havola')}</div>
+      <div class="vbody">
+        <div class="vcard-name-row">
+          <p class="vname">${escapeHtml(i.title)}</p>
+          <button class="rename-video-btn" onclick="event.stopPropagation(); renameBotItem('${i.id}')" title="Nomini o‘zgartirish" aria-label="Nomini o‘zgartirish">✎</button>
+        </div>
+        <p class="vmeta">${meta}</p>
+        <div class="card-foot">
+          <span class="status-pill ok">✓ Botda</span>
+          <span style="display:flex; gap:6px;" onclick="event.stopPropagation()">
+            ${botLink ? `<a class="rename-video-btn" style="text-decoration:none; display:inline-flex; align-items:center; justify-content:center;" href="${botLink}" target="_blank" rel="noopener" title="Botda ochish" aria-label="Botda ochish">📲</a>` : ''}
+            <button class="rename-video-btn" onclick="deleteBotItem('${i.id}')" title="O'chirish" aria-label="O'chirish">🗑</button>
+          </span>
+        </div>
+        ${botFolderSelect(i)}
+      </div>
+    </div>`;
   }).join('');
 
   const empty = folderHtml || uploadHtml || itemHtml ? '' : `<p class="hint">Bu papka bo'sh.</p>`;
-  el.innerHTML = `<div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center;">${crumbs}</div>
-    ${toolbar}<div style="margin-top:12px;">${folderHtml}${uploadHtml}${itemHtml}${empty}</div>`;
+  const videosGrid = uploadHtml || itemHtml ? `<div class="vgrid" style="margin-top:14px;">${uploadHtml}${itemHtml}</div>` : '';
+  el.innerHTML = `${toolbar}<div style="margin-top:12px;">${folderHtml}${empty}</div>${videosGrid}`;
+}
+
+async function moveBotItemTo(itemId, folderId) {
+  try {
+    await botPost(`/api/bot/items/${itemId}/move`, { folder_id: folderId });
+    await loadBotTree();
+  } catch (e) { alert('Xato: ' + e.message); }
 }
 
 function openBotFolder(folderId) {
   botFolderId = folderId;
   renderBotPage();
+}
+
+function openBotFolderManager(parentId = botFolderId) {
+  if (!botTree || !botTree.linked) return;
+  document.getElementById('newBotFolderName').value = '';
+  setStatus('botFolderModalStatus', '', '');
+  renderBotFolderManager();
+  document.getElementById('newBotFolderParent').value = parentId || '';
+  openModal('botFolderModal');
+  setTimeout(() => document.getElementById('newBotFolderName').focus(), 50);
+}
+
+function renderBotFolderManager() {
+  const list = document.getElementById('botFolderManagerList');
+  const parentSelect = document.getElementById('newBotFolderParent');
+  if (!list || !parentSelect || !botTree) return;
+  const flat = botFlatFolders();
+  const count = id => botTree.items.filter(i => i.folder_id === id).length;
+  parentSelect.innerHTML = '<option value="">— Asosiy bo‘lim —</option>' + flat.map(({folder, depth}) =>
+    `<option value="${folder.id}">${'— '.repeat(depth)}${escapeHtml(folder.name)}</option>`).join('');
+  list.innerHTML = flat.length ? flat.map(({folder, depth}) => `
+    <div class="folder-manager-row" style="margin-left:${Math.min(depth, 6) * 18}px;">
+      <button class="folder-manager-name" onclick="openBotFolder('${folder.id}'); closeModal('botFolderModal')">📁 ${escapeHtml(folder.name)} <span class="hint">(${count(folder.id)})</span></button>
+      <button class="folder-order-btn" onclick="closeModal('botFolderModal'); renameBotFolder('${folder.id}')" title="Nomini o‘zgartirish">✎</button>
+      <button class="folder-order-btn" onclick="closeModal('botFolderModal'); openBotMove('folder', '${folder.id}')" title="Ko‘chirish">⇄</button>
+      <button class="folder-order-btn" onclick="openBotFolderManager('${folder.id}')" title="Ichki papka yaratish">＋</button>
+      <button class="folder-order-btn" onclick="closeModal('botFolderModal'); deleteBotFolder('${folder.id}')" title="O‘chirish">×</button>
+    </div>`).join('') : '<p class="hint">Hali papka yaratilmagan.</p>';
+}
+
+async function submitNewBotFolder() {
+  const name = document.getElementById('newBotFolderName').value.trim();
+  if (!name) { setStatus('botFolderModalStatus', 'Papka nomini yozing.', 'err'); return; }
+  const parent = document.getElementById('newBotFolderParent').value;
+  try {
+    await botPost('/api/bot/folders', { name, parent_id: parent });
+    document.getElementById('newBotFolderName').value = '';
+    await loadBotTree();
+    renderBotFolderManager();
+    document.getElementById('newBotFolderParent').value = parent;
+    setStatus('botFolderModalStatus', `"${name}" papkasi yaratildi.`, 'ok');
+  } catch (e) { setStatus('botFolderModalStatus', 'Xato: ' + e.message, 'err'); }
 }
 
 async function botPost(path, fields) {
