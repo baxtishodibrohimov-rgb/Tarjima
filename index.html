@@ -316,6 +316,13 @@
     .workflow-nav { grid-template-columns:repeat(2,minmax(0,1fr)); }
     .workflow-tab { min-height:36px; }
   }
+  @media (max-width:640px) {
+    .workflow-nav { grid-template-columns:repeat(5,minmax(0,1fr)); gap:3px; padding:4px; }
+    .workflow-tab { min-height:38px; justify-content:center; padding:3px; }
+    .workflow-tab .step-label { display:none; }
+    .workflow-tab .step-dot { width:28px; height:28px; font-size:0; }
+    .workflow-tab .step-dot::before { content:attr(data-step-number); font-size:11px; }
+  }
   .stage.dim { opacity:.5; }
   .stage-head { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:6px; }
   .stage-head h3 { margin:0; font-size:15.5px; }
@@ -612,7 +619,7 @@
 <div class="modal" id="editUserModal">
   <div class="modal-head">
     <h2>Foydalanuvchini tahrirlash</h2>
-    <button class="tiny-btn" onclick="closeModal('editUserModal')" title="Yopish">×</button>
+    <button class="tiny-btn modal-close-btn" onclick="closeModal('editUserModal')" title="Yopish" aria-label="Yopish">×</button>
   </div>
   <input type="hidden" id="editUserId">
   <label class="field">Ism-familiya</label>
@@ -1595,7 +1602,7 @@ async function createConnectedUser() {
   } catch(error){setStatus('usersAdminStatus','Xato: '+error.message,'err')}
 }
 
-function editConnectedUser(userId) {
+async function editConnectedUser(userId) {
   const user=connectedUsers.find(item => item.id === userId); if(!user) return;
   document.getElementById('editUserId').value=user.id;
   document.getElementById('editUserDisplayName').value=user.display_name || user.username;
@@ -1610,7 +1617,7 @@ async function saveConnectedUserEdit() {
   const display_name=document.getElementById('editUserDisplayName').value.trim();
   const username=document.getElementById('editUserLogin').value.trim();
   const password=document.getElementById('editUserPassword').value;
-  const payload={display_name,username};
+  const payload={display_name:display_name.trim(),username:username.trim()};
   if(password) payload.password=password;
   try { await apiFetch('/api/admin/users/'+userId,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     closeModal('editUserModal');
@@ -2803,8 +2810,8 @@ function renderPipelineStepper(v) {
   const parts = stages.map((s, i) => {
     const st = state(s);
     const dotContent = st === 'done' ? '✓' : String(i + 1);
-    return `<button class="workflow-tab ${currentDetailSection === s.section ? 'active' : ''}" onclick="showVideoSection('${s.section}')">
-      <span class="step-dot ${st}">${dotContent}</span>
+    return `<button class="workflow-tab ${currentDetailSection === s.section ? 'active' : ''}" onclick="showVideoSection('${s.section}')" aria-label="${i + 1}. ${escapeHtml(s.label)}" title="${escapeHtml(s.label)}">
+      <span class="step-dot ${st}" data-step-number="${i + 1}">${dotContent}</span>
       <span class="step-label ${st === 'todo' ? 'dim' : ''}">${escapeHtml(s.label)}</span>
     </button>`;
   }).join('');
@@ -4104,40 +4111,15 @@ async function sendSubtitledToBot(videoId, provider, btnEl) {
 }
 
 function renderLearningStage(v) {
-  const before = !v.transcript_approved;
   const t = v.learning_track;
   const srtReady = !!t && t.srt_status === 'uploaded';
   const audioReady = srtReady && t.audio_status === 'ready';
 
-  let sourceBadge = stageStatusBadge('Yo\'q', '');
-  let sourceBody;
-  if (before) {
-    sourceBody = `<p class="hint">Avval o'zbekcha tarjimani tayyorlang.</p>`;
-  } else if (!srtReady) {
-    sourceBody = `
-      <p class="hint">Ruscha o'rganish uchun tayyorlangan .srt faylni tanlang.</p>
-      <div class="row">
-        <input type="file" id="learningSrtFile-${v.id}" accept=".srt">
-        <button class="action" onclick="uploadLearningSrt('${v.id}')">SRT'ni yuklash</button>
-      </div>
-      <div class="status" id="learningSrtStatus-${v.id}"></div>`;
-  } else {
-    sourceBadge = stageStatusBadge('✅ Tayyor', 'done');
-    sourceBody = `
-      <p class="status ok">${escapeHtml(t.srt_filename || '')} · ${t.segment_count || 0} ta segment</p>
-      <div class="row">
-        <a class="small-btn" style="text-decoration:none; display:inline-block;" href="${API_BASE}/api/videos/${v.id}/learning/srt-download">Yuklab olish</a>
-        <input type="file" id="learningSrtFile-${v.id}" accept=".srt">
-        <button class="secondary" onclick="uploadLearningSrt('${v.id}')">Qayta yuklash</button>
-      </div>
-      <div class="status" id="learningSrtStatus-${v.id}"></div>`;
-  }
-  const sourceStage = `<div class="stage ${before ? 'dim' : ''}"><div class="stage-head"><h3>Ruscha o'rganish matni</h3>${sourceBadge}</div>${sourceBody}</div>`;
-
   let audioBadge = stageStatusBadge('Yaratilmagan', '');
   let audioBody;
   if (!srtReady) {
-    audioBody = `<p class="hint">Avval ruscha o'rganish SRT faylini yuklang.</p>`;
+    audioBody = `<p class="hint">Avval “Matn → Tarjima” bo‘limida Ruscha o‘rganish matnini tayyorlang.</p>
+      <div class="row"><button class="secondary" onclick="showVideoSection('translation')">Matn → Tarjima bo‘limiga o‘tish</button></div>`;
   } else if (t.audio_status === 'generating') {
     audioBadge = stageStatusBadge('Yaratilmoqda...', 'active');
     const pct = t.total_segments ? Math.round((t.completed_segments || 0) / t.total_segments * 100) : 0;
@@ -4308,20 +4290,6 @@ async function retryLearningRender(id, btnEl) {
     await apiFetch(`/api/videos/${id}/learning/render`, { method: 'POST' });
     await loadVideoDetail(id);
   });
-}
-
-async function uploadLearningSrt(id) {
-  const fileInput = document.getElementById('learningSrtFile-' + id);
-  if (!fileInput || !fileInput.files[0]) { setStatus('learningSrtStatus-' + id, 'SRT fayl tanlanmagan.', 'err'); return; }
-  try {
-    const form = new FormData();
-    form.append('file', fileInput.files[0]);
-    const r = await apiFetch(`/api/videos/${id}/learning/srt`, { method: 'POST', body: form });
-    setStatus('learningSrtStatus-' + id, `SRT yuklandi: ${r.segment_count} ta bo'lak.`, 'ok');
-    if (currentDetailVideoId === id) loadVideoDetail(id);
-  } catch (e) {
-    setStatus('learningSrtStatus-' + id, 'Xato: ' + e.message, 'err');
-  }
 }
 
 async function showLearningAudioForm(id) {

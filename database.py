@@ -270,6 +270,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS users (
                 id TEXT PRIMARY KEY,
                 username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                display_name TEXT DEFAULT '',
                 password_hash TEXT NOT NULL,
                 role TEXT NOT NULL DEFAULT 'user',
                 quota_bytes INTEGER NOT NULL,
@@ -609,6 +610,10 @@ _LEARNING_TRACK_NEW_COLUMNS = {
 
 def _migrate_columns():
     with tx() as c:
+        existing_users = {row[1] for row in c.execute("PRAGMA table_info(users)").fetchall()}
+        for col, decl in _USER_NEW_COLUMNS.items():
+            if col not in existing_users:
+                c.execute(f"ALTER TABLE users ADD COLUMN {col} {decl}")
         existing = {row[1] for row in c.execute("PRAGMA table_info(videos)").fetchall()}
         for col, decl in _VIDEO_NEW_COLUMNS.items():
             if col not in existing:
