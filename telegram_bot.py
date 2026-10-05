@@ -18,6 +18,7 @@ emas. O'z-o'zini joylashtirgan Bot API server (LOCAL_BOT_API_URL) ishlatiladi - 
 katta video fayllarni ham (2 GB gacha) yuklab olishga imkon beradi.
 """
 import asyncio
+import shutil
 import traceback
 from pathlib import Path
 
@@ -28,6 +29,7 @@ import transcription
 from storage import CLOUD_DIR, INBOUND_BOT_TOKEN, LOCAL_BOT_API_URL, safe_name, has_space_for
 
 POLL_TIMEOUT = 30
+GET_FILE_TIMEOUT = 2 * 60 * 60
 LAST_UPDATE_ID_KEY = "telegram_inbound_bot_last_update_id"
 
 # Ochiq (public) Telegram Cloud API - o'z-o'zini joylashtirgan server fayl xizmat
@@ -52,6 +54,34 @@ async def _stream_to_file(client: httpx.AsyncClient, url: str, dest_path: Path) 
     return total
 
 
+def _copy_local_bot_file(file_path: str, dest_path: Path) -> int | None:
+    """Copy a file returned by telegram-bot-api in ``--local`` mode.
+
+    In local mode ``getFile`` returns an absolute path on this same server.  Using
+    that path avoids downloading the file a second time through the Bot API HTTP
+    endpoint.  ``None`` means the response was not a usable local path and the
+    caller should use the HTTP fallback.
+    """
+    source = Path(file_path)
+    try:
+        is_usable = source.is_absolute() and source.is_file()
+    except OSError:
+        is_usable = False
+    if not is_usable:
+        return None
+
+    try:
+        shutil.copyfile(source, dest_path)
+        return dest_path.stat().st_size
+    except OSError as exc:
+        # The Bot API service may run as another OS user. If its cache path is
+        # not readable, leave the existing HTTP endpoint as a safe fallback.
+        dest_path.unlink(missing_ok=True)
+        print(f"[telegram_bot] Lokal faylni bevosita ko'chirish imkoni bo'lmadi: {exc}. "
+              "HTTP zaxira yo'li ishlatiladi.", flush=True)
+        return None
+
+
 async def _send_message(client: httpx.AsyncClient, chat_id, text: str):
     if chat_id is None:
         return
@@ -68,8 +98,11 @@ async def _download_and_save_to_cloud(client: httpx.AsyncClient, file_id: str, o
         return
 
     # Katta video uchun lokal bot-api serveri getFile so'rovi davomida faylni
-    # Telegram'dan orqa fonda yuklab olishi mumkin - shuning uchun uzunroq timeout.
-    resp = await client.post(_api_url("getFile"), data={"file_id": file_id}, timeout=180)
+    # Telegram'dan yuklab oladi. 2 GB fayl sekin ulanishda bir necha daqiqadan
+    # ko'proq vaqt olishi mumkin, shuning uchun qisqa timeout bilan uzmaymiz.
+    resp = await client.post(
+        _api_url("getFile"), data={"file_id": file_id}, timeout=GET_FILE_TIMEOUT
+    )
     resp.raise_for_status()
     file_path = resp.json()["result"]["file_path"]
 
@@ -79,25 +112,31 @@ async def _download_and_save_to_cloud(client: httpx.AsyncClient, file_id: str, o
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_path = dest_dir / name
 
-    # Katta fayllarni Telegram'dan lokal bot-api serveriga ko'chirish biroz vaqt olishi
-    # mumkin - shu vaqt ichida fayl hali "tayyor emas" (404) bo'lishi mumkin, shuning
-    # uchun darhol zaxira usulga o'tish o'rniga bir necha marta kutib qayta urinamiz.
-    local_url = f"{LOCAL_BOT_API_URL.rstrip('/')}/file/bot{INBOUND_BOT_TOKEN}/{file_path}"
+    # --local rejimida getFile shu serverdagi tayyor faylning mutlaq yo'lini
+    # qaytaradi. Uni HTTP orqali yana bir marta yuklab o'tirmay, disk ichida
+    # bevosita doimiy xotiraga ko'chiramiz.
+    total = await asyncio.to_thread(_copy_local_bot_file, file_path, dest_path)
     last_local_error: Exception | None = None
-    total = None
-    for attempt in range(6):
-        try:
-            total = await _stream_to_file(client, local_url, dest_path)
-            last_local_error = None
-            break
-        except httpx.HTTPStatusError as e:
-            last_local_error = e
-            if e.response.status_code == 404 and attempt < 5:
-                print(f"[telegram_bot] Fayl hali lokal serverda tayyor emas (404), "
-                      f"{attempt + 1}-urinish, 3s kutib qayta urinilmoqda...", flush=True)
-                await asyncio.sleep(3)
-                continue
-            break
+    if total is not None:
+        print(f"[telegram_bot] Lokal Bot API fayli bevosita xotiraga ko'chirildi: "
+              f"{total / (1024 * 1024):.1f} MB", flush=True)
+    else:
+        # Lokal mutlaq yo'l mavjud bo'lmasa eski HTTP yo'li zaxira bo'lib qoladi.
+        # Fayl hali tayyor bo'lmasa bir necha marta kutib qayta urinamiz.
+        local_url = f"{LOCAL_BOT_API_URL.rstrip('/')}/file/bot{INBOUND_BOT_TOKEN}/{file_path}"
+        for attempt in range(6):
+            try:
+                total = await _stream_to_file(client, local_url, dest_path)
+                last_local_error = None
+                break
+            except httpx.HTTPStatusError as e:
+                last_local_error = e
+                if e.response.status_code == 404 and attempt < 5:
+                    print(f"[telegram_bot] Fayl hali lokal serverda tayyor emas (404), "
+                          f"{attempt + 1}-urinish, 3s kutib qayta urinilmoqda...", flush=True)
+                    await asyncio.sleep(3)
+                    continue
+                break
 
     if last_local_error is not None:
         # O'z-o'zini joylashtirgan server bir necha urinishdan keyin ham fayl xizmat
