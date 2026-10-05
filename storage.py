@@ -46,10 +46,14 @@ ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")  # bo'sh bo'lsa himoya o'chirilg
 # himoyalanadi (brauzerning native HTTP Basic Auth oynasi ishlatilmaydi).
 APP_USERNAME = os.environ.get("APP_USERNAME", "")
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
-# Idea Flow (Lovable) botidagi "Video Baza / Tarjima" papkasiga tayyor videolarni
-# yozib qo'yish uchun - ikkala tomonda ham bir xil bo'lishi shart.
+# Tashqi tizim /api/public/incoming-video orqali Bulut'ga video yuborishi uchun kalit.
 DARSLIK_API_KEY = os.environ.get("DARSLIK_API_KEY", "")
-IDEA_FLOW_URL = os.environ.get("IDEA_FLOW_URL", "")  # masalan https://xxxx.lovable.app
+
+# Idea Flow boti (ideaflow_bot.py) - shaxsiy produktivlik va bilim bazasi.
+# Token berilmasa bot ishga tushmaydi. Bot fayllarni yuklab olmaydi (faqat
+# Telegram file_id saqlaydi), shuning uchun oddiy bulutli Bot API yetarli.
+IDEA_BOT_TOKEN = os.environ.get("IDEA_BOT_TOKEN", "")
+IDEA_BOT_API_URL = os.environ.get("IDEA_BOT_API_URL", "https://api.telegram.org")
 
 # Telegram'ga videoning O'ZINI (havola emas) yuborish uchun - o'z-o'zini
 # joylashtirgan (self-hosted) Bot API server orqali, chunki oddiy

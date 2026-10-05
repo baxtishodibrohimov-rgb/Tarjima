@@ -303,6 +303,150 @@ def init_db():
             CREATE UNIQUE INDEX IF NOT EXISTS idx_audio_tracks_video_provider ON audio_tracks(video_id, provider);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_learning_tracks_video ON learning_tracks(video_id);
             CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+
+            -- Idea Flow (Telegram shaxsiy produktivlik boti, ideaflow_bot.py).
+            -- Lovable/Supabase'dan ko'chirilgan; Tarjima'ning o'z jadvallari bilan
+            -- (masalan folders) to'qnashmasligi uchun idea_ prefiksi bilan.
+            -- Vaqtlar db.now() formatida (UTC, 'YYYY-MM-DDTHH:MM:SS').
+            CREATE TABLE IF NOT EXISTS idea_profiles (
+                id TEXT PRIMARY KEY,
+                email TEXT,
+                full_name TEXT,
+                telegram_user_id INTEGER UNIQUE,
+                telegram_chat_id INTEGER,
+                telegram_username TEXT,
+                timezone TEXT NOT NULL DEFAULT 'Asia/Tashkent',
+                daily_review_time TEXT NOT NULL DEFAULT '19:00',
+                daily_review_enabled INTEGER NOT NULL DEFAULT 1,
+                last_daily_review_on TEXT,
+                is_admin INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT,
+                updated_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS idea_folders (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                parent_folder_id TEXT,
+                root_type TEXT NOT NULL DEFAULT 'base',
+                name TEXT NOT NULL,
+                description TEXT,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT,
+                updated_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS idea_items (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                folder_id TEXT,
+                root_type TEXT NOT NULL DEFAULT 'base',
+                type TEXT NOT NULL DEFAULT 'note',
+                title TEXT NOT NULL DEFAULT 'Nomsiz',
+                content TEXT,
+                url TEXT,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT,
+                updated_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS idea_tasks (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT,
+                due_date TEXT,
+                status TEXT NOT NULL DEFAULT 'todo',
+                priority TEXT NOT NULL DEFAULT 'normal',
+                idea_id TEXT,
+                completed_at TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS idea_ideas (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT,
+                status TEXT NOT NULL DEFAULT 'new',
+                planned_date TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS idea_inbox_items (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'text',
+                text TEXT,
+                url TEXT,
+                telegram_message_id INTEGER,
+                telegram_update_id INTEGER,
+                raw TEXT,
+                ai_suggestion TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT,
+                updated_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS idea_attachments (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                related_type TEXT NOT NULL,
+                related_id TEXT NOT NULL,
+                file_kind TEXT NOT NULL DEFAULT 'file',
+                file_name TEXT,
+                mime_type TEXT,
+                file_size INTEGER,
+                telegram_file_id TEXT,
+                storage_path TEXT,
+                created_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS idea_comments (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                related_type TEXT NOT NULL,
+                related_id TEXT NOT NULL,
+                body TEXT NOT NULL,
+                created_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS idea_reminders (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                related_type TEXT NOT NULL,
+                related_id TEXT,
+                title TEXT NOT NULL,
+                remind_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                recurrence TEXT,
+                sent_at TEXT,
+                repeat_every_minutes INTEGER,
+                repeat_remaining INTEGER,
+                created_at TEXT,
+                updated_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS idea_activity_log (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                related_type TEXT NOT NULL,
+                related_id TEXT,
+                action TEXT NOT NULL,
+                detail TEXT,
+                created_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS idea_allowed_telegram_users (
+                id TEXT PRIMARY KEY,
+                telegram_user_id INTEGER NOT NULL UNIQUE,
+                label TEXT,
+                added_by TEXT,
+                chat_id INTEGER,
+                created_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS idea_bot_states (
+                user_id TEXT PRIMARY KEY,
+                state TEXT,
+                updated_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_idea_items_folder ON idea_items(user_id, root_type, folder_id);
+            CREATE INDEX IF NOT EXISTS idx_idea_folders_parent ON idea_folders(user_id, root_type, parent_folder_id);
+            CREATE INDEX IF NOT EXISTS idx_idea_tasks_user ON idea_tasks(user_id, status, due_date);
+            CREATE INDEX IF NOT EXISTS idx_idea_reminders_due ON idea_reminders(status, remind_at);
+            CREATE INDEX IF NOT EXISTS idx_idea_attachments_rel ON idea_attachments(related_type, related_id);
             """
         )
     _migrate_columns()

@@ -29,9 +29,10 @@ import glossary_data
 import learning
 import tts
 import worker
+import ideaflow_bot
 from storage import (VIDEOS_DIR, RESULTS_DIR, UPLOADS_DIR, CHUNKS_DIR, SPLIT_DIR, CLOUD_DIR, MAX_UPLOAD_SIZE, ADMIN_TOKEN,
                       UPLOAD_CHUNK_SIZE, CHUNK_SECONDS, MAX_WHISPER_CONCURRENCY, MAX_ACTIVE_VIDEO_JOBS,
-                      MAX_ACTIVE_TTS_JOBS, REPETITION_THRESHOLD, DARSLIK_API_KEY, IDEA_FLOW_URL,
+                      MAX_ACTIVE_TTS_JOBS, REPETITION_THRESHOLD, DARSLIK_API_KEY,
                       TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, LOCAL_BOT_API_URL, INBOUND_BOT_TOKEN,
                       APP_USERNAME, APP_PASSWORD, safe_name, disk_usage, has_space_for,
                       TRANSCRIBE_LANGUAGE_CODES, TRANSCRIBE_LANGUAGES)
@@ -150,6 +151,7 @@ async def on_startup():
     if INBOUND_BOT_TOKEN:
         import telegram_bot
         asyncio.create_task(telegram_bot.poll_updates())
+    ideaflow_bot.start()
 
 
 def check_admin(request: Request):
@@ -2040,27 +2042,17 @@ async def send_to_bot_endpoint(video_id: str, request: Request, provider: str = 
     if not video_path:
         raise HTTPException(400, "Avval yakuniy video tayyor bo'lishi kerak.")
 
-    idea_flow_ok = bool(DARSLIK_API_KEY and IDEA_FLOW_URL)
     telegram_ok = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
-    if not idea_flow_ok and not telegram_ok:
-        raise HTTPException(400, "Botga ulanish sozlanmagan (DARSLIK_API_KEY/IDEA_FLOW_URL yoki "
-                                  "TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID environment variable'lari kiritilmagan).")
-
-    if idea_flow_ok:
-        endpoint = "subtitled-download" if subtitled else "final-download"
-        download_url = f"{str(request.base_url).rstrip('/')}/api/videos/{video_id}/{endpoint}"
-        if provider:
-            download_url += f"?provider={provider}"
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{IDEA_FLOW_URL.rstrip('/')}/api/public/darslik/videos",
-                headers={"X-Darslik-Api-Key": DARSLIK_API_KEY, "Content-Type": "application/json"},
-                json={"title": v["original_name"] + title_suffix, "url": download_url},
-                timeout=30,
-            )
-        if resp.status_code >= 400:
-            raise HTTPException(502, f"Idea Flow xatosi ({resp.status_code}): {resp.text[:400]}")
+    endpoint = "subtitled-download" if subtitled else "final-download"
+    download_url = f"{str(request.base_url).rstrip('/')}/api/videos/{video_id}/{endpoint}"
+    if provider:
+        download_url += f"?provider={provider}"
+    # Idea Flow botining "🌐 Tarjima" bo'limiga (bot hali sozlanmagan bo'lsa - o'tkazib yuboriladi).
+    if ideaflow_bot.add_tarjima_video(v["original_name"] + title_suffix, download_url):
         db.execute("UPDATE videos SET idea_flow_sent_at = ? WHERE id = ?", (db.now(), video_id))
+    elif not telegram_ok:
+        raise HTTPException(400, "Botga ulanish sozlanmagan (TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID yoki "
+                                  "IDEA_BOT_TOKEN environment variable'lari kiritilmagan).")
 
     if telegram_ok:
         db.execute("UPDATE videos SET telegram_send_status = 'sending', telegram_send_error = NULL WHERE id = ?",
@@ -2255,22 +2247,9 @@ async def upload_complete(upload_id: str, request: Request):
         worker.enqueue_segment(video_id)
 
     if kind == "split_only":
-        if DARSLIK_API_KEY and IDEA_FLOW_URL:
-            download_url = f"{str(request.base_url).rstrip('/')}/api/videos/{video_id}/original-stream"
-            try:
-                async with httpx.AsyncClient() as client:
-                    resp = await client.post(
-                        f"{IDEA_FLOW_URL.rstrip('/')}/api/public/darslik/videos",
-                        headers={"X-Darslik-Api-Key": DARSLIK_API_KEY, "Content-Type": "application/json"},
-                        json={"title": u["original_name"], "url": download_url},
-                        timeout=30,
-                    )
-                if resp.status_code < 400:
-                    db.execute("UPDATE videos SET idea_flow_sent_at = ? WHERE id = ?", (db.now(), video_id))
-                else:
-                    db.log_line(video_id, f"Idea Flow xatosi ({resp.status_code}): {resp.text[:300]}")
-            except Exception as e:
-                db.log_line(video_id, f"Idea Flow'ga yozishda xato: {e}")
+        download_url = f"{str(request.base_url).rstrip('/')}/api/videos/{video_id}/original-stream"
+        if ideaflow_bot.add_tarjima_video(u["original_name"], download_url):
+            db.execute("UPDATE videos SET idea_flow_sent_at = ? WHERE id = ?", (db.now(), video_id))
 
         # Faqat bo'linadi - Telegram'ga foydalanuvchi "Botga jo'natish"ni bosganda yuboriladi.
         db.execute("UPDATE videos SET split_status = 'splitting' WHERE id = ?", (video_id,))
@@ -2476,19 +2455,9 @@ async def use_cloud_file_in_split(cloud_id: str, request: Request):
     original_name = f["original_name"]
     video_id = _move_cloud_video_into_pipeline(f, "split_only")
 
-    if DARSLIK_API_KEY and IDEA_FLOW_URL:
-        download_url = f"{str(request.base_url).rstrip('/')}/api/videos/{video_id}/original-stream"
-        try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(
-                    f"{IDEA_FLOW_URL.rstrip('/')}/api/public/darslik/videos",
-                    headers={"X-Darslik-Api-Key": DARSLIK_API_KEY, "Content-Type": "application/json"},
-                    json={"title": original_name, "url": download_url}, timeout=30,
-                )
-            if resp.status_code < 400:
-                db.execute("UPDATE videos SET idea_flow_sent_at = ? WHERE id = ?", (db.now(), video_id))
-        except Exception as e:
-            db.log_line(video_id, f"Idea Flow'ga yozishda xato: {e}")
+    download_url = f"{str(request.base_url).rstrip('/')}/api/videos/{video_id}/original-stream"
+    if ideaflow_bot.add_tarjima_video(original_name, download_url):
+        db.execute("UPDATE videos SET idea_flow_sent_at = ? WHERE id = ?", (db.now(), video_id))
 
     db.execute("UPDATE videos SET split_status = 'splitting' WHERE id = ?", (video_id,))
     asyncio.create_task(_prepare_split_video(video_id))
