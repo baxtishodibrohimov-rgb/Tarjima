@@ -118,6 +118,16 @@
   .cloud-vcard { cursor:default; }
   .cloud-vcard:hover { transform:none; }
   .cloud-card-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:auto; }
+  .vcard .thumb.file-thumb { display:flex; align-items:center; justify-content:center; font-size:38px; }
+  .zip-tree { max-height:min(45vh, 420px); overflow:auto; border:1px solid var(--line); border-radius:10px; padding:6px; margin:10px 0; }
+  .zip-row { display:flex; align-items:center; gap:8px; padding:5px 6px; border-radius:8px; font-size:13.5px; }
+  .zip-row:hover { background:var(--panel); }
+  .zip-row .zip-name { flex:1; min-width:0; overflow-wrap:anywhere; }
+  .zip-row .zip-size { color:var(--muted); font-size:12px; white-space:nowrap; }
+  .zip-row.zip-folder { font-weight:600; }
+  .zip-row a.zip-dl { text-decoration:none; padding:2px 6px; border-radius:6px; line-height:1; }
+  .zip-row a.zip-dl:hover { background:var(--accent-chip); }
+  @media (max-width:640px) { .zip-tree { max-height:40vh; } }
 
   .theme-toggle, .tiny-btn, .small-btn, .icon-btn, button.action, button.secondary, .add-video-btn, .fab, .back-link {
     font-family:inherit; cursor:pointer; }
@@ -652,6 +662,29 @@
   <div class="status" id="retryModalStatus"></div>
 </div>
 
+<div class="modal-backdrop" id="zipModal-backdrop" onclick="closeModal('zipModal')"></div>
+<div class="modal" id="zipModal">
+  <div class="modal-head">
+    <h2 id="zipModalTitle">Zip ichidagi fayllar</h2>
+    <button class="tiny-btn modal-close-btn" onclick="closeModal('zipModal')" title="Yopish" aria-label="Yopish">×</button>
+  </div>
+  <p class="hint">Kerakli fayllarni belgilang — ular Bulutga alohida fayl bo'lib chiqariladi (nomiga papkasi qo'shiladi, masalan "2-modul - 1-dars.mp4"). ⬇️ — faylni chiqarmasdan kompyuterga yuklab olish.</p>
+  <label style="display:flex; gap:8px; align-items:center; font-size:13.5px;">
+    <input type="checkbox" id="zipSelectAll" onchange="zipToggleAll(this.checked)"> Hammasini belgilash
+  </label>
+  <div class="zip-tree" id="zipTree"><p class="hint">Yuklanmoqda...</p></div>
+  <label style="display:flex; gap:8px; align-items:flex-start; font-size:13.5px;">
+    <input type="checkbox" id="zipDeleteAfter" style="margin-top:3px;">
+    <span>Chiqargach zipni o'chirish — serverda joy bo'shaydi</span>
+  </label>
+  <div class="row" style="flex-wrap:wrap; gap:8px;">
+    <button class="action" id="zipExtractSelectedBtn" onclick="zipExtract('selected')" disabled>Tanlanganlarni chiqarish</button>
+    <button class="small-btn" id="zipExtractVideosBtn" onclick="zipExtract('videos')">🎬 Faqat videolar</button>
+    <button class="small-btn" onclick="zipExtract('all')">Hammasi</button>
+  </div>
+  <div class="status" id="zipStatus"></div>
+</div>
+
 <div class="modal-backdrop" id="cloudPickerModal-backdrop" onclick="closeModal('cloudPickerModal')"></div>
 <div class="modal" id="cloudPickerModal">
   <div class="modal-head">
@@ -782,7 +815,7 @@
 <!--   PAGE: MATN / TARJIMA                                        -->
 <!-- ============================================================ -->
 <div class="page" id="page-translate">
-  <input type="file" id="tarjimaUploadFile" accept="video/*" multiple style="display:none;">
+  <input type="file" id="tarjimaUploadFile" accept="video/*,.zip,application/zip,application/x-zip-compressed" multiple style="display:none;">
   <div id="tarjimaUploadProgressCard" style="display:none;" class="card">
     <div class="progress-wrap"><div class="progress-bar" id="tarjimaUploadProgressBar"></div></div>
     <div class="status" id="tarjimaUploadStatus"></div>
@@ -790,7 +823,7 @@
   </div>
   <div id="cloudInboxList" class="vgrid"><p class="hint">Yuklanmoqda...</p></div>
   <div class="fab-wrap" id="cloudFab">
-    <button class="fab" onclick="document.getElementById('tarjimaUploadFile').click()" title="Bulutga video yuklash" aria-label="Bulutga video yuklash">+</button>
+    <button class="fab" onclick="document.getElementById('tarjimaUploadFile').click()" title="Bulutga video yoki zip yuklash" aria-label="Bulutga video yoki zip yuklash">+</button>
   </div>
 </div>
 
@@ -1678,7 +1711,7 @@ async function handleUploadFile(file, kind, fileIndex, totalFiles) {
     initForm.append('original_name', file.name);
     initForm.append('total_size', String(file.size));
     initForm.append('kind', kind);
-    if (kind === 'cloud') initForm.append('file_kind', 'video');
+    if (kind === 'cloud') initForm.append('file_kind', file.name.toLowerCase().endsWith('.zip') ? 'zip' : 'video');
     const initResp = await apiFetch('/api/videos/upload/init', { method: 'POST', body: initForm, signal: state.controller.signal });
     if (initResp.duplicate_of) {
       setStatus(ids.status, prefix + `Bu video allaqachon serverda bor: "${initResp.duplicate_of.original_name}".`, 'ok');
@@ -4831,31 +4864,178 @@ async function loadTranscribeList() {
   }
 }
 
+function cloudZipCard(f) {
+  let status = '';
+  if (f.extract_status === 'extracting') {
+    status = `<span class="pill">⏳ Chiqarilmoqda... ${escapeHtml(f.extract_progress || '')}</span>`;
+  } else if (f.extract_status === 'done') {
+    status = `<span class="pill ok">✓ Chiqarildi (${escapeHtml(f.extract_progress || '')})</span>`;
+  } else if (f.extract_status === 'error') {
+    status = `<span class="pill err">✗ ${escapeHtml(f.extract_error || 'Xato')}</span>`;
+  }
+  const meta = f.zip_entry_count != null
+    ? `${fmtBytes(f.file_size)} · ${f.zip_entry_count} ta fayl (ochilganda ${fmtBytes(f.zip_total_size || 0)})`
+    : fmtBytes(f.file_size);
+  const busy = f.extract_status === 'extracting';
+  return `
+    <div class="vcard status-upload cloud-vcard">
+      <div class="thumb file-thumb">🗜</div>
+      <div class="vbody">
+        <p class="vname">${escapeHtml(f.original_name)}</p>
+        <p class="vmeta">${meta}</p>
+        ${status ? `<div style="margin-bottom:8px;">${status}</div>` : ''}
+        <div class="cloud-card-actions">
+          ${f.zip_entry_count != null ? `<button class="action" onclick="openZip('${f.id}')" ${busy ? 'disabled' : ''}>📂 Ichini ko'rish</button>` : ''}
+          ${busy ? '' : `<button class="small-btn danger" onclick="deleteCloudFile('${f.id}')">O'chirish</button>`}
+        </div>
+      </div>
+    </div>`;
+}
+
+function cloudVideoCard(f) {
+  return `
+    <div class="vcard status-upload cloud-vcard">
+      ${f.has_thumbnail
+        ? `<div class="thumb" style="background-image:url('${API_BASE}/api/cloud-files/${f.id}/thumbnail')"></div>`
+        : `<div class="thumb">Video</div>`}
+      <div class="vbody">
+        <p class="vname">${escapeHtml(f.original_name)}</p>
+        <p class="vmeta">${fmtBytes(f.file_size)}</p>
+        <div class="cloud-card-actions">
+          <button class="action" onclick="addCloudToBaza('${f.id}')">Kutubxonaga qo'shish</button>
+          <button class="small-btn danger" onclick="deleteCloudFile('${f.id}')">O'chirish</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function cloudOtherCard(f) {
+  const ext = (f.original_name.split('.').pop() || '').toLowerCase();
+  const icon = ext === 'srt' || ext === 'vtt' || ext === 'txt' ? '📄' : ['mp3', 'wav', 'm4a', 'ogg'].includes(ext) ? '🎵'
+    : ['jpg', 'jpeg', 'png', 'webp'].includes(ext) ? '🖼' : ext === 'pdf' ? '📕' : '📎';
+  return `
+    <div class="vcard status-upload cloud-vcard">
+      <div class="thumb file-thumb">${icon}</div>
+      <div class="vbody">
+        <p class="vname">${escapeHtml(f.original_name)}</p>
+        <p class="vmeta">${fmtBytes(f.file_size)}</p>
+        <div class="cloud-card-actions">
+          <a class="small-btn" style="text-decoration:none;" href="${API_BASE}/api/cloud-files/${f.id}/download">⬇️ Yuklab olish</a>
+          <button class="small-btn danger" onclick="deleteCloudFile('${f.id}')">O'chirish</button>
+        </div>
+      </div>
+    </div>`;
+}
+
 async function loadCloudInbox() {
   const list = document.getElementById('cloudInboxList');
   if (!list) return;
   try {
-    const files = await apiFetch('/api/cloud-files?kind=video');
+    const files = await apiFetch('/api/cloud-files');
     if (files.length === 0) {
-      list.innerHTML = '<p class="hint">Bulutda hali video yo\'q.</p>';
+      list.innerHTML = '<p class="hint">Bulutda hali fayl yo\'q. "+" tugmasi bilan video yoki zip yuklang.</p>';
       return;
     }
-    list.innerHTML = files.map(f => `
-      <div class="vcard status-upload cloud-vcard">
-        ${f.has_thumbnail
-          ? `<div class="thumb" style="background-image:url('${API_BASE}/api/cloud-files/${f.id}/thumbnail')"></div>`
-          : `<div class="thumb">Video</div>`}
-        <div class="vbody">
-          <p class="vname">${escapeHtml(f.original_name)}</p>
-          <p class="vmeta">${fmtBytes(f.file_size)}</p>
-          <div class="cloud-card-actions">
-            <button class="action" onclick="addCloudToBaza('${f.id}')">Kutubxonaga qo'shish</button>
-            <button class="small-btn danger" onclick="deleteCloudFile('${f.id}')">O'chirish</button>
-          </div>
-        </div>
-      </div>`).join('');
+    const order = { zip: 0, video: 1 };
+    files.sort((a, b) => (order[a.kind] ?? 2) - (order[b.kind] ?? 2));
+    list.innerHTML = files.map(f => f.kind === 'zip' ? cloudZipCard(f)
+      : f.kind === 'video' ? cloudVideoCard(f) : cloudOtherCard(f)).join('');
   } catch (e) {
     list.innerHTML = `<p class="status err">Xato: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+/* ---------- Zip ichini ko'rish va fayllarni Bulutga chiqarish ---------- */
+let zipModalId = null;
+let zipEntries = [];
+
+async function openZip(cloudId) {
+  zipModalId = cloudId;
+  zipEntries = [];
+  document.getElementById('zipTree').innerHTML = '<p class="hint">Yuklanmoqda...</p>';
+  document.getElementById('zipSelectAll').checked = false;
+  document.getElementById('zipDeleteAfter').checked = false;
+  setStatus('zipStatus', '', '');
+  openModal('zipModal');
+  try {
+    const data = await apiFetch(`/api/cloud-files/${cloudId}/zip`);
+    zipEntries = data.entries;
+    document.getElementById('zipModalTitle').textContent = data.name;
+    renderZipTree();
+  } catch (e) {
+    document.getElementById('zipTree').innerHTML = `<p class="status err">Xato: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function renderZipTree() {
+  const tree = document.getElementById('zipTree');
+  if (!zipEntries.length) { tree.innerHTML = '<p class="hint">Zip ichida fayl yo\'q.</p>'; return; }
+  const sorted = [...zipEntries].sort((a, b) => a.path.localeCompare(b.path));
+  const shown = new Set();
+  const rows = [];
+  for (const e of sorted) {
+    const dirs = e.path.split('/').slice(0, -1);
+    for (let d = 1; d <= dirs.length; d++) {
+      const dir = dirs.slice(0, d).join('/');
+      if (shown.has(dir)) continue;
+      shown.add(dir);
+      rows.push(`<div class="zip-row zip-folder" style="padding-left:${6 + (d - 1) * 18}px;">
+        <input type="checkbox" data-zip-dir="${escapeHtml(dir)}" onchange="zipToggleDir(this)">
+        <span class="zip-name">📁 ${escapeHtml(dirs[d - 1])}</span></div>`);
+    }
+    const icon = e.kind === 'video' ? '🎬' : /\.(srt|vtt|txt)$/i.test(e.name) ? '📄' : '📎';
+    rows.push(`<div class="zip-row" style="padding-left:${6 + dirs.length * 18}px;">
+      <input type="checkbox" data-zip-index="${e.index}" data-zip-path="${escapeHtml(e.path)}" ${e.encrypted ? 'disabled' : ''} onchange="zipUpdateCount()">
+      <span class="zip-name">${icon} ${escapeHtml(e.name)}${e.encrypted ? ' 🔒 <span class="hint">(parolli)</span>' : ''}</span>
+      <span class="zip-size">${fmtBytes(e.size)}</span>
+      ${e.encrypted ? '' : `<a class="zip-dl" title="Yuklab olish" href="${API_BASE}/api/cloud-files/${zipModalId}/zip/download?index=${e.index}">⬇️</a>`}
+    </div>`);
+  }
+  tree.innerHTML = rows.join('');
+  document.getElementById('zipExtractVideosBtn').disabled = !zipEntries.some(e => e.kind === 'video');
+  zipUpdateCount();
+}
+
+function zipFileBoxes() {
+  return [...document.querySelectorAll('#zipTree input[data-zip-index]:not(:disabled)')];
+}
+
+function zipToggleDir(box) {
+  const prefix = box.dataset.zipDir + '/';
+  zipFileBoxes().filter(b => b.dataset.zipPath.startsWith(prefix)).forEach(b => { b.checked = box.checked; });
+  document.querySelectorAll('#zipTree input[data-zip-dir]').forEach(d => {
+    if (d.dataset.zipDir.startsWith(prefix)) d.checked = box.checked;
+  });
+  zipUpdateCount();
+}
+
+function zipToggleAll(checked) {
+  document.querySelectorAll('#zipTree input[type=checkbox]:not(:disabled)').forEach(b => { b.checked = checked; });
+  zipUpdateCount();
+}
+
+function zipUpdateCount() {
+  const chosen = zipFileBoxes().filter(b => b.checked);
+  const size = chosen.reduce((sum, b) => sum + ((zipEntries.find(e => e.index === +b.dataset.zipIndex) || {}).size || 0), 0);
+  const btn = document.getElementById('zipExtractSelectedBtn');
+  btn.disabled = chosen.length === 0;
+  btn.textContent = chosen.length ? `Tanlanganlarni chiqarish (${chosen.length} ta, ${fmtBytes(size)})` : 'Tanlanganlarni chiqarish';
+}
+
+async function zipExtract(mode) {
+  const body = { delete_zip: document.getElementById('zipDeleteAfter').checked };
+  if (mode === 'selected') body.indices = zipFileBoxes().filter(b => b.checked).map(b => +b.dataset.zipIndex);
+  else body.mode = mode;
+  setStatus('zipStatus', 'Boshlanmoqda...', '');
+  try {
+    await apiFetch(`/api/cloud-files/${zipModalId}/zip/extract`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    closeModal('zipModal');
+    loadCloudInbox();
+    loadStorage();
+  } catch (e) {
+    setStatus('zipStatus', 'Xato: ' + e.message, 'err');
   }
 }
 

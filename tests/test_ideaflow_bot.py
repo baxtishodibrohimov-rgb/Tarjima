@@ -116,8 +116,8 @@ def test_due_repeating_reminder_is_sent_and_rescheduled(calls):
 def test_web_upload_mode_sends_videos_to_cloud(calls, monkeypatch):
     downloads = []
 
-    async def fake_download(client, file_id, name, notify, size_hint=0, api_base=None, token=None):
-        downloads.append((file_id, name, size_hint, api_base, token))
+    async def fake_download(client, file_id, name, notify, size_hint=0, api_base=None, token=None, kind="video"):
+        downloads.append((file_id, name, size_hint, api_base, token, kind))
         return name
 
     monkeypatch.setattr(bot.telegram_bot, "download_to_cloud", fake_download)
@@ -131,10 +131,16 @@ def test_web_upload_mode_sends_videos_to_cloud(calls, monkeypatch):
     send(message("☁️ Webga yuklash"))
     assert any("Webga video yuklash" in t for t in sent_texts(calls))
     send(message(video=dict(video)),
-         message(document={"file_id": "DOC1", "file_name": "b.mov", "mime_type": "video/quicktime"}))
-    assert [(d[0], d[1], d[2], d[4]) for d in downloads] == [
-        ("VID1", "dars.mp4", 123, bot.IDEA_BOT_TOKEN), ("DOC1", "b.mov", 0, bot.IDEA_BOT_TOKEN)]
-    assert sum("saytga yuklandi" in t for t in sent_texts(calls)) == 2
+         message(document={"file_id": "DOC1", "file_name": "b.mov", "mime_type": "video/quicktime"}),
+         message(document={"file_id": "ZIP1", "file_name": "kurs.zip", "mime_type": "application/zip"}))
+    assert [(d[0], d[1], d[2], d[4], d[5]) for d in downloads] == [
+        ("VID1", "dars.mp4", 123, bot.IDEA_BOT_TOKEN, "video"), ("DOC1", "b.mov", 0, bot.IDEA_BOT_TOKEN, "video"),
+        ("ZIP1", "kurs.zip", 0, bot.IDEA_BOT_TOKEN, "zip")]
+    assert sum("saytga yuklandi" in t for t in sent_texts(calls)) == 3
+
+    calls.clear()  # zip bo'lmagan hujjat qabul qilinmaydi
+    send(message(document={"file_id": "PDF1", "file_name": "a.pdf", "mime_type": "application/pdf"}))
+    assert len(downloads) == 3 and any("rejimidasiz" in t for t in sent_texts(calls))
 
     calls.clear()
     send(message("salom"))
@@ -142,7 +148,7 @@ def test_web_upload_mode_sends_videos_to_cloud(calls, monkeypatch):
 
     # Menyudagi boshqa bo'lim rejimdan chiqaradi; eski "🌐 Tarjima" tugmasi ham ishlaydi
     send(message("📅 Bugun"), message(video=dict(video)))
-    assert len(downloads) == 2
-    send(message("🌐 Tarjima"), message(video=dict(video)))
     assert len(downloads) == 3
+    send(message("🌐 Tarjima"), message(video=dict(video)))
+    assert len(downloads) == 4
 

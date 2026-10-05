@@ -532,6 +532,12 @@ _API_KEY_NEW_COLUMNS = {
 _CLOUD_FILE_NEW_COLUMNS = {
     "owner_id": "TEXT",
     "thumbnail_path": "TEXT",
+    # kind='zip' uchun: mundarija va "Bulutga chiqarish" holati
+    "zip_entry_count": "INTEGER",
+    "zip_total_size": "INTEGER",
+    "extract_status": "TEXT DEFAULT 'none'",
+    "extract_progress": "TEXT",
+    "extract_error": "TEXT",
 }
 _FOLDER_NEW_COLUMNS = {
     "owner_id": "TEXT",

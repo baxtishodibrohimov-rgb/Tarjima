@@ -553,9 +553,9 @@ async def show_settings(p, chat_id):
 
 WEB_UPLOAD_INTRO = """☁️ <b>Webga video yuklash</b>
 
-Videoni shu yerga yuboring — u saytdagi <b>Bulut</b> bo'limiga yuklanadi. U yerdan tarjimaga yoki «Video bo'lish»ga o'tkazasiz.
+Videoni yoki zip faylni shu yerga yuboring — u saytdagi <b>Bulut</b> bo'limiga yuklanadi. U yerdan tarjimaga yoki «Video bo'lish»ga o'tkazasiz, zip ichidan kerakli fayllarni chiqarib olasiz.
 
-• Bir nechta videoni ketma-ket yuborsa bo'ladi
+• Bir nechta faylni ketma-ket yuborsa bo'ladi
 • 2 GB gacha; katta video bir necha daqiqada yuklanadi
 • Tugatish uchun menyudan boshqa bo'limni tanlang"""
 
@@ -566,19 +566,29 @@ async def show_web_upload(p, chat_id):
     await send_message(chat_id, WEB_UPLOAD_INTRO, None, MAIN_KEYBOARD)
 
 
+ZIP_MIME_TYPES = ("application/zip", "application/x-zip-compressed", "application/x-zip")
+
+
 def web_upload_video(msg):
-    """Xabardagi video (yoki video sifatida yuborilgan hujjat): (file_id, nom, hajm)."""
+    """Xabardagi video, video sifatida yuborilgan hujjat yoki zip fayl:
+    (file_id, nom, hajm, "video"|"zip")."""
     video = msg.get("video")
-    doc = msg.get("document")
-    if not video and doc and (doc.get("mime_type") or "").startswith("video/"):
-        video = doc
+    doc = msg.get("document") or {}
+    kind = "video"
+    if not video and doc:
+        mime = (doc.get("mime_type") or "").lower()
+        if mime.startswith("video/"):
+            video = doc
+        elif mime in ZIP_MIME_TYPES or (doc.get("file_name") or "").lower().endswith(".zip"):
+            video, kind = doc, "zip"
     if not video:
         return None
-    name = video.get("file_name") or f"video_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.mp4"
-    return video["file_id"], name, int(video.get("file_size") or 0)
+    ext = ".zip" if kind == "zip" else ".mp4"
+    name = video.get("file_name") or f"{kind}_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}{ext}"
+    return video["file_id"], name, int(video.get("file_size") or 0), kind
 
 
-async def upload_to_web(chat_id, file_id, name, size):
+async def upload_to_web(chat_id, file_id, name, size, kind="video"):
     status = None
     try:
         status = await send_message(chat_id, f"⏳ <b>{escape_html(name)}</b> serverga yuklanmoqda...")
@@ -591,7 +601,7 @@ async def upload_to_web(chat_id, file_id, name, size):
     try:
         async with httpx.AsyncClient(timeout=60) as client:
             saved = await telegram_bot.download_to_cloud(client, file_id, name, notify, size_hint=size,
-                                                         api_base=IDEA_BOT_API_URL, token=IDEA_BOT_TOKEN)
+                                                         api_base=IDEA_BOT_API_URL, token=IDEA_BOT_TOKEN, kind=kind)
         if saved:
             await send_message(chat_id, f"✅ <b>{escape_html(saved)}</b> saytga yuklandi.\n"
                                         f"Saytdagi <b>Bulut</b> bo'limida turibdi.")
@@ -820,7 +830,7 @@ async def handle_message(msg):
         if video:
             _spawn(upload_to_web(chat_id, *video))
         else:
-            await send_message(chat_id, "☁️ Hozir «Webga yuklash» rejimidasiz: video yuboring yoki "
+            await send_message(chat_id, "☁️ Hozir «Webga yuklash» rejimidasiz: video yoki zip yuboring yoki "
                                         "menyudan boshqa bo'limni tanlang.")
         return
 

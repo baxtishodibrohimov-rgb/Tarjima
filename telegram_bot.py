@@ -97,11 +97,12 @@ def hide_token(text: str, token: str) -> str:
 
 
 async def download_to_cloud(client: httpx.AsyncClient, file_id: str, original_name: str, notify,
-                            size_hint: int = 0, api_base: str = None, token: str = None):
+                            size_hint: int = 0, api_base: str = None, token: str = None, kind: str = "video"):
     """Telegram'dagi videoni yuklab olib "Bulut"ga (cloud_files) qo'shadi.
 
     Shu modulning kiruvchi boti ham, Idea Flow botining "☁️ Webga yuklash"
     bo'limi ham ishlatadi - shuning uchun Bot API manzili va tokeni parametr.
+    ``kind`` - "video" yoki "zip" (Bulutda zip ichini ochib ko'rish mumkin).
     ``notify(text)`` - foydalanuvchiga xabar (joy yetishmasa). Muvaffaqiyatda
     Bulutdagi fayl nomini, aks holda None qaytaradi."""
     api_base = (api_base or LOCAL_BOT_API_URL).rstrip("/")
@@ -182,8 +183,12 @@ async def download_to_cloud(client: httpx.AsyncClient, file_id: str, original_na
     db.execute(
         """INSERT INTO cloud_files (id, kind, original_name, filename, path, file_size, created_at, owner_id)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (cloud_id, "video", name, dest_path.name, str(dest_path), total, db.now(), admin["id"]),
+        (cloud_id, kind, name, dest_path.name, str(dest_path), total, db.now(), admin["id"]),
     )
+    if kind == "zip":
+        import cloud_zip
+        await asyncio.to_thread(cloud_zip.on_zip_added, cloud_id, dest_path)
+        return name
     try:
         thumb_path = dest_dir / "thumb.jpg"
         loop = asyncio.get_event_loop()

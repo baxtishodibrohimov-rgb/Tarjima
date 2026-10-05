@@ -31,6 +31,7 @@ import tts
 import worker
 import ideaflow_bot
 import bot_section
+import cloud_zip
 from storage import (VIDEOS_DIR, RESULTS_DIR, UPLOADS_DIR, CHUNKS_DIR, SPLIT_DIR, CLOUD_DIR, MAX_UPLOAD_SIZE, ADMIN_TOKEN,
                       UPLOAD_CHUNK_SIZE, CHUNK_SECONDS, MAX_WHISPER_CONCURRENCY, MAX_ACTIVE_VIDEO_JOBS,
                       MAX_ACTIVE_TTS_JOBS, REPETITION_THRESHOLD, DARSLIK_API_KEY,
@@ -103,6 +104,7 @@ def range_file_response(request: Request, path: Path, media_type: str):
 
 app = FastAPI(title="Darslik Studiyasi - Cloud")
 app.include_router(bot_section.router)
+app.include_router(cloud_zip.router)
 
 # Diqqat: production uchun bu yerga faqat o'zingizning sayt manzilingizni yozing
 app.add_middleware(
@@ -156,6 +158,7 @@ async def on_startup():
         import telegram_bot
         asyncio.create_task(telegram_bot.poll_updates())
     bot_section.recover_interrupted_uploads()
+    cloud_zip.recover_interrupted()
     ideaflow_bot.start()
 
 
@@ -2202,7 +2205,7 @@ async def upload_init(original_name: str = Form(...), total_size: int = Form(...
         raise HTTPException(403, "Oddiy foydalanuvchi faqat Kutubxonaga video yuklay oladi.")
     if kind not in ("pipeline", "split_only", "cloud"):
         raise HTTPException(400, "Noto'g'ri kind qiymati.")
-    if file_kind not in ("video", "image", "file"):
+    if file_kind not in ("video", "image", "file", "zip"):
         raise HTTPException(400, "Noto'g'ri file_kind qiymati.")
     if total_size > MAX_UPLOAD_SIZE:
         raise HTTPException(400, f"Fayl juda katta (limit: {MAX_UPLOAD_SIZE // (1024**3)} GB).")
@@ -2302,6 +2305,8 @@ async def upload_complete(upload_id: str, request: Request):
         db.execute("UPDATE uploads SET status = 'completed' WHERE id = ?", (upload_id,))
         if (u["file_kind"] or "video") == "video":
             _generate_cloud_thumbnail(cloud_id, dest_dir, dest_path)
+        elif u["file_kind"] == "zip":
+            await asyncio.to_thread(cloud_zip.on_zip_added, cloud_id, dest_path)
         return {"cloud_file_id": cloud_id}
 
     video_id = db.new_id()
@@ -2380,7 +2385,10 @@ async def cleanup_uploads():
 def cloud_file_public(f: dict) -> dict:
     return {"id": f["id"], "kind": f["kind"], "original_name": f["original_name"],
             "file_size": f["file_size"], "created_at": f["created_at"],
-            "has_thumbnail": bool(f["thumbnail_path"]) if "thumbnail_path" in f.keys() else False}
+            "has_thumbnail": bool(f["thumbnail_path"]) if "thumbnail_path" in f.keys() else False,
+            "zip_entry_count": f.get("zip_entry_count"), "zip_total_size": f.get("zip_total_size"),
+            "extract_status": f.get("extract_status") or "none", "extract_progress": f.get("extract_progress"),
+            "extract_error": f.get("extract_error")}
 
 
 def _generate_cloud_thumbnail(cloud_id: str, dest_dir: Path, video_path: Path):
@@ -2487,6 +2495,8 @@ async def delete_cloud_file(cloud_id: str):
     f = db.fetchone("SELECT * FROM cloud_files WHERE id = ?", (cloud_id,))
     if not f:
         raise HTTPException(404, "Fayl topilmadi.")
+    if f.get("extract_status") == "extracting":
+        raise HTTPException(409, "Bu zipdan hozir fayllar chiqarilmoqda - tugashini kuting.")
     shutil.rmtree(Path(f["path"]).parent, ignore_errors=True)
     db.execute("DELETE FROM cloud_files WHERE id = ?", (cloud_id,))
     return {"ok": True}
