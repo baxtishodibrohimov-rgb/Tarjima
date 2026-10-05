@@ -2055,22 +2055,12 @@ async def send_to_bot_endpoint(video_id: str, request: Request, provider: str = 
     if not video_path:
         raise HTTPException(400, "Avval yakuniy video tayyor bo'lishi kerak.")
 
-    telegram_ok = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
-    endpoint = "subtitled-download" if subtitled else "final-download"
-    download_url = f"{str(request.base_url).rstrip('/')}/api/videos/{video_id}/{endpoint}"
-    if provider:
-        download_url += f"?provider={provider}"
-    # Idea Flow botining "🌐 Tarjima" bo'limiga (bot hali sozlanmagan bo'lsa - o'tkazib yuboriladi).
-    if ideaflow_bot.add_tarjima_video(v["original_name"] + title_suffix, download_url):
-        db.execute("UPDATE videos SET idea_flow_sent_at = ? WHERE id = ?", (db.now(), video_id))
-    elif not telegram_ok:
-        raise HTTPException(400, "Botga ulanish sozlanmagan (TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID yoki "
-                                  "IDEA_BOT_TOKEN environment variable'lari kiritilmagan).")
-
-    if telegram_ok:
-        db.execute("UPDATE videos SET telegram_send_status = 'sending', telegram_send_error = NULL WHERE id = ?",
-                   (video_id,))
-        asyncio.create_task(_send_video_file_to_telegram(video_id, video_path, v["original_name"] + title_suffix))
+    if not (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID):
+        raise HTTPException(400, "Botga ulanish sozlanmagan (TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID "
+                                  "environment variable'lari kiritilmagan).")
+    db.execute("UPDATE videos SET telegram_send_status = 'sending', telegram_send_error = NULL WHERE id = ?",
+               (video_id,))
+    asyncio.create_task(_send_video_file_to_telegram(video_id, video_path, v["original_name"] + title_suffix))
 
     return {"ok": True}
 
@@ -2260,10 +2250,6 @@ async def upload_complete(upload_id: str, request: Request):
         worker.enqueue_segment(video_id)
 
     if kind == "split_only":
-        download_url = f"{str(request.base_url).rstrip('/')}/api/videos/{video_id}/original-stream"
-        if ideaflow_bot.add_tarjima_video(u["original_name"], download_url):
-            db.execute("UPDATE videos SET idea_flow_sent_at = ? WHERE id = ?", (db.now(), video_id))
-
         # Faqat bo'linadi - Telegram'ga foydalanuvchi "Botga jo'natish"ni bosganda yuboriladi.
         db.execute("UPDATE videos SET split_status = 'splitting' WHERE id = ?", (video_id,))
         asyncio.create_task(_prepare_split_video(video_id))
@@ -2465,13 +2451,7 @@ async def use_cloud_file_in_split(cloud_id: str, request: Request):
         raise HTTPException(404, "Bulutda bunday video topilmadi.")
     if not has_space_for(f["file_size"]):
         raise HTTPException(400, "Serverda yetarli bo'sh joy yo'q.")
-    original_name = f["original_name"]
     video_id = _move_cloud_video_into_pipeline(f, "split_only")
-
-    download_url = f"{str(request.base_url).rstrip('/')}/api/videos/{video_id}/original-stream"
-    if ideaflow_bot.add_tarjima_video(original_name, download_url):
-        db.execute("UPDATE videos SET idea_flow_sent_at = ? WHERE id = ?", (db.now(), video_id))
-
     db.execute("UPDATE videos SET split_status = 'splitting' WHERE id = ?", (video_id,))
     asyncio.create_task(_prepare_split_video(video_id))
     return {"video_id": video_id}

@@ -1837,7 +1837,6 @@ function renderSplitVideoList(videos) {
     return;
   }
   list.innerHTML = videos.map(v => {
-    const ideaFlowHtml = v.idea_flow_sent_at ? `<span class="pill ok">✓ Tarjima papkasiga yozildi</span> ` : '';
     const n = v.split_total_parts;
     let statusHtml;
     let actionHtml = '';
@@ -1869,7 +1868,7 @@ function renderSplitVideoList(videos) {
       <div>
         <strong>${escapeHtml(v.original_name)}</strong>
         <div class="hint">${fmtBytes(v.file_size)} ${v.duration ? '· ' + fmtMinSec(v.duration) : ''}</div>
-        <div style="margin-top:4px;">${ideaFlowHtml}${statusHtml}</div>
+        <div style="margin-top:4px;">${statusHtml}</div>
       </div>
       <div class="row" style="margin-top:0; gap:6px;">
         ${actionHtml}
@@ -4402,7 +4401,6 @@ function telegramTrackButtonHtml(v, provider) {
 function telegramButtonHtml(v) {
   if (!currentUser || !currentUser.is_superadmin) return '';
   const parts = [];
-  if (v.idea_flow_sent_at) parts.push(`<span class="pill ok">✓ Tarjima papkasiga yozildi</span>`);
   if (v.telegram_send_status === 'sending') {
     parts.push(`<span class="pill">⏳ Telegram'ga video yuborilmoqda...</span>`);
   } else if (v.telegram_send_status === 'sent') {
@@ -4410,7 +4408,7 @@ function telegramButtonHtml(v) {
   } else if (v.telegram_send_status === 'error') {
     parts.push(`<span class="pill err">✗ Telegram xato: ${escapeHtml(v.telegram_send_error || '')}</span>`);
   }
-  const label = (v.idea_flow_sent_at || v.telegram_send_status === 'sent') ? 'Qayta yuborish' : 'Botga yuborish';
+  const label = v.telegram_send_status === 'sent' ? 'Qayta yuborish' : 'Botga yuborish';
   const disabled = v.telegram_send_status === 'sending' ? 'disabled' : '';
   parts.push(`<button class="small-btn" id="telegramBtn-${v.id}" ${disabled} onclick="sendToBot('${v.id}')">${label}</button>`);
   return parts.join(' ');

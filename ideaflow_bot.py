@@ -3,7 +3,7 @@
 Lovable'dagi Idea Flow ilovasining (src/lib/bot.server.ts) Python ko'chirmasi:
 xabar/media darhol saqlanadi, keyin toifa tanlanadi (Vazifa / Ideya / Baza /
 Video Baza / Keyinroq); tabiiy til ("ertaga ...", "juma 15:00 da eslat ...",
-"idea: ..."); cheksiz ichma-ich papkali Baza va Video Baza; Tarjima videolari;
+"idea: ..."); cheksiz ichma-ich papkali Baza va Video Baza; saytga video yuklash;
 eslatmalar va kunlik hisobot; ruxsat berilgan foydalanuvchilar.
 
 Lovable'dan farqi: webhook o'rniga long polling (ochiq HTTPS manzil kerak
@@ -20,6 +20,7 @@ import httpx
 
 import database as db
 import ideaflow_nlp as nlp
+import telegram_bot
 from storage import IDEA_BOT_API_URL, IDEA_BOT_TOKEN
 
 POLL_TIMEOUT = 30
@@ -29,10 +30,14 @@ BOT_USERNAME_KEY = "ideaflow_bot_username"
 MAIN_KEYBOARD = [
     ["📅 Bugun", "💡 Ideyalar"],
     ["📚 Baza", "🎬 Video Baza"],
-    ["🌐 Tarjima", "⏰ Eslatmalar"],
+    ["☁️ Webga yuklash", "⏰ Eslatmalar"],
     ["⚙️ Sozlamalar"],
 ]
-MENU_TEXTS = ["📅 Bugun", "💡 Ideyalar", "📚 Baza", "🎬 Video Baza", "🌐 Tarjima", "⏰ Eslatmalar", "⚙️ Sozlamalar"]
+# "🌐 Tarjima" - eski klaviatura tugmasi (Telegram ilovasida yangi klaviatura
+# kelguncha ko'rinib turadi), u ham "☁️ Webga yuklash"ni ochadi.
+WEB_UPLOAD_TEXTS = ("☁️ Webga yuklash", "🌐 Tarjima")
+MENU_TEXTS = ["📅 Bugun", "💡 Ideyalar", "📚 Baza", "🎬 Video Baza", *WEB_UPLOAD_TEXTS, "⏰ Eslatmalar",
+              "⚙️ Sozlamalar"]
 
 HELP = """<b>Shaxsiy yordamchi bot</b>
 
@@ -48,6 +53,7 @@ Buyruqlar:
 /bugun — bugungi vazifalar
 /ideyalar — ideyalar
 /baza — bilim bazasi
+/yuklash — saytga (Bulutga) video yuklash
 /eslatmalar — yaqin eslatmalar
 /qidir so'z — qidiruv
 /sozlamalar — vaqt zonasi va papkalar"""
@@ -545,18 +551,58 @@ async def show_settings(p, chat_id):
     await send_message(chat_id, f"<b>⚙️ Sozlamalar</b>\n\nVaqt zonasi: <code>{p['timezone']}</code>", keyboard)
 
 
-async def show_tarjima(p, chat_id):
-    """🌐 Tarjima - Tarjima dasturidan kelgan videolar."""
-    set_state(p["id"], None)
-    rows = db.fetchall("SELECT id, title, url FROM idea_items WHERE user_id = ? AND root_type = 'tarjima' "
-                       "ORDER BY created_at DESC LIMIT 30", (p["id"],))
-    if not rows:
-        await send_message(chat_id, "🌐 <b>Tarjima</b>\n\n<i>Hozircha video yo'q</i>", None, MAIN_KEYBOARD)
-        return
-    await send_message(chat_id, f"🌐 <b>Tarjima</b> — {len(rows)} ta video", None, MAIN_KEYBOARD)
-    for it in rows:
-        text = f"🎬 <b>{escape_html(it['title'])}</b>" + ("\n" + escape_html(it["url"]) if it["url"] else "")
-        await send_message(chat_id, text, item_keyboard(it["id"]))
+WEB_UPLOAD_INTRO = """☁️ <b>Webga video yuklash</b>
+
+Videoni shu yerga yuboring — u saytdagi <b>Bulut</b> bo'limiga yuklanadi. U yerdan tarjimaga yoki «Video bo'lish»ga o'tkazasiz.
+
+• Bir nechta videoni ketma-ket yuborsa bo'ladi
+• 2 GB gacha; katta video bir necha daqiqada yuklanadi
+• Tugatish uchun menyudan boshqa bo'limni tanlang"""
+
+
+async def show_web_upload(p, chat_id):
+    """☁️ Webga yuklash - shu rejimda yuborilgan videolar saytning Bulutiga tushadi."""
+    set_state(p["id"], {"t": "web_upload"}, None)
+    await send_message(chat_id, WEB_UPLOAD_INTRO, None, MAIN_KEYBOARD)
+
+
+def web_upload_video(msg):
+    """Xabardagi video (yoki video sifatida yuborilgan hujjat): (file_id, nom, hajm)."""
+    video = msg.get("video")
+    doc = msg.get("document")
+    if not video and doc and (doc.get("mime_type") or "").startswith("video/"):
+        video = doc
+    if not video:
+        return None
+    name = video.get("file_name") or f"video_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.mp4"
+    return video["file_id"], name, int(video.get("file_size") or 0)
+
+
+async def upload_to_web(chat_id, file_id, name, size):
+    status = None
+    try:
+        status = await send_message(chat_id, f"⏳ <b>{escape_html(name)}</b> serverga yuklanmoqda...")
+    except Exception:
+        pass
+
+    async def notify(text):
+        await send_message(chat_id, "❌ " + escape_html(text))
+
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            saved = await telegram_bot.download_to_cloud(client, file_id, name, notify, size_hint=size,
+                                                         api_base=IDEA_BOT_API_URL, token=IDEA_BOT_TOKEN)
+        if saved:
+            await send_message(chat_id, f"✅ <b>{escape_html(saved)}</b> saytga yuklandi.\n"
+                                        f"Saytdagi <b>Bulut</b> bo'limida turibdi.")
+    except Exception as e:
+        print(f"[ideaflow_bot] Webga yuklashda xato ({name}):", flush=True)
+        traceback.print_exc()
+        reason = telegram_bot.hide_token(str(e), IDEA_BOT_TOKEN)[:300]
+        await send_message(chat_id, f"❌ <b>{escape_html(name)}</b> yuklanmadi: {escape_html(reason)}")
+    finally:
+        if status and status.get("message_id"):
+            await delete_message(chat_id, status["message_id"])
 
 
 async def show_item_move_targets(p, chat_id, item_id, message_id, target_root="video_base", cur=None):
@@ -753,8 +799,8 @@ async def handle_message(msg):
         return await show_base(profile, chat_id, "base")
     if lower.startswith("/video") or text == "🎬 Video Baza":
         return await show_base(profile, chat_id, "video_base")
-    if lower.startswith("/tarjima") or text == "🌐 Tarjima":
-        return await show_tarjima(profile, chat_id)
+    if lower.startswith(("/yuklash", "/tarjima")) or text in WEB_UPLOAD_TEXTS:
+        return await show_web_upload(profile, chat_id)
     if lower.startswith("/eslatmalar") or text == "⏰ Eslatmalar":
         return await show_reminders(profile, chat_id)
     if lower.startswith("/sozlamalar") or text == "⚙️ Sozlamalar":
@@ -767,11 +813,21 @@ async def handle_message(msg):
             return
         return await show_users(profile, chat_id)
 
+    # "☁️ Webga yuklash" rejimi: videolar saytning Bulutiga yuklanadi
+    state, nav = get_row(profile["id"])
+    if state and state.get("t") == "web_upload":
+        video = web_upload_video(msg)
+        if video:
+            _spawn(upload_to_web(chat_id, *video))
+        else:
+            await send_message(chat_id, "☁️ Hozir «Webga yuklash» rejimidasiz: video yuboring yoki "
+                                        "menyudan boshqa bo'limni tanlang.")
+        return
+
     media = extract_media(msg)
     url_match = re.search(r"https?://\S+", text)
 
     # Baza/Video Baza ichida turgan bo'lsak - to'g'ridan-to'g'ri shu papkaga saqlaymiz
-    state, nav = get_row(profile["id"])
     browse_nav = nav if (state is None or state.get("t") == "browse") else None
     if browse_nav:
         item_type = ("link" if url_match else "note") if media["kind"] == "text" else media["kind"]
@@ -1141,19 +1197,6 @@ async def run_daily_reviews():
     return sent
 
 
-# ------------------------------------------------------------------ Tarjima
-
-def add_tarjima_video(title: str, url: str) -> bool:
-    """Tarjima dasturidagi tayyor videoni botning "🌐 Tarjima" bo'limiga yozadi
-    (avval Lovable'dagi /api/public/darslik/videos shu ishni qilardi)."""
-    owner = owner_profile() or db.fetchone("SELECT id FROM idea_profiles ORDER BY created_at LIMIT 1")
-    if not owner:
-        return False
-    _insert("idea_items", user_id=owner["id"], root_type="tarjima", folder_id=None, type="video",
-            title=title, url=url, **_now_cols())
-    return True
-
-
 # ------------------------------------------------------------------ runtime
 
 async def _handle_update(update):
@@ -1175,6 +1218,7 @@ async def _poll():
             {"command": "ideyalar", "description": "Ideyalar"},
             {"command": "baza", "description": "Bilim bazasi"},
             {"command": "video", "description": "Video baza"},
+            {"command": "yuklash", "description": "Saytga video yuklash"},
             {"command": "eslatmalar", "description": "Eslatmalar"},
             {"command": "qidir", "description": "Qidiruv"},
             {"command": "sozlamalar", "description": "Sozlamalar va papkalar"},

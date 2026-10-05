@@ -91,17 +91,30 @@ async def _send_message(client: httpx.AsyncClient, chat_id, text: str):
         pass
 
 
-async def _download_and_save_to_cloud(client: httpx.AsyncClient, file_id: str, original_name: str,
-                                        chat_id, size_hint: int = 0) -> None:
+def hide_token(text: str, token: str) -> str:
+    """Xato matnida (httpx URL'ni ham yozadi) bot tokeni chatga chiqib ketmasin."""
+    return text.replace(token, "***") if token else text
+
+
+async def download_to_cloud(client: httpx.AsyncClient, file_id: str, original_name: str, notify,
+                            size_hint: int = 0, api_base: str = None, token: str = None):
+    """Telegram'dagi videoni yuklab olib "Bulut"ga (cloud_files) qo'shadi.
+
+    Shu modulning kiruvchi boti ham, Idea Flow botining "☁️ Webga yuklash"
+    bo'limi ham ishlatadi - shuning uchun Bot API manzili va tokeni parametr.
+    ``notify(text)`` - foydalanuvchiga xabar (joy yetishmasa). Muvaffaqiyatda
+    Bulutdagi fayl nomini, aks holda None qaytaradi."""
+    api_base = (api_base or LOCAL_BOT_API_URL).rstrip("/")
+    token = token or INBOUND_BOT_TOKEN
     if size_hint and not has_space_for(size_hint):
-        await _send_message(client, chat_id, f'"{original_name}" qabul qilinmadi - serverda joy yetarli emas.')
-        return
+        await notify(f'"{original_name}" qabul qilinmadi - serverda joy yetarli emas.')
+        return None
 
     # Katta video uchun lokal bot-api serveri getFile so'rovi davomida faylni
     # Telegram'dan yuklab oladi. 2 GB fayl sekin ulanishda bir necha daqiqadan
     # ko'proq vaqt olishi mumkin, shuning uchun qisqa timeout bilan uzmaymiz.
     resp = await client.post(
-        _api_url("getFile"), data={"file_id": file_id}, timeout=GET_FILE_TIMEOUT
+        f"{api_base}/bot{token}/getFile", data={"file_id": file_id}, timeout=GET_FILE_TIMEOUT
     )
     resp.raise_for_status()
     file_path = resp.json()["result"]["file_path"]
@@ -123,7 +136,7 @@ async def _download_and_save_to_cloud(client: httpx.AsyncClient, file_id: str, o
     else:
         # Lokal mutlaq yo'l mavjud bo'lmasa eski HTTP yo'li zaxira bo'lib qoladi.
         # Fayl hali tayyor bo'lmasa bir necha marta kutib qayta urinamiz.
-        local_url = f"{LOCAL_BOT_API_URL.rstrip('/')}/file/bot{INBOUND_BOT_TOKEN}/{file_path}"
+        local_url = f"{api_base}/file/bot{token}/{file_path}"
         for attempt in range(6):
             try:
                 total = await _stream_to_file(client, local_url, dest_path)
@@ -145,11 +158,11 @@ async def _download_and_save_to_cloud(client: httpx.AsyncClient, file_id: str, o
         print(f"[telegram_bot] Lokal bot-api serveridan yuklab bo'lmadi "
               f"({last_local_error.response.status_code}), ochiq Telegram API orqali "
               f"qayta urinilmoqda...", flush=True)
-        pub_resp = await client.post(f"{PUBLIC_API_BASE}/bot{INBOUND_BOT_TOKEN}/getFile",
+        pub_resp = await client.post(f"{PUBLIC_API_BASE}/bot{token}/getFile",
                                       data={"file_id": file_id}, timeout=60)
         pub_resp.raise_for_status()
         pub_file_path = pub_resp.json()["result"]["file_path"]
-        public_url = f"{PUBLIC_API_BASE}/file/bot{INBOUND_BOT_TOKEN}/{pub_file_path}"
+        public_url = f"{PUBLIC_API_BASE}/file/bot{token}/{pub_file_path}"
         total = await _stream_to_file(client, public_url, dest_path)
 
     if not has_space_for(0):
@@ -158,14 +171,14 @@ async def _download_and_save_to_cloud(client: httpx.AsyncClient, file_id: str, o
             dest_dir.rmdir()
         except OSError:
             pass
-        await _send_message(client, chat_id, f'"{name}" qabul qilinmadi - serverda joy yetarli emas.')
-        return
+        await notify(f'"{name}" qabul qilinmadi - serverda joy yetarli emas.')
+        return None
 
     admin = db.fetchone("SELECT id FROM users WHERE role = 'superadmin' ORDER BY created_at LIMIT 1")
     if not admin:
         dest_path.unlink(missing_ok=True)
-        await _send_message(client, chat_id, 'Super-admin hisobi topilmadi.')
-        return
+        await notify('Super-admin hisobi topilmadi.')
+        return None
     db.execute(
         """INSERT INTO cloud_files (id, kind, original_name, filename, path, file_size, created_at, owner_id)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -179,8 +192,17 @@ async def _download_and_save_to_cloud(client: httpx.AsyncClient, file_id: str, o
             db.execute("UPDATE cloud_files SET thumbnail_path = ? WHERE id = ?", (str(thumb_path), cloud_id))
     except Exception:
         pass
-    await _send_message(client, chat_id, f'"{name}" qabul qilindi va Bulutga yuklandi ('
-                                          f'saytda "Tarjima -> Kelgan videolarni ko\'rish"dan ko\'rasiz).')
+    return name
+
+
+async def _download_and_save_to_cloud(client: httpx.AsyncClient, file_id: str, original_name: str,
+                                      chat_id, size_hint: int = 0) -> None:
+    async def notify(text):
+        await _send_message(client, chat_id, text)
+
+    name = await download_to_cloud(client, file_id, original_name, notify, size_hint=size_hint)
+    if name:
+        await notify(f'"{name}" qabul qilindi va Bulutga yuklandi (saytdagi "Bulut" bo\'limida ko\'rasiz).')
 
 
 async def _handle_update(client: httpx.AsyncClient, update: dict):
@@ -212,7 +234,7 @@ async def _handle_update(client: httpx.AsyncClient, update: dict):
     except Exception as e:
         print(f"[telegram_bot] XATO video qabul qilishda: {e}", flush=True)
         traceback.print_exc()
-        await _send_message(client, chat_id, f"Video qabul qilishda xato: {e}")
+        await _send_message(client, chat_id, f"Video qabul qilishda xato: {hide_token(str(e), INBOUND_BOT_TOKEN)}")
 
 
 async def poll_updates():

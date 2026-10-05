@@ -50,6 +50,8 @@ def send(*updates):
     async def run():
         for u in updates:
             await bot._handle_update(u)
+        while bot._background:
+            await asyncio.gather(*list(bot._background))
     asyncio.run(run())
 
 
@@ -111,10 +113,36 @@ def test_due_repeating_reminder_is_sent_and_rescheduled(calls):
     assert row["status"] == "pending" and row["repeat_remaining"] == 1 and row["remind_at"] > db.now()
 
 
-def test_tarjima_video_appears_in_bot(calls):
-    assert bot.add_tarjima_video("Ma'ruza", "http://x/final-download") is False  # bot hali ulanmagan
+def test_web_upload_mode_sends_videos_to_cloud(calls, monkeypatch):
+    downloads = []
+
+    async def fake_download(client, file_id, name, notify, size_hint=0, api_base=None, token=None):
+        downloads.append((file_id, name, size_hint, api_base, token))
+        return name
+
+    monkeypatch.setattr(bot.telegram_bot, "download_to_cloud", fake_download)
+    video = {"file_id": "VID1", "file_name": "dars.mp4", "file_size": 123}
+
     send(message("/start"))
-    assert bot.add_tarjima_video("Ma'ruza", "http://x/final-download") is True
+    send(message(video=dict(video)))  # rejimdan tashqarida - odatdagidek saqlanadi
+    assert downloads == []
+
     calls.clear()
-    send(message("🌐 Tarjima"))
-    assert any("Ma'ruza" in t for t in sent_texts(calls))
+    send(message("☁️ Webga yuklash"))
+    assert any("Webga video yuklash" in t for t in sent_texts(calls))
+    send(message(video=dict(video)),
+         message(document={"file_id": "DOC1", "file_name": "b.mov", "mime_type": "video/quicktime"}))
+    assert [(d[0], d[1], d[2], d[4]) for d in downloads] == [
+        ("VID1", "dars.mp4", 123, bot.IDEA_BOT_TOKEN), ("DOC1", "b.mov", 0, bot.IDEA_BOT_TOKEN)]
+    assert sum("saytga yuklandi" in t for t in sent_texts(calls)) == 2
+
+    calls.clear()
+    send(message("salom"))
+    assert any("Webga yuklash» rejimidasiz" in t for t in sent_texts(calls))
+
+    # Menyudagi boshqa bo'lim rejimdan chiqaradi; eski "🌐 Tarjima" tugmasi ham ishlaydi
+    send(message("📅 Bugun"), message(video=dict(video)))
+    assert len(downloads) == 2
+    send(message("🌐 Tarjima"), message(video=dict(video)))
+    assert len(downloads) == 3
+
