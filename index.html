@@ -115,8 +115,9 @@
   .icon-btn svg.icon { width:18px; height:18px; flex:none; }
   .brand-mark svg.icon { width:16px; height:16px; }
   .nav-count { margin-left:auto; font-size:11px; padding:2px 8px; border-radius:6px; background:var(--neutral-bg); color:var(--neutral-fg); }
-  #page-translate .nav { gap:6px; }
-  #page-translate .nav-btn { min-height:40px; padding:0 16px; border-radius:999px; }
+  .cloud-vcard { cursor:default; }
+  .cloud-vcard:hover { transform:none; }
+  .cloud-card-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:auto; }
 
   .theme-toggle, .tiny-btn, .small-btn, .icon-btn, button.action, button.secondary, .add-video-btn, .fab, .back-link {
     font-family:inherit; cursor:pointer; }
@@ -446,7 +447,7 @@
     <nav class="side-nav nav">
       <button class="nav-btn active" data-page="page-videos" onclick="switchPage('page-videos')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Kutubxona</button>
       <button class="nav-btn admin-only" data-page="page-split" onclick="switchPage('page-split')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></svg>Video bo'lish</button>
-      <button class="nav-btn admin-only" data-page="page-translate" onclick="switchPage('page-translate')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 16.58A5 5 0 0 0 18 7h-1.26A8 8 0 1 0 4 15.25"/><polyline points="12 12 12 21"/><polyline points="9 18 12 21 15 18"/></svg>Tarjima va bulut</button>
+      <button class="nav-btn admin-only" data-page="page-translate" onclick="switchPage('page-translate')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 16.58A5 5 0 0 0 18 7h-1.26A8 8 0 1 0 4 15.25"/><polyline points="12 12 12 21"/><polyline points="9 18 12 21 15 18"/></svg>Bulut</button>
       <button class="nav-btn" data-page="page-settings" onclick="switchPage('page-settings')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>Sozlamalar</button>
       <button class="nav-btn" data-page="page-transcribe" onclick="switchPage('page-transcribe')" style="display:none;">Video → Matn</button>
       <button class="nav-btn" data-page="page-audio" onclick="switchPage('page-audio')" style="display:none;">Audio</button>
@@ -715,28 +716,15 @@
 <!--   PAGE: MATN / TARJIMA                                        -->
 <!-- ============================================================ -->
 <div class="page" id="page-translate">
-  <p class="subtitle">Tarjima uchun video yuklang yoki bulutga tushgan, hali "Videolar" bazasiga qo'shilmagan videolarni ko'ring.</p>
-  <div class="nav" style="margin-bottom:16px;">
-    <button class="nav-btn active" data-subpage="tarjima-upload" onclick="switchTarjimaSubpage('tarjima-upload')">Video yuklash</button>
-    <button class="nav-btn" data-subpage="tarjima-inbox" onclick="switchTarjimaSubpage('tarjima-inbox')">Kelgan videolarni ko'rish</button>
+  <input type="file" id="tarjimaUploadFile" accept="video/*" multiple style="display:none;">
+  <div id="tarjimaUploadProgressCard" style="display:none;" class="card">
+    <div class="progress-wrap"><div class="progress-bar" id="tarjimaUploadProgressBar"></div></div>
+    <div class="status" id="tarjimaUploadStatus"></div>
+    <button class="small-btn danger" id="tarjimaUploadStopBtn" onclick="stopCurrentUpload()" style="display:none; margin-top:10px;">To'xtatish</button>
   </div>
-
-  <div id="tarjima-upload" class="tarjima-subpage active">
-    <button class="add-video-btn" onclick="document.getElementById('tarjimaUploadFile').click()">+ Video yuklash (bulutga)</button>
-    <input type="file" id="tarjimaUploadFile" accept="video/*" multiple style="display:none;">
-    <div id="tarjimaUploadProgressCard" style="display:none;" class="card">
-      <div class="progress-wrap"><div class="progress-bar" id="tarjimaUploadProgressBar"></div></div>
-      <div class="status" id="tarjimaUploadStatus"></div>
-      <button class="small-btn danger" id="tarjimaUploadStopBtn" onclick="stopCurrentUpload()" style="display:none; margin-top:10px;">To'xtatish</button>
-    </div>
-    <p class="hint">Bu yerga yuklangan video darhol tarjima qilinmaydi - u bulutga tushadi, keyin "Kelgan videolarni ko'rish"dan Videolar bazasiga qo'shasiz.</p>
-  </div>
-
-  <div id="tarjima-inbox" class="tarjima-subpage" style="display:none;">
-    <div class="row" style="margin-top:0;">
-      <button class="secondary" onclick="loadCloudInbox()">Yangilash</button>
-    </div>
-    <div id="cloudInboxList"><p class="hint">Yuklanmoqda...</p></div>
+  <div id="cloudInboxList" class="vgrid"><p class="hint">Yuklanmoqda...</p></div>
+  <div class="fab-wrap" id="cloudFab">
+    <button class="fab" onclick="document.getElementById('tarjimaUploadFile').click()" title="Bulutga video yuklash" aria-label="Bulutga video yuklash">+</button>
   </div>
 </div>
 
@@ -1018,12 +1006,12 @@ function switchPage(pageId) {
   if (target) target.classList.add('active');
   document.querySelectorAll('.nav-btn[data-page]').forEach(b => b.classList.toggle('active', b.dataset.page === pageId));
   const titles = { 'page-videos': 'Kutubxona', 'page-split': "Video bo'lish",
-    'page-translate': 'Tarjima va bulut', 'page-settings': 'Sozlamalar', 'page-transcribe': 'Video → Matn',
+    'page-translate': 'Bulut', 'page-settings': 'Sozlamalar', 'page-transcribe': 'Video → Matn',
     'page-audio': 'Audio', 'page-merge': 'Birlashtirish' };
   const titleEl = document.getElementById('topbarTitle');
   if (titleEl && titles[pageId]) {
     titleEl.textContent = titles[pageId];
-    titleEl.style.display = pageId === 'page-videos' ? 'none' : 'block';
+    titleEl.style.display = (pageId === 'page-videos' || pageId === 'page-translate') ? 'none' : 'block';
   }
   const backBtn = document.getElementById('videoBackButton');
   if (backBtn) {
@@ -1036,6 +1024,7 @@ function switchPage(pageId) {
   if (videoName) videoName.style.display = pageId === 'page-videos' && currentDetailVideoData ? 'block' : 'none';
   const folderBar = document.getElementById('folderBar');
   if (folderBar) folderBar.style.display = pageId === 'page-videos' && !currentDetailVideoId ? 'flex' : 'none';
+  if (pageId === 'page-translate') loadCloudInbox();
 }
 
 function switchTab(group, tabId) {
@@ -4419,15 +4408,6 @@ async function loadTranscribeList() {
   }
 }
 
-function switchTarjimaSubpage(id) {
-  document.querySelectorAll('.tarjima-subpage').forEach(p => { p.style.display = 'none'; p.classList.remove('active'); });
-  document.getElementById(id).style.display = 'block';
-  document.getElementById(id).classList.add('active');
-  document.querySelectorAll('#page-translate .nav-btn').forEach(b => b.classList.remove('active'));
-  document.querySelector(`#page-translate .nav-btn[data-subpage="${id}"]`).classList.add('active');
-  if (id === 'tarjima-inbox') loadCloudInbox();
-}
-
 async function loadCloudInbox() {
   const list = document.getElementById('cloudInboxList');
   if (!list) return;
@@ -4438,19 +4418,17 @@ async function loadCloudInbox() {
       return;
     }
     list.innerHTML = files.map(f => `
-      <div class="job-row">
-        <div style="display:flex; align-items:center; gap:12px;">
-          ${f.has_thumbnail
-            ? `<img src="${API_BASE}/api/cloud-files/${f.id}/thumbnail" style="width:72px; height:48px; object-fit:cover; border-radius:6px; flex:none; background:var(--border);">`
-            : `<div style="width:72px; height:48px; border-radius:6px; flex:none; background:var(--border); display:flex; align-items:center; justify-content:center; font-size:20px;">🎬</div>`}
-          <div>
-            <strong>${escapeHtml(f.original_name)}</strong>
-            <div class="hint">${fmtBytes(f.file_size)}</div>
+      <div class="vcard status-upload cloud-vcard">
+        ${f.has_thumbnail
+          ? `<div class="thumb" style="background-image:url('${API_BASE}/api/cloud-files/${f.id}/thumbnail')"></div>`
+          : `<div class="thumb">Video</div>`}
+        <div class="vbody">
+          <p class="vname">${escapeHtml(f.original_name)}</p>
+          <p class="vmeta">${fmtBytes(f.file_size)}</p>
+          <div class="cloud-card-actions">
+            <button class="action" onclick="addCloudToBaza('${f.id}')">Kutubxonaga qo'shish</button>
+            <button class="small-btn danger" onclick="deleteCloudFile('${f.id}')">O'chirish</button>
           </div>
-        </div>
-        <div class="row" style="margin:0;">
-          <button class="action" onclick="addCloudToBaza('${f.id}')">Videolar bazasiga qo'shish</button>
-          <button class="small-btn danger" onclick="deleteCloudFile('${f.id}')">O'chirish</button>
         </div>
       </div>`).join('');
   } catch (e) {
@@ -4612,10 +4590,7 @@ window.addEventListener('DOMContentLoaded', async () => {
           pollVideoDetail(currentDetailVideoId);
       } else loadVideos();
     } else if (id === 'page-transcribe') loadTranscribeList();
-    else if (id === 'page-translate') {
-      const active = document.querySelector('#page-translate .tarjima-subpage.active');
-      if (active && active.id === 'tarjima-inbox') loadCloudInbox();
-    }
+    else if (id === 'page-translate') loadCloudInbox();
     else if (id === 'page-audio') loadAudioList();
     else if (id === 'page-settings') {
       loadCosts();
