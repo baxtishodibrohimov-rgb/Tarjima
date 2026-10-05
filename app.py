@@ -1885,6 +1885,8 @@ async def _send_video_file_to_telegram(video_id: str, video_path: str, title: st
                 if resp.status_code >= 400:
                     raise RuntimeError(f"Telegram xatosi ({resp.status_code}, qism {i}/{total}): {resp.text[:400]}")
                 db.execute("UPDATE videos SET split_parts_sent = ? WHERE id = ?", (i, video_id))
+                if total > 1:
+                    Path(part).unlink(missing_ok=True)
 
         db.execute("UPDATE videos SET telegram_send_status = 'sent', telegram_send_error = NULL WHERE id = ?",
                    (video_id,))

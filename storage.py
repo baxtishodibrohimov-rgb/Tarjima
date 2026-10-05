@@ -33,7 +33,7 @@ CHUNK_SECONDS = int(os.environ.get("CHUNK_SECONDS", "300"))
 MAX_WHISPER_CONCURRENCY = int(os.environ.get("MAX_WHISPER_CONCURRENCY", "4"))
 MAX_ACTIVE_VIDEO_JOBS = int(os.environ.get("MAX_ACTIVE_VIDEO_JOBS", "1"))
 MAX_ACTIVE_TTS_JOBS = int(os.environ.get("MAX_ACTIVE_TTS_JOBS", "1"))
-MAX_UPLOAD_SIZE = int(os.environ.get("MAX_UPLOAD_SIZE", str(20 * 1024 * 1024 * 1024)))  # 20 GB
+MAX_UPLOAD_SIZE = int(os.environ.get("MAX_UPLOAD_SIZE", str(50 * 1024 * 1024 * 1024)))  # 50 GB
 # Serverning umumiy hovuzi 180 GB. Har bir hisob kvotasi auth.py orqali
 # alohida tekshiriladi (super-admin 95 GB, oddiy foydalanuvchi 10 GB).
 STORAGE_LIMIT = int(os.environ.get("STORAGE_LIMIT", str(180 * 1024 * 1024 * 1024)))

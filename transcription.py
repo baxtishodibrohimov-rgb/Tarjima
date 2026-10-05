@@ -72,20 +72,115 @@ def generate_thumbnail(input_path: Path, out_path: Path) -> bool:
 TELEGRAM_MAX_PART_BYTES = int(1.9 * 1024 ** 3)
 
 
-def split_video_by_size(input_path: Path, out_dir: Path, max_bytes: int = TELEGRAM_MAX_PART_BYTES) -> list:
-    """Video faylni max_bytes'dan oshmaydigan bir necha qismga bo'ladi (qayta
-    kodlamasdan, -c copy - tez ishlaydi). Fayl hajmi allaqachon max_bytes'dan
-    kichik bo'lsa, o'zgarishsiz [input_path] qaytaradi.
+def _ffprobe_exe():
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe:
+        return ffprobe
+    sibling = Path(ffmpeg_exe()).with_name("ffprobe")
+    return str(sibling) if sibling.exists() else None
 
-    Diqqat: ishlatilayotgan ffmpeg build'ida segment muxer'ning bayt-hajm
-    asosidagi bo'lish parametri (-segment_size) yo'q, shuning uchun o'rtacha
-    bitreytdan vaqt oralig'i hisoblanadi - bitreyt notekis bo'lishi mumkinligi
-    uchun 10% xavfsizlik zaxirasi bilan (max_bytes o'zi allaqachon 2 GB haqiqiy
-    limitidan 1.9 GB'ga tushirilgan)."""
+
+def _plan_keyframe_cuts(input_path: Path, budget: int):
+    """Videoni bir marta skanerlab (ffprobe, qayta kodlashsiz), har bir qism
+    `budget` baytdan oshmaydigan kesish vaqtlarini KALIT KADRLARDA tanlaydi.
+    `-c copy` bilan video faqat kalit kadrda kesilishi mumkin - shuning uchun
+    o'rtacha bitreytdan "har X soniyada kes" deb hisoblash ishonchsiz: ma'ruza/
+    ekran yozuvlarida kalit kadrlar siyrak bo'lsa, ffmpeg kesish nuqtalarini
+    o'tkazib yuborib qismlarni birlashtirib yuboradi, notekis bitreytda esa
+    qismlar limitdan oshib ketadi. ffprobe topilmasa None qaytaradi."""
+    ffprobe = _ffprobe_exe()
+    if not ffprobe:
+        return None
+    probe = subprocess.run(
+        [ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=index:format=start_time",
+         "-of", "default=noprint_wrappers=1", str(input_path)],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="ignore", timeout=FFMPEG_PROBE_TIMEOUT)
+    info = dict(line.split("=", 1) for line in probe.stdout.splitlines() if "=" in line)
+    if "index" not in info:
+        return None
+    video_index = info["index"]
+    # ffmpeg CLI kirish vaqtlarini format start_time'ga nisbatan suradi -
+    # segment muxer'ga beriladigan vaqtlar ham shunga moslashtiriladi.
+    try:
+        start_time = float(info.get("start_time", "0"))
+    except ValueError:
+        start_time = 0.0
+
+    proc = subprocess.Popen(
+        [ffprobe, "-v", "error", "-show_entries", "packet=stream_index,pts_time,size,flags",
+         "-of", "csv=p=0", str(input_path)],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, errors="ignore")
+    points = []  # (kalit kadr vaqti, shu kadrgacha bo'lgan baytlar)
+    total = 0
+    for line in proc.stdout:
+        fields = line.strip().split(",")
+        if len(fields) < 4:
+            continue
+        stream_index, pts_time, size, flags = fields[:4]
+        if stream_index == video_index and flags.startswith("K") and pts_time not in ("", "N/A"):
+            points.append((float(pts_time) - start_time, total))
+        if size.isdigit():
+            total += int(size)
+    if proc.wait() != 0 or not points:
+        return None
+
+    cuts = []
+    seg_start = 0
+    candidate = None
+    for t, offset in points[1:] + [(None, total)]:
+        if offset - seg_start > budget and candidate is not None:
+            cuts.append(candidate[0])
+            seg_start = candidate[1]
+            candidate = None
+        if offset - seg_start > budget:
+            raise RuntimeError(
+                f"Videoning ikki kalit kadri orasidagi qismi ({(offset - seg_start) / 1024**3:.2f} GB) "
+                f"limitdan katta - bunday videoni qayta kodlamasdan bo'lib bo'lmaydi.")
+        if t is not None:
+            candidate = (t, offset)
+    return cuts
+
+
+def split_video_by_size(input_path: Path, out_dir: Path, max_bytes: int = TELEGRAM_MAX_PART_BYTES) -> list:
+    """Video faylni max_bytes'dan oshmaydigan kerakli miqdordagi qismga bo'ladi
+    (qayta kodlamasdan, -c copy - tez ishlaydi, sifat yo'qolmaydi). Fayl hajmi
+    allaqachon max_bytes'dan kichik bo'lsa, o'zgarishsiz [input_path] qaytaradi."""
     input_path = Path(input_path)
     size = input_path.stat().st_size
     if size <= max_bytes:
         return [input_path]
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    free = shutil.disk_usage(out_dir).free
+    if free < size + 1024 ** 3:
+        raise RuntimeError(
+            f"Serverda joy yetarli emas: videoni bo'lish uchun {(size + 1024 ** 3) / 1024 ** 3:.1f} GB bo'sh joy "
+            f"kerak, hozir {free / 1024 ** 3:.1f} GB bor.")
+
+    # Konteyner (moov) sarlavhasi uchun 2% zaxira - paketlar yig'indisiga qo'shiladi.
+    cuts = _plan_keyframe_cuts(input_path, int(max_bytes * 0.98))
+    if cuts is not None:
+        pattern = str(out_dir / "part_%03d.mp4")
+        cmd = [ffmpeg_exe(), "-y", "-i", str(input_path), "-c", "copy", "-map", "0", "-f", "segment",
+               "-reset_timestamps", "1"]
+        if cuts:
+            # Kalit kadr vaqtidan 1 ms oldin - muxer aynan shu kalit kadrda kesadi.
+            cmd += ["-segment_times", ",".join(f"{max(c - 0.001, 0):.6f}" for c in cuts)]
+        else:
+            cmd += ["-segment_time", "1000000"]
+        cmd.append(pattern)
+        # 20-30 GB'lik faylni nusxalash sekin diskda 30 daqiqadan oshishi mumkin -
+        # vaqt chegarasi hajmga qarab (kamida 10 MB/s tezlik faraz qilinadi).
+        _run_ffmpeg(cmd, "videoni bo'laklarga bo'lish", timeout=max(FFMPEG_TIMEOUT, size // (10 * 1024 ** 2)))
+        parts = sorted(out_dir.glob("part_*.mp4"))
+        if not parts:
+            raise RuntimeError("Video bo'laklarga bo'linmadi (natija fayllar topilmadi).")
+        oversized = [p for p in parts if p.stat().st_size > max_bytes]
+        if oversized:
+            raise RuntimeError(
+                f"{len(oversized)} ta bo'lak {max_bytes // (1024**2)} MB limitdan katta chiqdi - "
+                f"qo'lda kichikroq qismlarga bo'lib yuklang.")
+        return parts
 
     duration = get_duration_seconds(input_path)
     if duration <= 0:
@@ -95,7 +190,6 @@ def split_video_by_size(input_path: Path, out_dir: Path, max_bytes: int = TELEGR
     num_parts = max(2, math.ceil(size / target_part_bytes))
     part_duration = duration / num_parts
 
-    out_dir.mkdir(parents=True, exist_ok=True)
     pattern = str(out_dir / "part_%03d.mp4")
     cmd = [
         ffmpeg_exe(), "-y", "-i", str(input_path),
@@ -242,13 +336,13 @@ def burn_subtitles_into_video(video_path: Path, srt_path: Path, out_path: Path):
         raise RuntimeError("Subtitrli video fayli yaratilmadi yoki bo'sh.")
 
 
-def _run_ffmpeg(cmd: list, description: str):
+def _run_ffmpeg(cmd: list, description: str, timeout: int = FFMPEG_TIMEOUT):
     try:
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="ignore",
-                               timeout=FFMPEG_TIMEOUT)
+                               timeout=timeout)
     except subprocess.TimeoutExpired:
         raise RuntimeError(
-            f"ffmpeg ({description}) {FFMPEG_TIMEOUT // 60} daqiqadan ortiq davom etdi va to'xtatildi. "
+            f"ffmpeg ({description}) {timeout // 60} daqiqadan ortiq davom etdi va to'xtatildi. "
             f"Qayta urinib ko'ring."
         )
     if proc.returncode != 0:
