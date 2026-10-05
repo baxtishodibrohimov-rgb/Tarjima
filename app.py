@@ -709,25 +709,29 @@ async def delete_video(video_id: str, mode: str = "full"):
 
 
 def delete_video_completely(v: dict):
-    """Kutubxona loyihasini barcha fayllari va yozuvlari bilan o'chiradi."""
+    """Kutubxona loyihasini barcha fayllari va yozuvlari bilan o'chiradi:
+    asl video, bo'laklar, matn/tarjima/SRT natijalari, barcha TTS audiolari
+    (asosiy, ikkinchi provayder va ruscha o'rganish treklari) va yakuniy videolar."""
+    import tts as tts_module
+    from storage import TTS_DIR
     video_id = v["id"]
     worker.CANCEL_FLAGS[video_id] = True
     worker.cleanup_learning_track(video_id, delete_record=True)
-    if v["tts_job_id"]:
-        db.execute("DELETE FROM tts_segments WHERE job_id = ?", (v["tts_job_id"],))
-        db.execute("DELETE FROM tts_jobs WHERE id = ?", (v["tts_job_id"],))
-    db.execute("DELETE FROM chunks WHERE video_id = ?", (video_id,))
-    db.execute("DELETE FROM results WHERE video_id = ?", (video_id,))
-    db.execute("DELETE FROM job_logs WHERE video_id = ?", (video_id,))
-    db.execute("DELETE FROM costs WHERE video_id = ?", (video_id,))
+    job_ids = {v["tts_job_id"]} if v["tts_job_id"] else set()
+    job_ids |= {r["id"] for r in db.fetchall("SELECT id FROM tts_jobs WHERE video_id = ?", (video_id,))}
+    job_ids |= {r["tts_job_id"] for r in db.fetchall(
+        "SELECT tts_job_id FROM audio_tracks WHERE video_id = ? AND tts_job_id IS NOT NULL", (video_id,))}
+    for job_id in job_ids:
+        tts_module.PAUSE_FLAGS.pop(job_id, None)
+        tts_module.CANCEL_FLAGS[job_id] = True
+        db.execute("DELETE FROM tts_segments WHERE job_id = ?", (job_id,))
+        db.execute("DELETE FROM tts_jobs WHERE id = ?", (job_id,))
+        shutil.rmtree(TTS_DIR / job_id, ignore_errors=True)
+    for table in ("audio_tracks", "freeze_point_events", "chunks", "results", "job_logs", "costs"):
+        db.execute(f"DELETE FROM {table} WHERE video_id = ?", (video_id,))
     db.execute("DELETE FROM videos WHERE id = ?", (video_id,))
-    shutil.rmtree(VIDEOS_DIR / video_id, ignore_errors=True)
-    shutil.rmtree(CHUNKS_DIR / video_id, ignore_errors=True)
-    shutil.rmtree(RESULTS_DIR / video_id, ignore_errors=True)
-    shutil.rmtree(SPLIT_DIR / video_id, ignore_errors=True)
-    from storage import TTS_DIR
-    if v["tts_job_id"]:
-        shutil.rmtree(TTS_DIR / v["tts_job_id"], ignore_errors=True)
+    for base in (VIDEOS_DIR, CHUNKS_DIR, RESULTS_DIR, SPLIT_DIR):
+        shutil.rmtree(base / video_id, ignore_errors=True)
 
 
 @app.post("/api/videos/{video_id}/restart")
