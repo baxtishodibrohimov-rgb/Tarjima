@@ -141,6 +141,12 @@ async def on_startup():
     db.init_db()
     auth.bootstrap_superadmin(APP_USERNAME, APP_PASSWORD)
     await worker.recover_and_start()
+    # Server qayta ishga tushganda yarimda qolgan "Video bo'lish" ishlari.
+    for row in db.fetchall("SELECT id FROM videos WHERE kind = 'split_only' AND split_status = 'splitting'"):
+        asyncio.create_task(_prepare_split_video(row["id"]))
+    db.execute("UPDATE videos SET telegram_send_status = 'error', telegram_send_error = ? "
+               "WHERE kind = 'split_only' AND telegram_send_status = 'sending'",
+               ("Server qayta ishga tushdi - yuborish to'xtab qoldi. \"Davom ettirish\"ni bosing.",))
     if INBOUND_BOT_TOKEN:
         import telegram_bot
         asyncio.create_task(telegram_bot.poll_updates())
@@ -504,6 +510,7 @@ def split_video_public(v: dict) -> dict:
         "duration": v["duration"], "status": v["status"],
         "telegram_send_status": v["telegram_send_status"] or "none", "telegram_send_error": v["telegram_send_error"],
         "split_total_parts": v["split_total_parts"] or 0, "split_parts_sent": v["split_parts_sent"] or 0,
+        "split_status": v["split_status"] or "none", "split_error": v["split_error"],
         "idea_flow_sent_at": v["idea_flow_sent_at"],
         "has_thumbnail": bool(v["thumbnail_path"]),
         "created_at": v["created_at"], "updated_at": v["updated_at"],
@@ -693,6 +700,7 @@ async def delete_video(video_id: str, mode: str = "full"):
         shutil.rmtree(VIDEOS_DIR / video_id, ignore_errors=True)
         shutil.rmtree(CHUNKS_DIR / video_id, ignore_errors=True)
         shutil.rmtree(RESULTS_DIR / video_id, ignore_errors=True)
+        shutil.rmtree(SPLIT_DIR / video_id, ignore_errors=True)
         from storage import TTS_DIR
         if v["tts_job_id"]:
             shutil.rmtree(TTS_DIR / v["tts_job_id"], ignore_errors=True)
@@ -1869,35 +1877,114 @@ async def _send_video_file_to_telegram(video_id: str, video_path: str, title: st
         loop = asyncio.get_event_loop()
         parts = await loop.run_in_executor(
             None, transcription.split_video_by_size, Path(video_path), split_dir)
-        total = len(parts)
-        db.execute("UPDATE videos SET split_total_parts = ?, split_parts_sent = 0 WHERE id = ?", (total, video_id))
-
-        async with httpx.AsyncClient(timeout=1200) as client:
-            for i, part in enumerate(parts, start=1):
-                caption = title if total == 1 else f"{title}\n\nQism {i}/{total}"
-                filename = Path(part).name if total == 1 else f"{safe_name(Path(title).stem)}_{i:02d}.mp4"
-                with open(part, "rb") as f:
-                    resp = await client.post(
-                        f"{LOCAL_BOT_API_URL.rstrip('/')}/bot{TELEGRAM_BOT_TOKEN}/sendVideo",
-                        data={"chat_id": TELEGRAM_CHAT_ID, "caption": caption, "supports_streaming": "true"},
-                        files={"video": (filename, f, "video/mp4")},
-                    )
-                if resp.status_code >= 400:
-                    raise RuntimeError(f"Telegram xatosi ({resp.status_code}, qism {i}/{total}): {resp.text[:400]}")
-                db.execute("UPDATE videos SET split_parts_sent = ? WHERE id = ?", (i, video_id))
-                if total > 1:
-                    Path(part).unlink(missing_ok=True)
-
-        db.execute("UPDATE videos SET telegram_send_status = 'sent', telegram_send_error = NULL WHERE id = ?",
-                   (video_id,))
-        db.log_line(video_id, f"Video Telegram botga muvaffaqiyatli yuborildi ({total} qism).")
+        await _send_parts_to_telegram(video_id, parts, title, delete_after_send=True)
+        _mark_telegram_sent(video_id, len(parts))
     except Exception as e:
-        db.execute("UPDATE videos SET telegram_send_status = 'error', telegram_send_error = ? WHERE id = ?",
-                   (str(e)[:500], video_id))
-        db.log_line(video_id, f"Telegram botga yuborishda xato: {e}")
+        _mark_telegram_error(video_id, e)
     finally:
         if split_dir.exists():
             shutil.rmtree(split_dir, ignore_errors=True)
+
+
+async def _send_parts_to_telegram(video_id: str, parts: list, title: str, start: int = 1,
+                                  delete_after_send: bool = False):
+    """Tayyor qismlarni ketma-ket yuboradi. `start` - shu qismdan boshlab
+    (oldingi urinish o'rtada uzilgan bo'lsa, yuborilganlarini qayta yubormaslik
+    uchun)."""
+    total = len(parts)
+    db.execute("UPDATE videos SET split_total_parts = ?, split_parts_sent = ? WHERE id = ?",
+               (total, start - 1, video_id))
+    async with httpx.AsyncClient(timeout=1200) as client:
+        for i, part in enumerate(parts, start=1):
+            if i < start:
+                continue
+            caption = title if total == 1 else f"{title}\n\nQism {i}/{total}"
+            filename = Path(part).name if total == 1 else f"{safe_name(Path(title).stem)}_{i:02d}.mp4"
+            with open(part, "rb") as f:
+                resp = await client.post(
+                    f"{LOCAL_BOT_API_URL.rstrip('/')}/bot{TELEGRAM_BOT_TOKEN}/sendVideo",
+                    data={"chat_id": TELEGRAM_CHAT_ID, "caption": caption, "supports_streaming": "true"},
+                    files={"video": (filename, f, "video/mp4")},
+                )
+            if resp.status_code >= 400:
+                raise RuntimeError(f"Telegram xatosi ({resp.status_code}, qism {i}/{total}): {resp.text[:400]}")
+            db.execute("UPDATE videos SET split_parts_sent = ? WHERE id = ?", (i, video_id))
+            if delete_after_send and total > 1:
+                Path(part).unlink(missing_ok=True)
+
+
+def _mark_telegram_sent(video_id: str, total: int):
+    db.execute("UPDATE videos SET telegram_send_status = 'sent', telegram_send_error = NULL WHERE id = ?",
+               (video_id,))
+    db.log_line(video_id, f"Video Telegram botga muvaffaqiyatli yuborildi ({total} qism).")
+
+
+def _mark_telegram_error(video_id: str, error):
+    db.execute("UPDATE videos SET telegram_send_status = 'error', telegram_send_error = ? WHERE id = ?",
+               (str(error)[:500], video_id))
+    db.log_line(video_id, f"Telegram botga yuborishda xato: {error}")
+
+
+# "Video bo'lish": bir vaqtda faqat bitta katta video bo'linadi (disk va I/O).
+_SPLIT_LOCK = asyncio.Lock()
+
+
+async def _prepare_split_video(video_id: str):
+    """'Video bo'lish'ga yuklangan videoni qismlarga bo'lib, qismlarni
+    "Botga jo'natish" bosilguncha SPLIT_DIR'da saqlaydi. Telegram'ga hech narsa
+    yubormaydi. Xatoda None qaytaradi (holat bazaga yoziladi)."""
+    split_dir = SPLIT_DIR / video_id
+    db.execute("UPDATE videos SET split_status = 'splitting', split_error = NULL, split_total_parts = 0, "
+               "split_parts_sent = 0 WHERE id = ?", (video_id,))
+    try:
+        async with _SPLIT_LOCK:
+            v = db.fetchone("SELECT path FROM videos WHERE id = ?", (video_id,))
+            if not v:
+                return None
+            shutil.rmtree(split_dir, ignore_errors=True)
+            parts = await asyncio.get_event_loop().run_in_executor(
+                None, transcription.split_video_by_size, Path(v["path"]), split_dir)
+    except Exception as e:
+        shutil.rmtree(split_dir, ignore_errors=True)
+        db.execute("UPDATE videos SET split_status = 'error', split_error = ? WHERE id = ?", (str(e)[:500], video_id))
+        db.log_line(video_id, f"Videoni bo'lishda xato: {e}")
+        return None
+    db.execute("UPDATE videos SET split_status = 'ready', split_total_parts = ? WHERE id = ?", (len(parts), video_id))
+    db.log_line(video_id, f"Video {len(parts)} qismga bo'lindi - botga jo'natishga tayyor.")
+    return parts
+
+
+def _ready_split_parts(v: dict) -> list:
+    """Diskda saqlangan, yuborishga tayyor qismlar (yo'q/to'liq bo'lmasa - [])."""
+    total = v["split_total_parts"] or 0
+    if v["split_status"] != "ready" or not total:
+        return []
+    if total == 1:
+        return [Path(v["path"])] if v["path"] and Path(v["path"]).exists() else []
+    parts = sorted((SPLIT_DIR / v["id"]).glob("part_*.mp4"))
+    return parts if len(parts) == total else []
+
+
+async def _send_split_video(video_id: str, start: int):
+    v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    if not v:
+        return
+    parts = _ready_split_parts(v)
+    if not parts:
+        # Qismlar avval yuborilib o'chirilgan (qayta jo'natish) - qaytadan bo'linadi.
+        start = 1
+        parts = await _prepare_split_video(video_id)
+        if parts is None:
+            v = db.fetchone("SELECT split_error FROM videos WHERE id = ?", (video_id,))
+            _mark_telegram_error(video_id, f"Videoni bo'lib bo'lmadi: {v['split_error'] if v else ''}")
+            return
+    try:
+        await _send_parts_to_telegram(video_id, parts, v["original_name"], start=start)
+    except Exception as e:
+        _mark_telegram_error(video_id, e)
+        return
+    _mark_telegram_sent(video_id, len(parts))
+    shutil.rmtree(SPLIT_DIR / video_id, ignore_errors=True)
 
 
 @app.post("/api/videos/{video_id}/send-to-bot")
@@ -1983,18 +2070,38 @@ async def send_to_bot_endpoint(video_id: str, request: Request, provider: str = 
     return {"ok": True}
 
 
-@app.post("/api/split-videos/{video_id}/retry")
-async def retry_split_send(video_id: str):
+def _get_split_video(video_id: str) -> dict:
     v = db.fetchone("SELECT * FROM videos WHERE id = ? AND kind = 'split_only'", (video_id,))
     if not v:
         raise HTTPException(404, "Video topilmadi.")
     if not v["path"] or not Path(v["path"]).exists():
         raise HTTPException(400, "Video fayli topilmadi.")
+    if v["split_status"] == "splitting":
+        raise HTTPException(409, "Video hali qismlarga bo'linmoqda - tugashini kuting.")
+    if v["telegram_send_status"] == "sending":
+        raise HTTPException(409, "Video hozir botga yuborilmoqda - tugashini kuting.")
+    return v
+
+
+@app.post("/api/split-videos/{video_id}/split")
+async def split_video_endpoint(video_id: str):
+    _get_split_video(video_id)
+    db.execute("UPDATE videos SET split_status = 'splitting', split_error = NULL WHERE id = ?", (video_id,))
+    asyncio.create_task(_prepare_split_video(video_id))
+    return {"ok": True}
+
+
+@app.post("/api/split-videos/{video_id}/send")
+async def send_split_video_endpoint(video_id: str):
+    v = _get_split_video(video_id)
     if not (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID):
         raise HTTPException(400, "Telegram bot sozlanmagan (TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID).")
+    # Oldingi yuborish o'rtada uzilgan bo'lsa - yuborilgan qismlardan keyin davom etadi.
+    sent, total = v["split_parts_sent"] or 0, v["split_total_parts"] or 0
+    start = sent + 1 if v["telegram_send_status"] == "error" and 0 < sent < total else 1
     db.execute("UPDATE videos SET telegram_send_status = 'sending', telegram_send_error = NULL WHERE id = ?",
                (video_id,))
-    asyncio.create_task(_send_video_file_to_telegram(video_id, v["path"], v["original_name"]))
+    asyncio.create_task(_send_split_video(video_id, start))
     return {"ok": True}
 
 
@@ -2165,12 +2272,9 @@ async def upload_complete(upload_id: str, request: Request):
             except Exception as e:
                 db.log_line(video_id, f"Idea Flow'ga yozishda xato: {e}")
 
-        if not (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID):
-            db.execute("UPDATE videos SET telegram_send_status = 'error', telegram_send_error = ? WHERE id = ?",
-                       ("Telegram bot sozlanmagan (TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID).", video_id))
-        else:
-            db.execute("UPDATE videos SET telegram_send_status = 'sending' WHERE id = ?", (video_id,))
-            asyncio.create_task(_send_video_file_to_telegram(video_id, str(dest_path), u["original_name"]))
+        # Faqat bo'linadi - Telegram'ga foydalanuvchi "Botga jo'natish"ni bosganda yuboriladi.
+        db.execute("UPDATE videos SET split_status = 'splitting' WHERE id = ?", (video_id,))
+        asyncio.create_task(_prepare_split_video(video_id))
 
     return {"video_id": video_id}
 
@@ -2386,13 +2490,8 @@ async def use_cloud_file_in_split(cloud_id: str, request: Request):
         except Exception as e:
             db.log_line(video_id, f"Idea Flow'ga yozishda xato: {e}")
 
-    v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
-    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        db.execute("UPDATE videos SET telegram_send_status = 'sending' WHERE id = ?", (video_id,))
-        asyncio.create_task(_send_video_file_to_telegram(video_id, v["path"], v["original_name"]))
-    else:
-        db.execute("UPDATE videos SET telegram_send_status = 'error', telegram_send_error = ? WHERE id = ?",
-                   ("Telegram bot sozlanmagan (TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID).", video_id))
+    db.execute("UPDATE videos SET split_status = 'splitting' WHERE id = ?", (video_id,))
+    asyncio.create_task(_prepare_split_video(video_id))
     return {"video_id": video_id}
 
 

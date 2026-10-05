@@ -341,6 +341,10 @@ _VIDEO_NEW_COLUMNS = {
     "kind": "TEXT DEFAULT 'pipeline'",
     "split_total_parts": "INTEGER DEFAULT 0",
     "split_parts_sent": "INTEGER DEFAULT 0",
+    # "Video bo'lish": none / splitting / ready / error - qismlar SPLIT_DIR'da
+    # "Botga jo'natish" bosilguncha saqlanadi.
+    "split_status": "TEXT DEFAULT 'none'",
+    "split_error": "TEXT",
     # Asosiy yakuniy videoga subtitr "kuydirilgan" (hardsub) nusxasi - ixtiyoriy,
     # foydalanuvchi so'rasa yaratiladi, asosiy final_video_path'ga UMUMAN tegmaydi.
     # Xatosi ham ALOHIDA ustunda (umumiy `error` maydonini "band" qilib
