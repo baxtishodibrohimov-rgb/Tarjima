@@ -50,10 +50,13 @@ APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
 DARSLIK_API_KEY = os.environ.get("DARSLIK_API_KEY", "")
 
 # Idea Flow boti (ideaflow_bot.py) - shaxsiy produktivlik va bilim bazasi.
-# Token berilmasa bot ishga tushmaydi. Bot fayllarni yuklab olmaydi (faqat
-# Telegram file_id saqlaydi), shuning uchun oddiy bulutli Bot API yetarli.
+# Token berilmasa bot ishga tushmaydi. "Bot" bo'limi videolarni shu bot orqali
+# mahalliy Bot API serverga yuklaydi; bitta bot ikki serverda bir vaqtda
+# ishlasa xabarlar yo'qolishi mumkin, shuning uchun LOCAL_BOT_API_URL berilgan
+# bo'lsa bot ham o'sha server orqali ishlaydi.
 IDEA_BOT_TOKEN = os.environ.get("IDEA_BOT_TOKEN", "")
-IDEA_BOT_API_URL = os.environ.get("IDEA_BOT_API_URL", "https://api.telegram.org")
+IDEA_BOT_API_URL = (os.environ.get("IDEA_BOT_API_URL") or os.environ.get("LOCAL_BOT_API_URL")
+                    or "https://api.telegram.org")
 
 # Telegram'ga videoning O'ZINI (havola emas) yuborish uchun - o'z-o'zini
 # joylashtirgan (self-hosted) Bot API server orqali, chunki oddiy
