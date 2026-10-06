@@ -632,8 +632,20 @@ _LEARNING_TRACK_NEW_COLUMNS = {
 }
 
 
+# Bot bo'limidagi "loyiha": bitta elementda bir nechta fayl guruhi (asl video,
+# o'zbekcha video, SRT, audio...). group_order=0 - asosiy (birinchi yuboriladigan).
+_IDEA_ATTACHMENT_NEW_COLUMNS = {
+    "group_label": "TEXT",
+    "group_order": "INTEGER DEFAULT 0",
+}
+
+
 def _migrate_columns():
     with tx() as c:
+        existing_att = {row[1] for row in c.execute("PRAGMA table_info(idea_attachments)").fetchall()}
+        for col, decl in _IDEA_ATTACHMENT_NEW_COLUMNS.items():
+            if col not in existing_att:
+                c.execute(f"ALTER TABLE idea_attachments ADD COLUMN {col} {decl}")
         existing_users = {row[1] for row in c.execute("PRAGMA table_info(users)").fetchall()}
         for col, decl in _USER_NEW_COLUMNS.items():
             if col not in existing_users:

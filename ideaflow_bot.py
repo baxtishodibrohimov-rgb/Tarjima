@@ -309,8 +309,25 @@ def task_keyboard(task_id):
     ]
 
 
+def item_groups(item_id):
+    """Elementning fayl guruhlari [(tartib, nom, [qismlar...])]: loyihada asl video,
+    o'zbekcha video, SRT, audio va h.k. Guruhsiz (eski) elementda - bitta guruh."""
+    rows = db.fetchall("SELECT file_kind, telegram_file_id, file_name, group_label, "
+                       "COALESCE(group_order, 0) AS group_order FROM idea_attachments "
+                       "WHERE related_type = 'item' AND related_id = ? AND telegram_file_id IS NOT NULL "
+                       "ORDER BY group_order, rowid", (item_id,))
+    groups = {}
+    for r in rows:
+        groups.setdefault(r["group_order"], {"label": r["group_label"], "parts": []})["parts"].append(r)
+    return [(order, g["label"], g["parts"]) for order, g in sorted(groups.items())]
+
+
 def item_keyboard(item_id):
-    return [
+    # Asosiy (birinchi) guruhdan tashqari har bir fayl uchun tugma - bosilsa alohida keladi.
+    extra = [{"text": label or f"Fayl {order}", "callback_data": f"tg:{item_id}:{order}"}
+             for order, label, _ in item_groups(item_id)[1:]]
+    rows = [extra[i:i + 2] for i in range(0, len(extra), 2)]
+    return rows + [
         [{"text": "✏️ Tahrirlash", "callback_data": f"tv:e:{item_id}"}],
         [{"text": "🗑 O'chirish", "callback_data": f"tv:x:{item_id}"}],
     ]
@@ -439,9 +456,11 @@ async def show_base(p, chat_id, root_type, folder_id=None):
 async def send_item(chat_id, item, icon, location=None):
     """Elementni yuboradi: media bo'lsa fayl(lar)ning o'zi (1.9 GB'dan katta video
     bir necha qism bo'lib saqlangan bo'ladi - hammasi ketma-ket), aks holda matn."""
-    parts = db.fetchall("SELECT file_kind, telegram_file_id FROM idea_attachments WHERE related_type = 'item' "
-                        "AND related_id = ? AND telegram_file_id IS NOT NULL ORDER BY rowid", (item["id"],))
+    groups = item_groups(item["id"])
+    parts = groups[0][2] if groups else []  # loyihada - faqat asosiy (asl) video
     caption = f"{icon} <b>{escape_html(item['title'])}</b>" + ("\n" + escape_html(item["url"]) if item["url"] else "")
+    if groups and groups[0][1] and len(groups) > 1:
+        caption += f"\n{escape_html(groups[0][1])}"
     if location:
         caption += f"\n📍 {escape_html(location)}"
     keyboard = item_keyboard(item["id"])
@@ -453,6 +472,20 @@ async def send_item(chat_id, item, icon, location=None):
             sent_any = True
     if not sent_any:
         await send_message(chat_id, caption, keyboard)
+
+
+async def send_item_group(p, chat_id, item_id, order):
+    """Loyiha tugmasi bosilganda - o'sha faylni (bir necha qismli bo'lsa hammasini) yuboradi."""
+    item = db.fetchone("SELECT title FROM idea_items WHERE id = ? AND user_id = ?", (item_id, p["id"]))
+    group = next((g for g in item_groups(item_id) if str(g[0]) == str(order)), None) if item else None
+    if not group:
+        await send_message(chat_id, "❌ Fayl topilmadi.")
+        return
+    _, label, parts = group
+    caption = f"<b>{escape_html(item['title'])}</b>\n{escape_html(label or '')}"
+    for n, att in enumerate(parts, start=1):
+        part_caption = f"{caption}\n<i>{n}/{len(parts)}-qism</i>" if len(parts) > 1 else caption
+        await send_media(chat_id, att["file_kind"], att["telegram_file_id"], part_caption)
 
 
 async def show_item_by_link(p, chat_id, item_id):
@@ -1087,6 +1120,9 @@ async def handle_callback(cb):
         return await _cb_idea(profile, cb, chat_id, message_id, action, arg)
     if ns == "tv" and arg:
         return await _cb_item(profile, cb, chat_id, message_id, action, arg)
+    if ns == "tg" and action and arg is not None:
+        _spawn(answer_callback(cb["id"]))
+        return await send_item_group(profile, chat_id, action, arg)
     if ns == "tvm" and action:
         return await _cb_item_move(profile, cb, chat_id, message_id, action, arg)
     if ns == "r" and arg:

@@ -8,9 +8,11 @@ qoladi; saytda ko'rish uchun mahalliy Bot API server orqali qaytarib olinadi.
 """
 import asyncio
 import os
+import re
 import shutil
 import traceback
 from pathlib import Path
+from urllib.parse import quote
 
 import httpx
 from fastapi import APIRouter, Form, HTTPException, Request
@@ -33,6 +35,63 @@ VARIANTS = {
     "subtitled": ("subtitled_video_path", " [subtitrli]"),
     "original": ("path", " (asl)"),
 }
+
+
+PROVIDER_NAMES = {"aisha": "Aisha", "openai": "OpenAI"}
+RESULT_LABELS = [  # Kutubxona natijalari (results.kind) - tartibi bilan
+    ("srt", "📄 Ruscha matn (SRT)"),
+    ("txt", "📄 Ruscha matn (TXT)"),
+    ("srt_uz", "📄 O'zbekcha tarjima (SRT)"),
+    ("srt_uz_final", "📄 O'zbekcha SRT (yakuniy videoga mos)"),
+    ("srt_ru_learning_final", "📄 Ruscha o'rganish SRT"),
+]
+
+
+def project_files(v: dict) -> list:
+    """Kutubxona loyihasining Telegram'ga yuboriladigan barcha fayllari: videolar,
+    SRT/TXT matnlar va dublyaj audiolari. Pullik bosqichlar (transkripsiya, tarjima,
+    TTS) natijasi shu yerda saqlanadi - videoni qayta pulsiz yig'ish mumkin bo'ladi.
+    Birinchisi (asl video) botda asosiy bo'lib chiqadi, qolganlari tugma bo'ladi."""
+    files, seen = [], set()
+
+    def add(label, path, kind):
+        if path and str(path) not in seen and Path(path).exists():
+            seen.add(str(path))
+            files.append({"label": label, "kind": kind, "path": str(path)})
+
+    vid = v["id"]
+    tracks = db.fetchall("SELECT * FROM audio_tracks WHERE video_id = ? ORDER BY rowid", (vid,))
+    learning = db.fetchone("SELECT * FROM learning_tracks WHERE video_id = ?", (vid,))
+    results = {}
+    for r in db.fetchall("SELECT kind, path FROM results WHERE video_id = ? ORDER BY created_at", (vid,)):
+        results[r["kind"]] = r["path"]
+
+    add("🎬 Asl video", v["path"], "video")
+    add("🇺🇿 O'zbekcha video", v["final_video_path"], "video")
+    add("🇺🇿 O'zbekcha video, subtitrli", v["subtitled_video_path"], "video")
+    for t in tracks:
+        name = PROVIDER_NAMES.get(t["provider"], t["provider"])
+        add(f"🇺🇿 O'zbekcha video ({name})", t["final_video_path"], "video")
+        add(f"🇺🇿 O'zbekcha video ({name}), subtitrli", t["subtitled_video_path"], "video")
+    if learning:
+        add("🇷🇺 Ruscha o'rganish videosi", learning["export_video_path"] or learning["final_video_path"], "video")
+        add("🇷🇺 Ruscha o'rganish videosi, subtitrli", learning["subtitled_video_path"], "video")
+    for kind, label in RESULT_LABELS:
+        add(label, results.get(kind), "file")
+        if kind == "srt_uz_final":
+            for t in tracks:
+                add(f"📄 O'zbekcha SRT ({PROVIDER_NAMES.get(t['provider'], t['provider'])})",
+                    results.get(f"srt_uz_final_{t['provider']}"), "file")
+    if learning:
+        add("📄 Ruscha o'rganish SRT (manba)", learning["srt_path"], "file")
+    add("🎵 O'zbekcha dublyaj audio", v.get("audio_path"), "audio")
+    for t in tracks:
+        add(f"🎵 Dublyaj audio ({PROVIDER_NAMES.get(t['provider'], t['provider'])})", t["audio_path"], "audio")
+    if learning:
+        add("🎵 Ruscha o'rganish audiosi", learning["audio_path"], "audio")
+    for order, f in enumerate(files):
+        f["order"] = order
+    return files
 
 
 def _bot_url(method: str) -> str:
@@ -65,7 +124,7 @@ def _item(owner: dict, item_id: str) -> dict:
 def _parts(item_id: str) -> list:
     return db.fetchall("SELECT telegram_file_id, file_kind, file_name, file_size FROM idea_attachments "
                        "WHERE related_type = 'item' AND related_id = ? AND telegram_file_id IS NOT NULL "
-                       "ORDER BY rowid", (item_id,))
+                       "ORDER BY COALESCE(group_order, 0), rowid", (item_id,))
 
 
 def _descendants(owner_id: str, folder_id: str) -> set:
@@ -103,11 +162,14 @@ def bot_tree():
                         "WHERE user_id = ? AND root_type = ? ORDER BY created_at DESC", (owner["id"], ROOT))
     parts = {}
     for a in db.fetchall(
-            "SELECT a.related_id, a.file_kind, a.file_name, a.file_size FROM idea_attachments a "
+            "SELECT a.related_id, a.file_kind, a.file_name, a.file_size, a.group_label, "
+            "COALESCE(a.group_order, 0) AS group_order FROM idea_attachments a "
             "JOIN idea_items i ON i.id = a.related_id WHERE i.user_id = ? AND i.root_type = ? "
-            "AND a.related_type = 'item' AND a.telegram_file_id IS NOT NULL ORDER BY a.rowid", (owner["id"], ROOT)):
+            "AND a.related_type = 'item' AND a.telegram_file_id IS NOT NULL "
+            "ORDER BY COALESCE(a.group_order, 0), a.rowid", (owner["id"], ROOT)):
         parts.setdefault(a["related_id"], []).append(
-            {"file_kind": a["file_kind"], "file_name": a["file_name"], "file_size": a["file_size"]})
+            {"file_kind": a["file_kind"], "file_name": a["file_name"], "file_size": a["file_size"],
+             "group_label": a["group_label"], "group_order": a["group_order"]})
     for it in items:
         it["parts"] = parts.get(it["id"], [])
     return {"linked": True, "folders": folders, "items": items, "uploads": uploads,
@@ -201,15 +263,22 @@ def delete_item(item_id: str):
 
 
 @router.get("/items/{item_id}/stream")
-async def stream_item(item_id: str, request: Request, part: int = 1):
-    """Videoni Telegram'dan (mahalliy Bot API server orqali) qaytarib olib ko'rsatadi."""
+async def stream_item(item_id: str, request: Request, part: int = 1, download: bool = False):
+    """Faylni Telegram'dan (mahalliy Bot API server orqali) qaytarib olib ko'rsatadi.
+    part - elementning barcha fayllari orasidagi tartib raqami (1 dan); download=1 -
+    yuklab olish (SRT, audio)."""
     owner = _owner()
     _item(owner, item_id)
     parts = _parts(item_id)
     if not 1 <= part <= len(parts):
         raise HTTPException(404, "Video qismi topilmadi.")
     att = parts[part - 1]
-    media_type = "video/mp4" if att["file_kind"] == "video" else "application/octet-stream"
+    media_type = {"video": "video/mp4", "audio": "audio/mpeg"}.get(att["file_kind"], "application/octet-stream")
+    disposition = {}
+    if download:
+        name = att["file_name"] or f"fayl_{part}"
+        fallback = name.encode("ascii", "replace").decode().replace('"', "_")
+        disposition = {"Content-Disposition": f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(name)}"}
 
     async with httpx.AsyncClient(timeout=GET_FILE_TIMEOUT) as client:
         resp = await client.post(_bot_url("getFile"), data={"file_id": att["telegram_file_id"]})
@@ -222,7 +291,9 @@ async def stream_item(item_id: str, request: Request, part: int = 1):
     source = Path(file_path)
     if source.is_absolute() and source.is_file() and os.access(source, os.R_OK):
         import app
-        return app.range_file_response(request, source, media_type)
+        response = app.range_file_response(request, source, media_type)
+        response.headers.update(disposition)
+        return response
 
     client = httpx.AsyncClient(timeout=None)
     headers = {"Range": request.headers["range"]} if "range" in request.headers else {}
@@ -240,6 +311,7 @@ async def stream_item(item_id: str, request: Request, part: int = 1):
 
     passthrough = {k: upstream.headers[k] for k in ("content-length", "content-range", "accept-ranges")
                    if k in upstream.headers}
+    passthrough.update(disposition)
     return StreamingResponse(upstream.aiter_bytes(), status_code=upstream.status_code, headers=passthrough,
                              media_type=media_type, background=BackgroundTask(close))
 
@@ -267,6 +339,15 @@ async def upload_from_library(video_id: str = Form(...), variant: str = Form("fi
         parts = app._ready_split_parts(v) or None
         if not parts and not (path and Path(path).exists()):
             raise HTTPException(400, "Video fayli serverda topilmadi.")
+    elif variant == "project":
+        groups = project_files(v)
+        if not groups:
+            raise HTTPException(400, "Loyihada yuboriladigan fayl topilmadi.")
+        if folder_id:
+            _folder(owner, folder_id)
+        title = Path(v["original_name"] or "video").stem[:200]
+        _start_upload("videos", video_id, groups, title, folder_id or None, remove_from_library, owner)
+        return {"ok": True, "files": len(groups)}
     else:
         if variant not in VARIANTS:
             raise HTTPException(400, "Noto'g'ri variant.")
@@ -278,7 +359,8 @@ async def upload_from_library(video_id: str = Form(...), variant: str = Form("fi
         _folder(owner, folder_id)
 
     title = (Path(v["original_name"] or "video").stem + suffix)[:200]
-    _start_upload("videos", video_id, path, title, folder_id or None, remove_from_library, owner, parts)
+    _start_upload("videos", video_id, [{"label": None, "kind": "video", "path": path, "parts": parts, "order": 0}],
+                  title, folder_id or None, remove_from_library, owner)
     return {"ok": True}
 
 
@@ -297,54 +379,85 @@ async def upload_from_cloud(cloud_file_id: str = Form(...), folder_id: str = For
     if folder_id:
         _folder(owner, folder_id)
     title = Path(f["original_name"] or "video").stem[:200]
-    _start_upload("cloud_files", cloud_file_id, f["path"], title, folder_id or None, remove_from_library, owner)
+    _start_upload("cloud_files", cloud_file_id, [{"label": None, "kind": "video", "path": f["path"], "order": 0}],
+                  title, folder_id or None, remove_from_library, owner)
     return {"ok": True}
 
 
-def _start_upload(table, record_id, path, title, folder_id, remove_after, owner, parts=None):
+def _start_upload(table, record_id, groups, title, folder_id, remove_after, owner):
     db.execute(f"UPDATE {table} SET bot_upload_status = 'uploading', bot_upload_error = NULL, "
                f"bot_upload_progress = '', bot_upload_folder_id = ?, bot_upload_title = ? WHERE id = ?",
                (folder_id, title, record_id))
-    asyncio.create_task(_upload_job(record_id, path, title, folder_id, remove_after,
-                                    owner["id"], owner["telegram_chat_id"], parts, table))
+    asyncio.create_task(_upload_job(record_id, groups, title, folder_id, remove_after,
+                                    owner["id"], owner["telegram_chat_id"], table))
 
 
-async def _upload_job(video_id, path, title, folder_id, remove_from_library, owner_id, chat_id, parts=None,
-                      table="videos"):
-    """parts berilsa ("Video bo'lish"da tayyor qismlar) - qayta bo'linmaydi.
-    table: "videos" (Kutubxona / Video bo'lish) yoki "cloud_files" (Bulut)."""
+SEND_METHODS = {  # fayl turi -> (Bot API metodi, maydon nomi, MIME)
+    "video": ("sendVideo", "video", "video/mp4"),
+    "audio": ("sendAudio", "audio", "audio/mpeg"),
+    "file": ("sendDocument", "document", "application/octet-stream"),
+}
+
+
+async def _upload_job(record_id, groups, title, folder_id, remove_from_library, owner_id, chat_id, table="videos"):
+    """groups: [{label, kind, path, order, parts?}] - har bir guruh bitta fayl
+    (1.9 GB'dan katta video bir necha qism bo'ladi). Bitta oddiy video uchun
+    label=None. table: "videos" (Kutubxona / Video bo'lish) yoki "cloud_files" (Bulut)."""
     import app
-    split_dir = SPLIT_DIR / f"bot_{video_id}"
-    log = (lambda text: db.log_line(video_id, text)) if table == "videos" else (lambda text: None)
+    split_root = SPLIT_DIR / f"bot_{record_id}"
+    log = (lambda text: db.log_line(record_id, text)) if table == "videos" else (lambda text: None)
     try:
-        if not parts:
-            async with app._SPLIT_LOCK:
-                shutil.rmtree(split_dir, ignore_errors=True)
-                parts = await asyncio.get_event_loop().run_in_executor(
-                    None, transcription.split_video_by_size, Path(path), split_dir)
-        total = len(parts)
+        # Avval katta videolarni qismlarga bo'lamiz - jami fayllar soni ma'lum bo'ladi.
+        for g in groups:
+            if g.get("parts"):
+                continue
+            if g["kind"] == "video":
+                async with app._SPLIT_LOCK:
+                    out = split_root / f"g{g['order']}"
+                    shutil.rmtree(out, ignore_errors=True)
+                    g["parts"] = await asyncio.get_event_loop().run_in_executor(
+                        None, transcription.split_video_by_size, Path(g["path"]), out)
+            else:
+                g["parts"] = [Path(g["path"])]
+        total = sum(len(g["parts"]) for g in groups)
         location = "🎬 Video Baza / " + ideaflow_bot.folder_path(owner_id, folder_id)
-        uploaded = []
+        uploaded, done = [], 0
         async with httpx.AsyncClient(timeout=UPLOAD_TIMEOUT) as client:
-            for i, part in enumerate(parts, start=1):
-                db.execute(f"UPDATE {table} SET bot_upload_progress = ? WHERE id = ?", (f"{i - 1}/{total}", video_id))
-                label = f"{title} — {i}/{total}-qism" if total > 1 else title
-                filename = f"{title}_{i:02d}.mp4" if total > 1 else f"{title}.mp4"
-                with open(part, "rb") as f:
-                    resp = await client.post(_bot_url("sendVideo"), data={
-                        "chat_id": chat_id, "caption": f"🎬 {label}\n📍 {location}"[:1000],
-                        "supports_streaming": "true",
-                    }, files={"video": (filename, f, "video/mp4")})
-                try:
-                    data = resp.json()
-                except ValueError:
-                    data = {}
-                message = data.get("result") or {}
-                media = message.get("video") or message.get("document")
-                if not data.get("ok") or not media:
-                    raise RuntimeError(f"Telegram xatosi (qism {i}/{total}): {resp.text[:300]}")
-                uploaded.append((media["file_id"], "video" if message.get("video") else "file", filename,
-                                 Path(part).stat().st_size))
+            for g in groups:
+                method, field, mime = SEND_METHODS[g["kind"]]
+                n_parts = len(g["parts"])
+                source = Path(g["path"])
+                for i, part in enumerate(g["parts"], start=1):
+                    db.execute(f"UPDATE {table} SET bot_upload_progress = ? WHERE id = ?",
+                               (f"{done}/{total}", record_id))
+                    label = title + (f" — {g['label']}" if g["label"] else "")
+                    if n_parts > 1:
+                        label += f" — {i}/{n_parts}-qism"
+                    if g["label"] is None:
+                        base = title
+                    elif g["kind"] == "file":
+                        base = source.stem  # SRT/TXT o'z nomi bilan (Dars.uz.srt)
+                    else:  # "Dars 5 — O'zbekcha video.mp4"
+                        clean_label = re.sub(r"^[^\w]+", "", g["label"]).strip()
+                        base = f"{title} — {clean_label}"
+                    ext = source.suffix or ".mp4"
+                    filename = f"{base}_{i:02d}{ext}" if n_parts > 1 else f"{base}{ext}"
+                    body = {"chat_id": chat_id, "caption": f"{label}\n📍 {location}"[:1000]}
+                    if g["kind"] == "video":
+                        body["supports_streaming"] = "true"
+                    with open(part, "rb") as f:
+                        resp = await client.post(_bot_url(method), data=body, files={field: (filename, f, mime)})
+                    try:
+                        data = resp.json()
+                    except ValueError:
+                        data = {}
+                    message = data.get("result") or {}
+                    media = message.get(field) or message.get("document")
+                    if not data.get("ok") or not media:
+                        raise RuntimeError(f"Telegram xatosi ({filename}): {resp.text[:300]}")
+                    kind = g["kind"] if message.get(field) and g["kind"] != "file" else "file"
+                    uploaded.append((g, media["file_id"], kind, filename, Path(part).stat().st_size))
+                    done += 1
 
         if folder_id and not db.fetchone("SELECT 1 FROM idea_folders WHERE id = ?", (folder_id,)):
             folder_id = None  # yuklash davomida papka botda o'chirilgan bo'lsa
@@ -352,32 +465,33 @@ async def _upload_job(video_id, path, title, folder_id, remove_from_library, own
         item_id = db.new_id()
         db.execute("INSERT INTO idea_items (id, user_id, folder_id, root_type, type, title, created_at, updated_at) "
                    "VALUES (?, ?, ?, ?, 'video', ?, ?, ?)", (item_id, owner_id, folder_id, ROOT, title, now, now))
-        for file_id, kind, filename, size in uploaded:
+        for g, file_id, kind, filename, size in uploaded:
             db.execute("INSERT INTO idea_attachments (id, user_id, related_type, related_id, file_kind, file_name, "
-                       "file_size, telegram_file_id, created_at) VALUES (?, ?, 'item', ?, ?, ?, ?, ?, ?)",
-                       (db.new_id(), owner_id, item_id, kind, filename, size, file_id, now))
+                       "file_size, telegram_file_id, group_label, group_order, created_at) "
+                       "VALUES (?, ?, 'item', ?, ?, ?, ?, ?, ?, ?, ?)",
+                       (db.new_id(), owner_id, item_id, kind, filename, size, file_id, g["label"], g["order"], now))
         if table == "videos":
             db.execute("UPDATE videos SET bot_upload_status = 'done', bot_upload_progress = ?, bot_item_id = ? "
-                       "WHERE id = ?", (f"{total}/{total}", item_id, video_id))
+                       "WHERE id = ?", (f"{total}/{total}", item_id, record_id))
         else:
             db.execute("UPDATE cloud_files SET bot_upload_status = 'done', bot_upload_progress = ? WHERE id = ?",
-                       (f"{total}/{total}", video_id))
-        log(f"Video botdagi Video Bazaga yuklandi ({total} qism): {location}")
+                       (f"{total}/{total}", record_id))
+        log(f"Botdagi Video Bazaga yuklandi ({len(groups)} fayl, {total} xabar): {location}")
         if remove_from_library:
             if table == "videos":
-                v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+                v = db.fetchone("SELECT * FROM videos WHERE id = ?", (record_id,))
                 if v:
                     app.delete_video_completely(v)
             else:
-                shutil.rmtree(Path(path).parent, ignore_errors=True)
-                db.execute("DELETE FROM cloud_files WHERE id = ?", (video_id,))
+                shutil.rmtree(Path(groups[0]["path"]).parent, ignore_errors=True)
+                db.execute("DELETE FROM cloud_files WHERE id = ?", (record_id,))
     except Exception as e:
         traceback.print_exc()
         db.execute(f"UPDATE {table} SET bot_upload_status = 'error', bot_upload_error = ? WHERE id = ?",
-                   (str(e)[:500], video_id))
+                   (str(e)[:500], record_id))
         log(f"Botga yuklashda xato: {e}")
     finally:
-        shutil.rmtree(split_dir, ignore_errors=True)
+        shutil.rmtree(split_root, ignore_errors=True)
 
 
 def recover_interrupted_uploads():

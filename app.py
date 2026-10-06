@@ -461,8 +461,8 @@ def video_public(v: dict) -> dict:
         "subtitled_video_error": v["subtitled_video_error"],
         "bot_upload_status": v["bot_upload_status"] or "none", "bot_upload_error": v["bot_upload_error"],
         "bot_upload_progress": v["bot_upload_progress"], "bot_item_id": v["bot_item_id"],
-        "bot_variants": [name for name, (column, _) in bot_section.VARIANTS.items()
-                         if v[column] and Path(v[column]).exists()],
+        "bot_variants": (lambda found: (["project"] + found) if found else found)(
+            [name for name, (column, _) in bot_section.VARIANTS.items() if v[column] and Path(v[column]).exists()]),
         "cost_total": v["cost_total"] or 0,
         "cost_total_som": v["cost_total_som"] or 0,
         "has_thumbnail": bool(v["thumbnail_path"]),

@@ -40,13 +40,15 @@ class FakeTelegram:
         pass
 
     async def post(self, url, data=None, files=None):
-        FakeTelegram.sent.append((data, files["video"][0]))
+        field = next(iter(files))
+        FakeTelegram.sent.append((data, files[field][0], url.rsplit("/", 1)[-1]))
+        file_id = f"F{len(FakeTelegram.sent)}"
 
         class R:
             text = "ok"
 
             def json(self):
-                return {"ok": True, "result": {"video": {"file_id": f"F{len(FakeTelegram.sent)}"}}}
+                return {"ok": True, "result": {field: {"file_id": file_id}}}
         return R()
 
 
@@ -119,3 +121,42 @@ def test_zip_names_from_local_header_when_central_is_question_marks(client):
             break
         time.sleep(0.05)
     assert db.fetchone("SELECT 1 FROM cloud_files WHERE original_name = ?", ("Макаревич Иван - Десятая лекция.mp4",))
+
+
+def test_whole_project_goes_to_bot_as_one_item(client, monkeypatch):
+    import ideaflow_bot
+    from storage import RESULTS_DIR, VIDEOS_DIR
+    monkeypatch.setattr(bot_section, "IDEA_BOT_TOKEN", "T")
+    monkeypatch.setattr(bot_section.httpx, "AsyncClient", FakeTelegram)
+    if not db.fetchone("SELECT 1 FROM idea_profiles WHERE telegram_user_id = 777"):
+        db.execute("INSERT INTO idea_profiles (id, telegram_user_id, telegram_chat_id, is_admin, created_at) "
+                   "VALUES ('owner-777', 777, 777, 1, ?)", (db.now(),))
+    owner = db.fetchone("SELECT id FROM users WHERE username = 'admin'")["id"]
+    vid = db.new_id()
+    (VIDEOS_DIR / vid).mkdir(parents=True)
+    (RESULTS_DIR / vid).mkdir(parents=True)
+    orig, final, mp3 = VIDEOS_DIR / vid / "Dars.mp4", RESULTS_DIR / vid / "final.mp4", RESULTS_DIR / vid / "a.mp3"
+    for p, data in ((orig, b"o" * 100), (final, b"f" * 100), (mp3, b"ID3")):
+        p.write_bytes(data)
+    srt = RESULTS_DIR / vid / "Dars.uz.srt"
+    srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nSalom\n")
+    db.execute("INSERT INTO results (id, video_id, kind, filename, path) VALUES (?, ?, 'srt_uz', ?, ?)",
+               (db.new_id(), vid, srt.name, str(srt)))
+    db.execute("INSERT INTO videos (id, owner_id, original_name, path, status, final_video_path, audio_path, "
+               "created_at, updated_at) VALUES (?, ?, 'Dars.mp4', ?, 'completed', ?, ?, ?, ?)",
+               (vid, owner, str(orig), str(final), str(mp3), db.now(), db.now()))
+    FakeTelegram.sent.clear()
+    r = client.post("/api/bot/upload", data={"video_id": vid, "variant": "project", "remove_from_library": "false"})
+    assert r.json()["files"] == 4
+    for _ in range(100):
+        if db.fetchone("SELECT bot_upload_status s FROM videos WHERE id = ?", (vid,))["s"] != "uploading":
+            break
+        time.sleep(0.05)
+    assert [m for _, _, m in FakeTelegram.sent] == ["sendVideo", "sendVideo", "sendDocument", "sendAudio"]
+    assert FakeTelegram.sent[1][1] == "Dars — O'zbekcha video.mp4"
+    item_id = db.fetchone("SELECT bot_item_id FROM videos WHERE id = ?", (vid,))["bot_item_id"]
+    groups = ideaflow_bot.item_groups(item_id)
+    assert [g[1] for g in groups] == ["🎬 Asl video", "🇺🇿 O'zbekcha video", "📄 O'zbekcha tarjima (SRT)",
+                                      "🎵 O'zbekcha dublyaj audio"]
+    buttons = [b["text"] for row in ideaflow_bot.item_keyboard(item_id) for b in row]
+    assert buttons[:3] == ["🇺🇿 O'zbekcha video", "📄 O'zbekcha tarjima (SRT)", "🎵 O'zbekcha dublyaj audio"]

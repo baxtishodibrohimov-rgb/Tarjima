@@ -547,7 +547,8 @@
     <h2 id="botPlayerTitle">Video</h2>
     <button class="tiny-btn modal-close-btn" onclick="closeBotPlayer()" title="Yopish" aria-label="Yopish">×</button>
   </div>
-  <div class="row" id="botPlayerParts" style="margin-top:0;"></div>
+  <div class="row" id="botPlayerGroups" style="margin-top:0; flex-wrap:wrap; gap:6px;"></div>
+  <div class="row" id="botPlayerParts" style="margin-top:6px;"></div>
   <video id="botPlayerVideo" controls preload="metadata" style="width:100%; max-height:70vh; background:#000; border-radius:10px; margin-top:8px;"></video>
   <p class="hint">Video Telegram'dan olinmoqda. Katta video birinchi marta ochilganda bir necha daqiqa kutish kerak bo'lishi mumkin.</p>
 </div>
@@ -2187,7 +2188,8 @@ function renderBotPage() {
   const itemHtml = botTree.items.filter(i => (i.folder_id || null) === botFolderId).map(i => {
     const n = i.parts.length;
     const size = i.parts.reduce((sum, p) => sum + (p.file_size || 0), 0);
-    const meta = [size ? fmtBytes(size) : '', n > 1 ? `${n} qism` : '', (i.created_at || '').slice(0, 10)].filter(Boolean).join(' · ');
+    const fileCount = new Set(i.parts.map(p => p.group_order || 0)).size;
+    const meta = [size ? fmtBytes(size) : '', fileCount > 1 ? `📦 ${fileCount} fayl` : (n > 1 ? `${n} qism` : ''), (i.created_at || '').slice(0, 10)].filter(Boolean).join(' · ');
     const safeUrl = i.url && /^https?:\/\//i.test(i.url) ? i.url : '';
     const botLink = botTree.bot_username ? `https://t.me/${encodeURIComponent(botTree.bot_username)}?start=v_${i.id}` : '';
     const open = n ? `openBotPlayer('${i.id}')` : (safeUrl ? `window.open(this.dataset.url, '_blank', 'noopener')` : '');
@@ -2355,16 +2357,47 @@ async function submitBotMove() {
   } catch (e) { setStatus('botMoveStatus', 'Xato: ' + e.message, 'err'); }
 }
 
+// Element fayllari guruhlab: loyihada asl video, o'zbekcha video, SRT, audio...
+// part - elementning barcha fayllari orasidagi tartib raqami (stream?part=N).
+function botItemGroups(item) {
+  const groups = [];
+  item.parts.forEach((p, idx) => {
+    const order = p.group_order || 0;
+    let g = groups.find(x => x.order === order);
+    if (!g) { g = { order, label: p.group_label, kind: p.file_kind, parts: [] }; groups.push(g); }
+    g.parts.push(idx + 1);
+  });
+  return groups.sort((a, b) => a.order - b.order);
+}
+
+let botPlayerItemId = null;
+let botPlayerGroups = [];
+
 function openBotPlayer(itemId) {
   const item = botTree.items.find(i => i.id === itemId);
   if (!item) return;
+  botPlayerItemId = itemId;
+  botPlayerGroups = botItemGroups(item);
   document.getElementById('botPlayerTitle').textContent = item.title;
-  const n = item.parts.length;
-  document.getElementById('botPlayerParts').innerHTML = n > 1
-    ? item.parts.map((_, idx) => `<button class="small-btn" id="botPart-${idx + 1}" onclick="playBotPart('${itemId}', ${idx + 1})">${idx + 1}-qism</button>`).join('')
-    : '';
+  document.getElementById('botPlayerGroups').innerHTML = botPlayerGroups.length > 1 ? botPlayerGroups.map(g =>
+    g.kind === 'video' || g.kind === 'audio'
+      ? `<button class="small-btn" data-bot-group="${g.order}" onclick="selectBotGroup(${g.order})">${escapeHtml(g.label || 'Video')}</button>`
+      : `<a class="small-btn" style="text-decoration:none;" href="${API_BASE}/api/bot/items/${itemId}/stream?part=${g.parts[0]}&download=1">⬇️ ${escapeHtml(g.label || 'Fayl')}</a>`
+  ).join('') : '';
   openModal('botPlayerModal');
-  playBotPart(itemId, 1);
+  const first = botPlayerGroups.find(g => g.kind === 'video' || g.kind === 'audio') || botPlayerGroups[0];
+  if (first) selectBotGroup(first.order);
+}
+
+function selectBotGroup(order) {
+  const g = botPlayerGroups.find(x => x.order === order);
+  if (!g) return;
+  document.querySelectorAll('#botPlayerGroups [data-bot-group]').forEach(b =>
+    b.classList.toggle('active', +b.dataset.botGroup === order));
+  document.getElementById('botPlayerParts').innerHTML = g.parts.length > 1
+    ? g.parts.map((n, i) => `<button class="small-btn" id="botPart-${n}" onclick="playBotPart('${botPlayerItemId}', ${n})">${i + 1}-qism</button>`).join('')
+    : '';
+  playBotPart(botPlayerItemId, g.parts[0]);
 }
 
 function playBotPart(itemId, part) {
@@ -2412,8 +2445,9 @@ async function openBotAdd(videoId, source = false) {
   botAddFromSplit = source === true;
   const fromSplit = botAddFromSplit || botAddFromCloud;
   const v = currentDetailVideoData && currentDetailVideoData.id === videoId ? currentDetailVideoData : {};
-  const labels = { final: "O'zbekcha (tarjima qilingan yakuniy video)", subtitled: "O'zbekcha, subtitrli",
-    original: 'Asl video (tarjimasiz)' };
+  const labels = { project: "📦 Butun loyiha — barcha videolar, SRT va audio (tavsiya)",
+    final: "Faqat o'zbekcha yakuniy video", subtitled: "Faqat o'zbekcha, subtitrli",
+    original: 'Faqat asl video (tarjimasiz)' };
   // "Video bo'lish"dagi videoning bitta varianti bor - tanlov ko'rsatilmaydi.
   document.getElementById('botAddVariantWrap').style.display = fromSplit ? 'none' : '';
   document.getElementById('botAddVariant').innerHTML = fromSplit ? '<option value="original"></option>'
