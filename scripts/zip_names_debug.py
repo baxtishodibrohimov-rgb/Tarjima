@@ -1,8 +1,10 @@
 """Zip ichidagi fayl nomlari qanday yozilganini ko'rsatadi (nomlar "???" bo'lib
 chiqqanda sababini topish uchun). Faqat o'qiydi, hech narsani o'zgartirmaydi.
 
-    sudo python3 /opt/tarjima/scripts/zip_names_debug.py "/opt/tarjima-storage/cloud/<id>/Fayl.zip"
+    sudo python3 /opt/tarjima/scripts/zip_names_debug.py
+(manzil berilmasa /opt/tarjima-storage/cloud ichidagi barcha zip'lar tekshiriladi)
 """
+import glob
 import struct
 import sys
 import zipfile
@@ -19,7 +21,8 @@ def extra_ids(extra: bytes) -> list:
 
 def main(path: str):
     with zipfile.ZipFile(path) as zf:
-        print(f"Fayllar: {len(zf.infolist())}")
+        print("=" * 60)
+        print(f"{path}\nFayllar: {len(zf.infolist())}")
         for info in zf.infolist()[:4]:
             raw = info.filename.encode("utf-8" if info.flag_bits & 0x800 else "cp437", errors="replace")
             zf.fp.seek(info.header_offset)
@@ -37,4 +40,8 @@ def main(path: str):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    paths = sys.argv[1:] or sorted(glob.glob("/opt/tarjima-storage/cloud/*/*.zip"))
+    if not paths:
+        print("Zip topilmadi.")
+    for p in paths:
+        main(p)
