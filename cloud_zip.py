@@ -10,6 +10,7 @@ Xavfsizlik: zip ichidagi yo'llar ishlatilmaydi (faqat fayl nomi olinadi), shu
 sababli "../../" kabi yo'llar server fayllariga yoza olmaydi.
 """
 import asyncio
+import copy
 import mimetypes
 import shutil
 import struct
@@ -63,17 +64,50 @@ def _unicode_path_extra(info: zipfile.ZipInfo):
     return None
 
 
-def entry_name(info: zipfile.ZipInfo) -> str:
+def _local_header(zf: zipfile.ZipFile, info: zipfile.ZipInfo):
+    """Faylning o'z (lokal) sarlavhasi: (bayroqlar, nom baytlari) yoki None.
+    Ba'zi dasturlar markaziy ro'yxatga "???" yozib, to'g'ri nomni (cp866) faqat
+    shu yerda qoldiradi - Windows Explorer nomni shu yerdan o'qiydi."""
+    try:
+        zf.fp.seek(info.header_offset)
+        header = zf.fp.read(30)
+        if len(header) < 30 or header[:4] != b"PK\x03\x04":
+            return None
+        flags = struct.unpack("<H", header[6:8])[0]
+        name_len = struct.unpack("<H", header[26:28])[0]
+        return flags, zf.fp.read(name_len)
+    except (OSError, AttributeError, ValueError, struct.error):
+        return None
+
+
+def open_entry(zf: zipfile.ZipFile, info: zipfile.ZipInfo):
+    """zf.open() markaziy va lokal nomlar mos kelmasa BadZipFile beradi (yuqoridagi
+    "???" holati). Mazmun bir xil - shuning uchun lokal nomni kutilgan nom qilib ochamiz."""
+    local = _local_header(zf, info)
+    if local:
+        flags, raw = local
+        expected = raw.decode("utf-8" if flags & 0x800 else "cp437", errors="replace")
+        if expected != info.orig_filename:
+            info = copy.copy(info)
+            info.orig_filename = expected
+    return zf.open(info)
+
+
+def entry_name(info: zipfile.ZipInfo, zf: zipfile.ZipFile = None) -> str:
     """Windows'da yaratilgan zip'larda nomlar UTF-8 belgisiz yoziladi va
-    zipfile ularni cp437 deb o'qiydi - kirill harflari buziladi. Avval Unicode
-    qo'shimcha maydonini qidiramiz, bo'lmasa asl baytlarni tiklab, UTF-8, so'ng
-    cp866 (rus Windows) sifatida o'qiymiz."""
+    zipfile ularni cp437 deb o'qiydi - kirill harflari buziladi. Tartib:
+    Unicode qo'shimcha maydoni; markaziy nom "???" bo'lsa - lokal sarlavhadagi
+    nom; so'ng asl baytlar UTF-8, keyin cp866 (rus Windows) sifatida."""
     unicode_name = _unicode_path_extra(info)
     if unicode_name:
         return unicode_name.replace("\\", "/")
     name = info.filename
     if not info.flag_bits & 0x800:
         raw = name.encode("cp437", errors="replace")
+        if b"?" in raw and zf is not None:
+            local = _local_header(zf, info)
+            if local and b"?" not in local[1]:
+                raw = local[1]
         for encoding in ("utf-8", "cp866"):
             try:
                 name = raw.decode(encoding)
@@ -100,7 +134,7 @@ def list_entries(path: Path) -> list:
     with zipfile.ZipFile(path) as zf:
         entries = []
         for index, info in enumerate(zf.infolist()):
-            name = entry_name(info)
+            name = entry_name(info, zf)
             if info.is_dir() or _is_junk(name):
                 continue
             entries.append({"index": index, "path": name, "name": Path(name).name, "size": info.file_size,
@@ -206,13 +240,13 @@ def _extract_sync(cloud_id: str, zip_path: Path, indices: list, owner_id: str) -
         infos = zf.infolist()
         for index in indices:
             info = infos[index]
-            name = bulut_name(entry_name(info))
+            name = bulut_name(entry_name(info, zf))
             new_id = db.new_id()
             dest_dir = CLOUD_DIR / new_id
             dest_dir.mkdir(parents=True, exist_ok=True)
             dest_path = dest_dir / name
             try:
-                with zf.open(info) as src, dest_path.open("wb") as out:
+                with open_entry(zf, info) as src, dest_path.open("wb") as out:
                     shutil.copyfileobj(src, out, COPY_CHUNK)
             except Exception:
                 shutil.rmtree(dest_dir, ignore_errors=True)
@@ -248,10 +282,10 @@ def zip_download_entry(cloud_id: str, index: int):
     if info.is_dir() or info.flag_bits & 0x1:
         zf.close()
         raise HTTPException(400, "Bu faylni yuklab bo'lmaydi (papka yoki parolli fayl).")
-    name = Path(entry_name(info)).name
+    name = Path(entry_name(info, zf)).name
 
     def stream():
-        with zf, zf.open(info) as src:
+        with zf, open_entry(zf, info) as src:
             while chunk := src.read(COPY_CHUNK):
                 yield chunk
 

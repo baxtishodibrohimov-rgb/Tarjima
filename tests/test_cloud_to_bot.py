@@ -88,3 +88,34 @@ def test_zip_unicode_path_field_and_rename(client):
     r = client.post(f"/api/cloud-files/{zid}/rename", data={"name": "Ortodontiya kursi"})
     assert r.json()["original_name"] == "Ortodontiya kursi.zip"
     assert client.post(f"/api/cloud-files/{zid}/rename", data={"name": "  "}).status_code == 400
+
+
+def test_zip_names_from_local_header_when_central_is_question_marks(client):
+    """Serverdagi haqiqiy zip kabi: markaziy ro'yxatda "???", lokal sarlavhada
+    cp866 nom, 0x7075 maydonida esa UTF-8 bo'lmagan baytlar."""
+    names = ["Макаревич Иван/Десятая лекция.mp4", "Макаревич Иван/Конспект.pdf"]
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for n in names:
+            raw = n.encode("cp866")
+            info = zipfile.ZipInfo("?" * len(raw))
+            bad = struct.pack("<B", 1) + struct.pack("<I", 0) + raw  # UTF-8 emas
+            info.extra = struct.pack("<HH", 0x7075, len(bad)) + bad
+            zf.writestr(info, b"data")
+    data = bytearray(buf.getvalue())
+    with zipfile.ZipFile(io.BytesIO(bytes(data))) as zf:
+        for info, n in zip(zf.infolist(), names):
+            raw = n.encode("cp866")
+            start = info.header_offset + 30
+            data[start:start + len(raw)] = raw  # lokal sarlavhaga to'g'ri nom
+    zid = upload(client, "Макаревич.zip", bytes(data), "zip")
+    entries = client.get(f"/api/cloud-files/{zid}/zip").json()["entries"]
+    assert [e["path"] for e in entries] == names
+    r = client.get(f"/api/cloud-files/{zid}/zip/download", params={"index": entries[1]["index"]})
+    assert r.content == b"data"
+    client.post(f"/api/cloud-files/{zid}/zip/extract", json={"mode": "videos"})
+    for _ in range(100):
+        if db.fetchone("SELECT 1 FROM cloud_files WHERE original_name = ?", ("Макаревич Иван - Десятая лекция.mp4",)):
+            break
+        time.sleep(0.05)
+    assert db.fetchone("SELECT 1 FROM cloud_files WHERE original_name = ?", ("Макаревич Иван - Десятая лекция.mp4",))
