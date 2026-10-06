@@ -8,6 +8,7 @@ Ishga tushirish (lokal sinov uchun):
 Oracle Cloud'ga joylashtirish uchun README.txt'ga qarang.
 """
 import asyncio
+import os
 import httpx
 import json
 import re
@@ -2230,7 +2231,8 @@ async def upload_init(original_name: str = Form(...), total_size: int = Form(...
         "SELECT * FROM uploads WHERE owner_id = ? AND original_name = ? AND total_size = ? AND kind = ? "
         "AND status = 'uploading' LIMIT 1", (owner_id, name, total_size, kind))
     if existing_upload:
-        return {"upload_id": existing_upload["id"], "received_size": existing_upload["received_size"], "resumed": True}
+        return {"upload_id": existing_upload["id"], "received_size": existing_upload["received_size"],
+                "received_ranges": _upload_ranges(existing_upload), "resumed": True}
 
     upload_id = db.new_id()
     tmp_path = UPLOADS_DIR / f"{upload_id}.part"
@@ -2241,6 +2243,28 @@ async def upload_init(original_name: str = Form(...), total_size: int = Form(...
         (upload_id, name, total_size, str(tmp_path), kind, file_kind, db.now(), db.now(), owner_id),
     )
     return {"upload_id": upload_id, "received_size": 0, "resumed": False}
+
+
+def _upload_ranges(u: dict) -> list:
+    """Serverga yetib kelgan bayt oraliqlari [[offset, size], ...]. Bo'laklar
+    parallel (tartibsiz) yuboriladi, shuning uchun bitta received_size yetmaydi."""
+    rows = db.fetchall("SELECT chunk_offset, chunk_size FROM upload_chunks WHERE upload_id = ? "
+                       "ORDER BY chunk_offset", (u["id"],))
+    if not rows and u["received_size"]:
+        # Ketma-ket yuklashning eski yozuvi: boshidan received_size'gacha tayyor.
+        db.execute("INSERT OR IGNORE INTO upload_chunks (upload_id, chunk_offset, chunk_size) VALUES (?, 0, ?)",
+                   (u["id"], u["received_size"]))
+        return [[0, u["received_size"]]]
+    return [[r["chunk_offset"], r["chunk_size"]] for r in rows]
+
+
+def _upload_complete_coverage(u: dict) -> bool:
+    end = 0
+    for start, size in sorted(_upload_ranges(u)):
+        if start > end:
+            return False
+        end = max(end, start + size)
+    return end >= u["total_size"]
 
 
 @app.get("/api/videos/upload/{upload_id}")
@@ -2259,27 +2283,36 @@ async def upload_chunk(upload_id: str, offset: int = Form(...), chunk: UploadFil
         raise HTTPException(404, "Upload topilmadi.")
     if u["status"] != "uploading":
         raise HTTPException(400, f"Upload holati '{u['status']}'.")
-    if offset != u["received_size"]:
-        return JSONResponse({"error": "offset mos kelmadi, qayta sinxronlashtiring.",
-                              "received_size": u["received_size"]}, status_code=409)
+    if offset < 0 or offset >= max(u["total_size"], 1):
+        raise HTTPException(400, "Noto'g'ri offset.")
+    _upload_ranges(u)  # eski ketma-ket yuklash bo'lsa - uning qismini ham ro'yxatga oladi
 
-    tmp_path = Path(u["tmp_path"])
-    written = 0
-    with tmp_path.open("ab") as out:
+    # Bo'laklar bir vaqtda (parallel) va istalgan tartibda keladi - har biri
+    # faylning o'z joyiga yoziladi.
+    fd = os.open(u["tmp_path"], os.O_WRONLY | os.O_CREAT, 0o644)
+    position = offset
+    try:
         while True:
             part = await chunk.read(1024 * 1024)
             if not part:
                 break
-            out.write(part)
-            written += len(part)
+            if position + len(part) > u["total_size"]:
+                raise HTTPException(400, "Bo'lak fayl hajmidan oshib ketdi.")
+            os.pwrite(fd, part, position)
+            position += len(part)
+    finally:
+        os.close(fd)
 
-    new_received = u["received_size"] + written
     if not has_space_for(0) or not auth.has_user_space(0, user):
         db.execute("UPDATE uploads SET status = 'error', updated_at = ? WHERE id = ?", (db.now(), upload_id))
         raise HTTPException(400, "Serverda joy tugadi, upload to'xtatildi.")
-    db.execute("UPDATE uploads SET received_size = ?, updated_at = ? WHERE id = ?",
-               (new_received, db.now(), upload_id))
-    return {"received_size": new_received, "total_size": u["total_size"]}
+    db.execute("INSERT OR REPLACE INTO upload_chunks (upload_id, chunk_offset, chunk_size) VALUES (?, ?, ?)",
+               (upload_id, offset, position - offset))
+    received = db.fetchone("SELECT COALESCE(SUM(chunk_size), 0) n FROM upload_chunks WHERE upload_id = ?",
+                           (upload_id,))["n"]
+    received = min(int(received), u["total_size"])
+    db.execute("UPDATE uploads SET received_size = ?, updated_at = ? WHERE id = ?", (received, db.now(), upload_id))
+    return {"received_size": received, "total_size": u["total_size"]}
 
 
 @app.post("/api/videos/upload/{upload_id}/complete")
@@ -2290,9 +2323,10 @@ async def upload_complete(upload_id: str, request: Request):
         raise HTTPException(404, "Upload topilmadi.")
     tmp_path = Path(u["tmp_path"])
     actual_size = tmp_path.stat().st_size if tmp_path.exists() else 0
-    if actual_size != u["total_size"]:
-        raise HTTPException(400, f"Fayl hajmi mos kelmadi ({actual_size} != {u['total_size']}). "
+    if actual_size != u["total_size"] or not _upload_complete_coverage(u):
+        raise HTTPException(400, f"Fayl to'liq yuklanmagan ({u['received_size']} / {u['total_size']} bayt). "
                                   f"Qolgan qismini yuklashda davom eting.")
+    db.execute("DELETE FROM upload_chunks WHERE upload_id = ?", (upload_id,))
 
     kind = u["kind"] or "pipeline"
 
@@ -2364,6 +2398,7 @@ async def upload_cancel(upload_id: str):
         raise HTTPException(404, "Upload topilmadi.")
     Path(u["tmp_path"]).unlink(missing_ok=True)
     db.execute("UPDATE uploads SET status = 'cancelled' WHERE id = ?", (upload_id,))
+    db.execute("DELETE FROM upload_chunks WHERE upload_id = ?", (upload_id,))
     return {"ok": True}
 
 

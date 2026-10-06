@@ -1564,6 +1564,7 @@ async function deleteMemoryNote(id) {
 /*  RESUMABLE UPLOAD                                              */
 /* ============================================================ */
 const UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024;
+const UPLOAD_PARALLEL = 3;
 let uploadInProgress = false;
 let currentUpload = null;
 let stopUploadBatch = false;
@@ -1745,31 +1746,66 @@ async function handleUploadFile(file, kind, fileIndex, totalFiles) {
     }
     const uploadId = initResp.upload_id;
     state.uploadId = uploadId;
-    let offset = initResp.received_size || 0;
-
-    while (offset < file.size) {
-      if (state.cancelled) throw new DOMException('Upload cancelled', 'AbortError');
-      const slice = file.slice(offset, Math.min(offset + UPLOAD_CHUNK_SIZE, file.size));
-      const form = new FormData();
-      form.append('offset', String(offset));
-      form.append('chunk', slice, 'chunk.bin');
-      const resp = await fetch(`${API_BASE}/api/videos/upload/${uploadId}/chunk`, { method: 'POST', body: form, signal: state.controller.signal });
-      if (resp.status === 409) {
-        const j = await resp.json();
-        offset = j.received_size;
-        continue;
-      }
-      if (!resp.ok) {
-        let msg = 'HTTP ' + resp.status;
-        try { const j = await resp.json(); if (j.detail) msg = j.detail; } catch (e) {}
-        throw new Error(msg);
-      }
-      const j = await resp.json();
-      offset = j.received_size;
-      const pct = Math.round((offset / file.size) * 100);
-      bar.style.width = pct + '%';
-      setStatus(ids.status, prefix + `Yuklanmoqda: ${fmtBytes(offset)} / ${fmtBytes(file.size)} (${pct}%)`);
+    // Bo'laklar bir vaqtda UPLOAD_PARALLEL tadan yuboriladi - bittalab yuborishda
+    // har bo'lakdan keyin server javobini kutib, internet kanali bo'sh turardi.
+    const ranges = initResp.received_ranges || (initResp.received_size ? [[0, initResp.received_size]] : []);
+    const chunkEnd = o => Math.min(o + UPLOAD_CHUNK_SIZE, file.size);
+    const pending = [];
+    for (let o = 0; o < file.size; o += UPLOAD_CHUNK_SIZE) {
+      if (!ranges.some(([s0, n0]) => s0 <= o && chunkEnd(o) <= s0 + n0)) pending.push(o);
     }
+    let doneBytes = file.size - pending.reduce((sum, o) => sum + chunkEnd(o) - o, 0);
+    const startBytes = doneBytes, startTime = Date.now();
+    const showProgress = () => {
+      const pct = Math.round((doneBytes / file.size) * 100);
+      bar.style.width = pct + '%';
+      const secs = (Date.now() - startTime) / 1000;
+      const speed = secs > 3 ? (doneBytes - startBytes) / secs : 0;
+      const eta = speed > 0 ? Math.ceil((file.size - doneBytes) / speed / 60) : 0;
+      const extra = speed > 0 ? ` · ${fmtBytes(speed)}/s · ~${eta} daq qoldi` : '';
+      setStatus(ids.status, prefix + `Yuklanmoqda: ${fmtBytes(doneBytes)} / ${fmtBytes(file.size)} (${pct}%)${extra}`);
+    };
+    showProgress();
+
+    const sendChunk = async (o) => {
+      let lastError = '';
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        if (state.cancelled) throw new DOMException('Upload cancelled', 'AbortError');
+        try {
+          const form = new FormData();
+          form.append('offset', String(o));
+          form.append('chunk', file.slice(o, chunkEnd(o)), 'chunk.bin');
+          const resp = await fetch(`${API_BASE}/api/videos/upload/${uploadId}/chunk`, { method: 'POST', body: form, signal: state.controller.signal });
+          if (resp.ok) return;
+          let msg = 'HTTP ' + resp.status;
+          try { const j = await resp.json(); if (j.detail) msg = j.detail; } catch (e) {}
+          if (resp.status < 500 && resp.status !== 408 && resp.status !== 429) {
+            const err = new Error(msg); err.fatal = true; throw err;
+          }
+          lastError = msg;
+        } catch (e) {
+          if (e.name === 'AbortError' || e.fatal) throw e;
+          lastError = e.message;  // tarmoq uzildi - biroz kutib qayta urinamiz
+        }
+        await new Promise(r => setTimeout(r, 2000 * attempt));
+      }
+      throw new Error(`Bo'lakni yuborib bo'lmadi (${lastError})`);
+    };
+    let firstError = null;
+    const uploadWorker = async () => {
+      while (pending.length && !firstError) {
+        const o = pending.shift();
+        try {
+          await sendChunk(o);
+          doneBytes += chunkEnd(o) - o;
+          showProgress();
+        } catch (e) {
+          firstError = firstError || e;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(UPLOAD_PARALLEL, pending.length) }, uploadWorker));
+    if (firstError) throw firstError;
 
     setStatus(ids.status, prefix + "Yuklash tugadi, serverda tekshirilmoqda...");
     await apiFetch(`/api/videos/upload/${uploadId}/complete`, { method: 'POST', signal: state.controller.signal });

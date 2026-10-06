@@ -105,6 +105,14 @@ def init_db():
                 updated_at TEXT
             );
 
+            -- Parallel yuklash: qaysi bo'laklar (bayt oralig'i) serverga yetib kelgan.
+            CREATE TABLE IF NOT EXISTS upload_chunks (
+                upload_id TEXT NOT NULL,
+                chunk_offset INTEGER NOT NULL,
+                chunk_size INTEGER NOT NULL,
+                PRIMARY KEY (upload_id, chunk_offset)
+            );
+
             CREATE TABLE IF NOT EXISTS api_keys (
                 id TEXT PRIMARY KEY,
                 label TEXT,
