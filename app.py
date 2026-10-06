@@ -2429,7 +2429,9 @@ def cloud_file_public(f: dict) -> dict:
             "has_thumbnail": bool(f["thumbnail_path"]) if "thumbnail_path" in f.keys() else False,
             "zip_entry_count": f.get("zip_entry_count"), "zip_total_size": f.get("zip_total_size"),
             "extract_status": f.get("extract_status") or "none", "extract_progress": f.get("extract_progress"),
-            "extract_error": f.get("extract_error")}
+            "extract_error": f.get("extract_error"),
+            "bot_upload_status": f.get("bot_upload_status") or "none", "bot_upload_error": f.get("bot_upload_error"),
+            "bot_upload_progress": f.get("bot_upload_progress") or ""}
 
 
 def _generate_cloud_thumbnail(cloud_id: str, dest_dir: Path, video_path: Path):
@@ -2538,6 +2540,8 @@ async def delete_cloud_file(cloud_id: str):
         raise HTTPException(404, "Fayl topilmadi.")
     if f.get("extract_status") == "extracting":
         raise HTTPException(409, "Bu zipdan hozir fayllar chiqarilmoqda - tugashini kuting.")
+    if f.get("bot_upload_status") == "uploading":
+        raise HTTPException(409, "Bu video hozir Bot bo'limiga yuklanmoqda - tugashini kuting.")
     shutil.rmtree(Path(f["path"]).parent, ignore_errors=True)
     db.execute("DELETE FROM cloud_files WHERE id = ?", (cloud_id,))
     return {"ok": True}
@@ -2578,6 +2582,8 @@ async def use_cloud_file_in_pipeline(cloud_id: str):
     f = db.fetchone("SELECT * FROM cloud_files WHERE id = ? AND kind = 'video'", (cloud_id,))
     if not f:
         raise HTTPException(404, "Bulutda bunday video topilmadi.")
+    if f.get("bot_upload_status") == "uploading":
+        raise HTTPException(409, "Bu video hozir Bot bo'limiga yuklanmoqda - tugashini kuting.")
     if not has_space_for(f["file_size"]):
         raise HTTPException(400, "Serverda yetarli bo'sh joy yo'q.")
     video_id = _move_cloud_video_into_pipeline(f, "pipeline")
@@ -2589,6 +2595,8 @@ async def use_cloud_file_in_split(cloud_id: str, request: Request):
     f = db.fetchone("SELECT * FROM cloud_files WHERE id = ? AND kind = 'video'", (cloud_id,))
     if not f:
         raise HTTPException(404, "Bulutda bunday video topilmadi.")
+    if f.get("bot_upload_status") == "uploading":
+        raise HTTPException(409, "Bu video hozir Bot bo'limiga yuklanmoqda - tugashini kuting.")
     if not has_space_for(f["file_size"]):
         raise HTTPException(400, "Serverda yetarli bo'sh joy yo'q.")
     video_id = _move_cloud_video_into_pipeline(f, "split_only")

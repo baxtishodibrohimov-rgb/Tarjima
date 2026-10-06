@@ -12,12 +12,14 @@ sababli "../../" kabi yo'llar server fayllariga yoza olmaydi.
 import asyncio
 import mimetypes
 import shutil
+import struct
 import traceback
 import zipfile
+import zlib
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 
 import auth
@@ -37,10 +39,38 @@ def entry_kind(name: str) -> str:
     return "video" if Path(name).suffix.lower() in VIDEO_EXTS else "file"
 
 
+def _unicode_path_extra(info: zipfile.ZipInfo):
+    """Info-ZIP "Unicode Path" qo'shimcha maydoni (0x7075) - UTF-8 nom.
+    Windows "Siqilgan papka", WinRAR va boshqalar ruscha nomni asosiy maydonga
+    "???" qilib yozib, to'g'ri nomni shu yerga qo'yadi; Python zipfile uni o'qimaydi."""
+    extra = info.extra or b""
+    pos = 0
+    while pos + 4 <= len(extra):
+        header_id, size = struct.unpack("<HH", extra[pos:pos + 4])
+        data = extra[pos + 4:pos + 4 + size]
+        pos += 4 + size
+        if header_id != 0x7075 or len(data) < 6 or data[0] != 1:
+            continue
+        raw_header = info.filename.encode("utf-8" if info.flag_bits & 0x800 else "cp437", errors="replace")
+        crc_ok = struct.unpack("<I", data[1:5])[0] == zlib.crc32(raw_header)
+        try:
+            name = data[5:].decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+        # CRC mos kelmasa (nomni boshqa dastur o'zgartirgan) - faqat asosiy nom
+        # "?" bilan buzilgan bo'lsa ishlatamiz.
+        return name if crc_ok or "?" in info.filename else None
+    return None
+
+
 def entry_name(info: zipfile.ZipInfo) -> str:
     """Windows'da yaratilgan zip'larda nomlar UTF-8 belgisiz yoziladi va
-    zipfile ularni cp437 deb o'qiydi - kirill harflari buziladi. Asl baytlarni
-    tiklab, avval UTF-8, so'ng cp866 (rus Windows) sifatida o'qiymiz."""
+    zipfile ularni cp437 deb o'qiydi - kirill harflari buziladi. Avval Unicode
+    qo'shimcha maydonini qidiramiz, bo'lmasa asl baytlarni tiklab, UTF-8, so'ng
+    cp866 (rus Windows) sifatida o'qiymiz."""
+    unicode_name = _unicode_path_extra(info)
+    if unicode_name:
+        return unicode_name.replace("\\", "/")
     name = info.filename
     if not info.flag_bits & 0x800:
         raw = name.encode("cp437", errors="replace")
@@ -228,6 +258,23 @@ def zip_download_entry(cloud_id: str, index: int):
     return StreamingResponse(stream(), media_type=mimetypes.guess_type(name)[0] or "application/octet-stream",
                              headers={"Content-Disposition": _attachment_header(name),
                                       "Content-Length": str(info.file_size)})
+
+
+@router.post("/{cloud_id}/rename")
+async def cloud_file_rename(cloud_id: str, name: str = Form(...)):
+    """Bulutdagi fayl nomini o'zgartirish (masalan, zipdan "???" bo'lib chiqqan nom).
+    Faqat ko'rinadigan nom o'zgaradi; kengaytma (.mp4, .zip) saqlanadi."""
+    f = db.fetchone("SELECT * FROM cloud_files WHERE id = ? AND owner_id = ?", (cloud_id, auth.current_user_id()))
+    if not f:
+        raise HTTPException(404, "Fayl topilmadi.")
+    if not name.strip(" ._"):
+        raise HTTPException(400, "Nom bo'sh bo'lmasin.")
+    new = safe_name(name.strip())[:200]
+    ext = Path(f["original_name"] or "").suffix
+    if ext and not new.lower().endswith(ext.lower()):
+        new += ext
+    db.execute("UPDATE cloud_files SET original_name = ? WHERE id = ?", (new, cloud_id))
+    return {"ok": True, "original_name": new}
 
 
 @router.get("/{cloud_id}/download")

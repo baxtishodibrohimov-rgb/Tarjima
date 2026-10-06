@@ -89,8 +89,12 @@ def bot_tree():
     owner = ideaflow_bot.owner_profile()
     uploads = db.fetchall(
         "SELECT id, original_name, bot_upload_status, bot_upload_error, bot_upload_progress, "
-        "bot_upload_folder_id, bot_upload_title FROM videos WHERE bot_upload_status IN ('uploading', 'error') "
-        "ORDER BY updated_at DESC")
+        "bot_upload_folder_id, bot_upload_title, 'library' AS source FROM videos "
+        "WHERE bot_upload_status IN ('uploading', 'error') ORDER BY updated_at DESC")
+    uploads += db.fetchall(
+        "SELECT id, original_name, bot_upload_status, bot_upload_error, bot_upload_progress, "
+        "bot_upload_folder_id, bot_upload_title, 'cloud' AS source FROM cloud_files "
+        "WHERE bot_upload_status IN ('uploading', 'error') ORDER BY created_at DESC")
     if not owner:
         return {"linked": False, "folders": [], "items": [], "uploads": uploads, "bot_username": ""}
     folders = db.fetchall("SELECT id, name, parent_folder_id FROM idea_folders WHERE user_id = ? AND root_type = ? "
@@ -274,17 +278,44 @@ async def upload_from_library(video_id: str = Form(...), variant: str = Form("fi
         _folder(owner, folder_id)
 
     title = (Path(v["original_name"] or "video").stem + suffix)[:200]
-    db.execute("UPDATE videos SET bot_upload_status = 'uploading', bot_upload_error = NULL, bot_upload_progress = '', "
-               "bot_upload_folder_id = ?, bot_upload_title = ? WHERE id = ?", (folder_id or None, title, video_id))
-    asyncio.create_task(_upload_job(video_id, path, title, folder_id or None, remove_from_library,
-                                    owner["id"], owner["telegram_chat_id"], parts))
+    _start_upload("videos", video_id, path, title, folder_id or None, remove_from_library, owner, parts)
     return {"ok": True}
 
 
-async def _upload_job(video_id, path, title, folder_id, remove_from_library, owner_id, chat_id, parts=None):
-    """parts berilsa ("Video bo'lish"da tayyor qismlar) - qayta bo'linmaydi."""
+@router.post("/upload-cloud")
+async def upload_from_cloud(cloud_file_id: str = Form(...), folder_id: str = Form(""),
+                            remove_from_library: bool = Form(True)):
+    """Bulutdagi videoni Video Bazaga yuklaydi (Kutubxonaga o'tkazmasdan)."""
+    owner = _owner()
+    if not IDEA_BOT_TOKEN:
+        raise HTTPException(400, "Bot sozlanmagan (IDEA_BOT_TOKEN).")
+    f = db.fetchone("SELECT * FROM cloud_files WHERE id = ? AND kind = 'video'", (cloud_file_id,))
+    if not f or not Path(f["path"]).exists():
+        raise HTTPException(404, "Bulutda bunday video topilmadi.")
+    if f["bot_upload_status"] == "uploading":
+        raise HTTPException(409, "Bu video hozir botga yuklanmoqda.")
+    if folder_id:
+        _folder(owner, folder_id)
+    title = Path(f["original_name"] or "video").stem[:200]
+    _start_upload("cloud_files", cloud_file_id, f["path"], title, folder_id or None, remove_from_library, owner)
+    return {"ok": True}
+
+
+def _start_upload(table, record_id, path, title, folder_id, remove_after, owner, parts=None):
+    db.execute(f"UPDATE {table} SET bot_upload_status = 'uploading', bot_upload_error = NULL, "
+               f"bot_upload_progress = '', bot_upload_folder_id = ?, bot_upload_title = ? WHERE id = ?",
+               (folder_id, title, record_id))
+    asyncio.create_task(_upload_job(record_id, path, title, folder_id, remove_after,
+                                    owner["id"], owner["telegram_chat_id"], parts, table))
+
+
+async def _upload_job(video_id, path, title, folder_id, remove_from_library, owner_id, chat_id, parts=None,
+                      table="videos"):
+    """parts berilsa ("Video bo'lish"da tayyor qismlar) - qayta bo'linmaydi.
+    table: "videos" (Kutubxona / Video bo'lish) yoki "cloud_files" (Bulut)."""
     import app
     split_dir = SPLIT_DIR / f"bot_{video_id}"
+    log = (lambda text: db.log_line(video_id, text)) if table == "videos" else (lambda text: None)
     try:
         if not parts:
             async with app._SPLIT_LOCK:
@@ -296,7 +327,7 @@ async def _upload_job(video_id, path, title, folder_id, remove_from_library, own
         uploaded = []
         async with httpx.AsyncClient(timeout=UPLOAD_TIMEOUT) as client:
             for i, part in enumerate(parts, start=1):
-                db.execute("UPDATE videos SET bot_upload_progress = ? WHERE id = ?", (f"{i - 1}/{total}", video_id))
+                db.execute(f"UPDATE {table} SET bot_upload_progress = ? WHERE id = ?", (f"{i - 1}/{total}", video_id))
                 label = f"{title} — {i}/{total}-qism" if total > 1 else title
                 filename = f"{title}_{i:02d}.mp4" if total > 1 else f"{title}.mp4"
                 with open(part, "rb") as f:
@@ -325,23 +356,32 @@ async def _upload_job(video_id, path, title, folder_id, remove_from_library, own
             db.execute("INSERT INTO idea_attachments (id, user_id, related_type, related_id, file_kind, file_name, "
                        "file_size, telegram_file_id, created_at) VALUES (?, ?, 'item', ?, ?, ?, ?, ?, ?)",
                        (db.new_id(), owner_id, item_id, kind, filename, size, file_id, now))
-        db.execute("UPDATE videos SET bot_upload_status = 'done', bot_upload_progress = ?, bot_item_id = ? "
-                   "WHERE id = ?", (f"{total}/{total}", item_id, video_id))
-        db.log_line(video_id, f"Video botdagi Video Bazaga yuklandi ({total} qism): {location}")
+        if table == "videos":
+            db.execute("UPDATE videos SET bot_upload_status = 'done', bot_upload_progress = ?, bot_item_id = ? "
+                       "WHERE id = ?", (f"{total}/{total}", item_id, video_id))
+        else:
+            db.execute("UPDATE cloud_files SET bot_upload_status = 'done', bot_upload_progress = ? WHERE id = ?",
+                       (f"{total}/{total}", video_id))
+        log(f"Video botdagi Video Bazaga yuklandi ({total} qism): {location}")
         if remove_from_library:
-            v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
-            if v:
-                app.delete_video_completely(v)
+            if table == "videos":
+                v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+                if v:
+                    app.delete_video_completely(v)
+            else:
+                shutil.rmtree(Path(path).parent, ignore_errors=True)
+                db.execute("DELETE FROM cloud_files WHERE id = ?", (video_id,))
     except Exception as e:
         traceback.print_exc()
-        db.execute("UPDATE videos SET bot_upload_status = 'error', bot_upload_error = ? WHERE id = ?",
+        db.execute(f"UPDATE {table} SET bot_upload_status = 'error', bot_upload_error = ? WHERE id = ?",
                    (str(e)[:500], video_id))
-        db.log_line(video_id, f"Botga yuklashda xato: {e}")
+        log(f"Botga yuklashda xato: {e}")
     finally:
         shutil.rmtree(split_dir, ignore_errors=True)
 
 
 def recover_interrupted_uploads():
-    db.execute("UPDATE videos SET bot_upload_status = 'error', bot_upload_error = ? "
-               "WHERE bot_upload_status = 'uploading'",
-               ("Server qayta ishga tushdi - yuklash to'xtab qoldi. Qayta urinib ko'ring.",))
+    for table in ("videos", "cloud_files"):
+        db.execute(f"UPDATE {table} SET bot_upload_status = 'error', bot_upload_error = ? "
+                   "WHERE bot_upload_status = 'uploading'",
+                   ("Server qayta ishga tushdi - yuklash to'xtab qoldi. Qayta urinib ko'ring.",))

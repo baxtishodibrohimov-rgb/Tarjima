@@ -2071,6 +2071,7 @@ let botFolderId = null;
 let botMoveState = null;
 let botAddVideoId = null;
 let botAddFromSplit = false;
+let botAddFromCloud = false;
 
 async function loadBotTree() {
   try {
@@ -2171,7 +2172,7 @@ function renderBotPage() {
     const uploading = u.bot_upload_status === 'uploading';
     const progress = uploading && u.bot_upload_progress ? ` (${escapeHtml(u.bot_upload_progress)} qism)` : '';
     return `
-    <div class="vcard ${uploading ? 'status-progress' : 'status-error'}" onclick="${uploading ? '' : `openVideoFromBot('${u.id}')`}">
+    <div class="vcard ${uploading ? 'status-progress' : 'status-error'}" onclick="${uploading ? '' : u.source === 'cloud' ? `switchPage('page-translate')` : `openVideoFromBot('${u.id}')`}">
       <div class="thumb">Video</div>
       <div class="vbody">
         <div class="vcard-name-row"><p class="vname">${title}</p></div>
@@ -2404,9 +2405,12 @@ function botUploadPanelHtml(v) {
   return parts.join(' ');
 }
 
-async function openBotAdd(videoId, fromSplit = false) {
+async function openBotAdd(videoId, source = false) {
+  // source: false - Kutubxona, true - "Video bo'lish", 'cloud' - Bulut
   botAddVideoId = videoId;
-  botAddFromSplit = fromSplit;
+  botAddFromCloud = source === 'cloud';
+  botAddFromSplit = source === true;
+  const fromSplit = botAddFromSplit || botAddFromCloud;
   const v = currentDetailVideoData && currentDetailVideoData.id === videoId ? currentDetailVideoData : {};
   const labels = { final: "O'zbekcha (tarjima qilingan yakuniy video)", subtitled: "O'zbekcha, subtitrli",
     original: 'Asl video (tarjimasiz)' };
@@ -2414,7 +2418,9 @@ async function openBotAdd(videoId, fromSplit = false) {
   document.getElementById('botAddVariantWrap').style.display = fromSplit ? 'none' : '';
   document.getElementById('botAddVariant').innerHTML = fromSplit ? '<option value="original"></option>'
     : (v.bot_variants || []).map(x => `<option value="${x}">${labels[x] || x}</option>`).join('');
-  document.getElementById('botAddRemoveText').textContent = fromSplit
+  document.getElementById('botAddRemoveText').textContent = botAddFromCloud
+    ? "Yuklangach Bulutdan o'chirish — serverda joy bo'shaydi, video faqat botda qoladi va \"Bot\" bo'limida havola bo'lib turadi."
+    : fromSplit
     ? "Yuklangach serverdan o'chirish — video faqat botda qoladi va \"Bot\" bo'limida havola bo'lib turadi."
     : "Yuklangach Kutubxonadan o'chirish — serverda joy bo'shaydi, video faqat botda qoladi va \"Bot\" bo'limida havola bo'lib turadi.";
   document.getElementById('botAddRemove').checked = true;
@@ -2440,12 +2446,20 @@ async function submitBotAdd() {
   const btn = document.getElementById('botAddSubmit');
   btn.disabled = true;
   try {
-    await botPost('/api/bot/upload', {
-      video_id: botAddVideoId, variant: document.getElementById('botAddVariant').value,
-      folder_id: folderId, remove_from_library: remove ? 'true' : 'false',
-    });
+    if (botAddFromCloud) {
+      await botPost('/api/bot/upload-cloud', {
+        cloud_file_id: botAddVideoId, folder_id: folderId, remove_from_library: remove ? 'true' : 'false',
+      });
+    } else {
+      await botPost('/api/bot/upload', {
+        video_id: botAddVideoId, variant: document.getElementById('botAddVariant').value,
+        folder_id: folderId, remove_from_library: remove ? 'true' : 'false',
+      });
+    }
     closeModal('botAddModal');
-    if (botAddFromSplit) {
+    if (botAddFromCloud) {
+      loadCloudInbox();
+    } else if (botAddFromSplit) {
       loadSplitVideos();
     } else if (remove) {
       closeVideoDetail();
@@ -5040,7 +5054,7 @@ function cloudZipCard(f) {
     <div class="vcard status-upload cloud-vcard">
       <div class="thumb file-thumb">🗜</div>
       <div class="vbody">
-        <p class="vname">${escapeHtml(f.original_name)}</p>
+        ${cloudNameRow(f)}
         <p class="vmeta">${meta}</p>
         ${status ? `<div style="margin-bottom:8px;">${status}</div>` : ''}
         <div class="cloud-card-actions">
@@ -5051,21 +5065,53 @@ function cloudZipCard(f) {
     </div>`;
 }
 
+function cloudNameRow(f) {
+  return `<div class="vcard-name-row"><p class="vname">${escapeHtml(f.original_name)}</p>
+    <button class="rename-video-btn" onclick="renameCloudFile('${f.id}')" title="Nomini o‘zgartirish" aria-label="Nomini o‘zgartirish">✎</button></div>`;
+}
+
 function cloudVideoCard(f) {
+  const uploading = f.bot_upload_status === 'uploading';
+  const status = uploading
+    ? `<span class="pill">⏳ Bot bo'limiga yuklanmoqda... ${escapeHtml(f.bot_upload_progress || '')}</span>`
+    : f.bot_upload_status === 'done' ? `<span class="pill ok">✓ Bot bo'limiga yuklandi</span>`
+    : f.bot_upload_status === 'error' ? `<span class="pill err">✗ Botga yuklashda xato: ${escapeHtml(f.bot_upload_error || '')}</span>` : '';
   return `
     <div class="vcard status-upload cloud-vcard">
       ${f.has_thumbnail
         ? `<div class="thumb" style="background-image:url('${API_BASE}/api/cloud-files/${f.id}/thumbnail')"></div>`
         : `<div class="thumb">Video</div>`}
       <div class="vbody">
-        <p class="vname">${escapeHtml(f.original_name)}</p>
+        ${cloudNameRow(f)}
         <p class="vmeta">${fmtBytes(f.file_size)}</p>
-        <div class="cloud-card-actions">
+        ${status ? `<div style="margin-bottom:8px;">${status}</div>` : ''}
+        ${uploading ? '' : `<div class="cloud-card-actions">
           <button class="action" onclick="addCloudToBaza('${f.id}')">Kutubxonaga qo'shish</button>
+          <button class="small-btn" onclick="openBotAdd('${f.id}', 'cloud')">🤖 Bot bo'limiga</button>
+          <button class="small-btn" onclick="moveCloudToSplit('${f.id}')">✂️ Video bo'lishga</button>
           <button class="small-btn danger" onclick="deleteCloudFile('${f.id}')">O'chirish</button>
-        </div>
+        </div>`}
       </div>
     </div>`;
+}
+
+function renameCloudFile(cloudId) {
+  const f = (cloudFilesCache || []).find(x => x.id === cloudId);
+  const name = prompt('Yangi nom:', f ? f.original_name : '');
+  if (!name || !name.trim()) return;
+  const form = new FormData();
+  form.append('name', name.trim());
+  apiFetch(`/api/cloud-files/${cloudId}/rename`, { method: 'POST', body: form })
+    .then(loadCloudInbox).catch(e => alert('Xato: ' + e.message));
+}
+
+async function moveCloudToSplit(cloudId) {
+  try {
+    await apiFetch(`/api/cloud-files/${cloudId}/use-in-split`, { method: 'POST' });
+    loadCloudInbox();
+    loadStorage();
+    switchPage('page-split');
+  } catch (e) { alert('Xato: ' + e.message); }
 }
 
 function cloudOtherCard(f) {
@@ -5076,7 +5122,7 @@ function cloudOtherCard(f) {
     <div class="vcard status-upload cloud-vcard">
       <div class="thumb file-thumb">${icon}</div>
       <div class="vbody">
-        <p class="vname">${escapeHtml(f.original_name)}</p>
+        ${cloudNameRow(f)}
         <p class="vmeta">${fmtBytes(f.file_size)}</p>
         <div class="cloud-card-actions">
           <a class="small-btn" style="text-decoration:none;" href="${API_BASE}/api/cloud-files/${f.id}/download">⬇️ Yuklab olish</a>
@@ -5091,6 +5137,7 @@ async function loadCloudInbox() {
   if (!list) return;
   try {
     const files = await apiFetch('/api/cloud-files');
+    cloudFilesCache = files;
     if (files.length === 0) {
       list.innerHTML = '<p class="hint">Bulutda hali fayl yo\'q. "+" tugmasi bilan fayl yuklang yoki fayllarni shu yerga tortib tashlang.</p>';
       return;
@@ -5103,6 +5150,8 @@ async function loadCloudInbox() {
     list.innerHTML = `<p class="status err">Xato: ${escapeHtml(e.message)}</p>`;
   }
 }
+
+let cloudFilesCache = [];
 
 /* ---------- Zip ichini ko'rish va fayllarni Bulutga chiqarish ---------- */
 let zipModalId = null;

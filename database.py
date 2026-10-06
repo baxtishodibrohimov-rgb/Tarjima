@@ -546,6 +546,12 @@ _CLOUD_FILE_NEW_COLUMNS = {
     "extract_status": "TEXT DEFAULT 'none'",
     "extract_progress": "TEXT",
     "extract_error": "TEXT",
+    # Bulutdagi videoni Bot bo'limiga (Video Baza) yuklash holati
+    "bot_upload_status": "TEXT DEFAULT 'none'",
+    "bot_upload_error": "TEXT",
+    "bot_upload_progress": "TEXT",
+    "bot_upload_folder_id": "TEXT",
+    "bot_upload_title": "TEXT",
 }
 _FOLDER_NEW_COLUMNS = {
     "owner_id": "TEXT",
