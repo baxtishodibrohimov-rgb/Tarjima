@@ -122,6 +122,7 @@
   .cloud-vcard:hover { transform:none; }
   .cloud-card-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:auto; }
   .vcard .thumb.file-thumb { display:flex; align-items:center; justify-content:center; font-size:38px; }
+  #page-translate.drop-target { outline:2px dashed var(--accent); outline-offset:-6px; border-radius:14px; }
   .zip-tree { max-height:min(45vh, 420px); overflow:auto; border:1px solid var(--line); border-radius:10px; padding:6px; margin:10px 0; }
   .zip-row { display:flex; align-items:center; gap:8px; padding:5px 6px; border-radius:8px; font-size:13.5px; }
   .zip-row:hover { background:var(--panel); }
@@ -835,7 +836,7 @@
 <!--   PAGE: MATN / TARJIMA                                        -->
 <!-- ============================================================ -->
 <div class="page" id="page-translate">
-  <input type="file" id="tarjimaUploadFile" accept="video/*,.zip,application/zip,application/x-zip-compressed" multiple style="display:none;">
+  <input type="file" id="tarjimaUploadFile" multiple style="display:none;">
   <div id="tarjimaUploadProgressCard" style="display:none;" class="card">
     <div class="progress-wrap"><div class="progress-bar" id="tarjimaUploadProgressBar"></div></div>
     <div class="status" id="tarjimaUploadStatus"></div>
@@ -843,7 +844,7 @@
   </div>
   <div id="cloudInboxList" class="vgrid"><p class="hint">Yuklanmoqda...</p></div>
   <div class="fab-wrap" id="cloudFab">
-    <button class="fab" onclick="document.getElementById('tarjimaUploadFile').click()" title="Bulutga video yoki zip yuklash" aria-label="Bulutga video yoki zip yuklash">+</button>
+    <button class="fab" onclick="document.getElementById('tarjimaUploadFile').click()" title="Bulutga fayl yuklash (bir nechtasini tanlash yoki shu yerga tortib tashlash mumkin)" aria-label="Bulutga fayl yuklash">+</button>
   </div>
 </div>
 
@@ -1570,15 +1571,28 @@ let currentUpload = null;
 let stopUploadBatch = false;
 
 function setupUploadInput() {
-  document.getElementById('uploadFile').addEventListener('change', (e) => {
-    if (e.target.files.length) handleUploadFiles(e.target.files, 'pipeline');
+  for (const [inputId, kind] of [['uploadFile', 'pipeline'], ['splitUploadFile', 'split_only'], ['tarjimaUploadFile', 'cloud']]) {
+    document.getElementById(inputId).addEventListener('change', (e) => {
+      if (e.target.files.length) handleUploadFiles(e.target.files, kind);
+      e.target.value = '';  // o'sha faylni yana tanlash ham "change" bersin
+    });
+  }
+  // Bulut: fayllarni sahifaga sichqoncha bilan tortib tashlash
+  const cloudPage = document.getElementById('page-translate');
+  cloudPage.addEventListener('dragover', (e) => { e.preventDefault(); cloudPage.classList.add('drop-target'); });
+  cloudPage.addEventListener('dragleave', (e) => { if (!cloudPage.contains(e.relatedTarget)) cloudPage.classList.remove('drop-target'); });
+  cloudPage.addEventListener('drop', (e) => {
+    e.preventDefault();
+    cloudPage.classList.remove('drop-target');
+    if (e.dataTransfer.files.length) handleUploadFiles(e.dataTransfer.files, 'cloud');
   });
-  document.getElementById('splitUploadFile').addEventListener('change', (e) => {
-    if (e.target.files.length) handleUploadFiles(e.target.files, 'split_only');
-  });
-  document.getElementById('tarjimaUploadFile').addEventListener('change', (e) => {
-    if (e.target.files.length) handleUploadFiles(e.target.files, 'cloud');
-  });
+}
+
+function cloudFileKind(file) {
+  const name = file.name.toLowerCase();
+  if (name.endsWith('.zip')) return 'zip';
+  if ((file.type || '').startsWith('video/') || /\.(mp4|mkv|mov|avi|webm|m4v|ts|mts|flv|wmv|mpg|mpeg|3gp)$/.test(name)) return 'video';
+  return 'file';
 }
 
 function refreshAfterUpload(kind) {
@@ -1587,12 +1601,31 @@ function refreshAfterUpload(kind) {
   else loadVideos();
 }
 
+// Yuklash navbati: bir vaqtda bitta fayl yuklanadi (u o'zi 3 ta bo'lakdan
+// parallel ketadi); yuklash paytida tanlangan fayllar navbatga qo'shiladi.
+const uploadQueue = [];
+let uploadQueueTotal = 0;
+let uploadQueueDone = 0;
+let uploadQueueRunning = false;
+
 async function handleUploadFiles(fileList, kind) {
   const files = Array.from(fileList);
+  for (const file of files) uploadQueue.push({ file, kind });
+  uploadQueueTotal += files.length;
+  if (uploadQueueRunning) return;  // ishlayotgan tsikl ularni ham oladi
+  uploadQueueRunning = true;
   stopUploadBatch = false;
-  for (let i = 0; i < files.length; i++) {
-    if (stopUploadBatch) break;
-    await handleUploadFile(files[i], kind, i + 1, files.length);
+  try {
+    while (uploadQueue.length && !stopUploadBatch) {
+      const item = uploadQueue.shift();
+      await handleUploadFile(item.file, item.kind);
+      uploadQueueDone++;
+    }
+  } finally {
+    uploadQueue.length = 0;
+    uploadQueueTotal = 0;
+    uploadQueueDone = 0;
+    uploadQueueRunning = false;
   }
 }
 
@@ -1710,36 +1743,35 @@ async function stopCurrentUpload() {
   }
 }
 
-async function handleUploadFile(file, kind, fileIndex, totalFiles) {
+async function handleUploadFile(file, kind) {
   const idsByKind = {
     split_only: { card: 'splitUploadProgressCard', bar: 'splitUploadProgressBar', status: 'splitUploadStatus', input: 'splitUploadFile', stop: 'splitUploadStopBtn' },
     cloud: { card: 'tarjimaUploadProgressCard', bar: 'tarjimaUploadProgressBar', status: 'tarjimaUploadStatus', input: 'tarjimaUploadFile', stop: 'tarjimaUploadStopBtn' },
     pipeline: { card: 'uploadProgressCard', bar: 'uploadProgressBar', status: 'uploadStatus', input: 'uploadFile', stop: 'uploadStopBtn' },
   };
   const ids = idsByKind[kind];
-  if (uploadInProgress) { alert("Boshqa fayl hozir yuklanmoqda. Kutib turing."); return; }
   uploadInProgress = true;
-  const isBatch = totalFiles > 1;
-  const prefix = isBatch ? `Fayl ${fileIndex}/${totalFiles} (${file.name}): ` : '';
+  // Navbatga yangi fayl qo'shilsa, "Fayl 2/5" soni ham yangilanadi.
+  const pfx = () => uploadQueueTotal > 1 ? `Fayl ${uploadQueueDone + 1}/${uploadQueueTotal} (${file.name}): ` : '';
   const card = document.getElementById(ids.card);
   const bar = document.getElementById(ids.bar);
   const stopBtn = document.getElementById(ids.stop);
-  const state = { ids, prefix, controller: new AbortController(), uploadId: null, cancelled: false, cleaned: false, stopBtn };
+  const state = { ids, get prefix() { return pfx(); }, controller: new AbortController(), uploadId: null, cancelled: false, cleaned: false, stopBtn };
   currentUpload = state;
   card.style.display = 'block';
   bar.style.width = '0%';
   stopBtn.style.display = 'inline-flex';
   stopBtn.disabled = false;
-  setStatus(ids.status, prefix + 'Boshlanmoqda...');
+  setStatus(ids.status, pfx() + 'Boshlanmoqda...');
   try {
     const initForm = new FormData();
     initForm.append('original_name', file.name);
     initForm.append('total_size', String(file.size));
     initForm.append('kind', kind);
-    if (kind === 'cloud') initForm.append('file_kind', file.name.toLowerCase().endsWith('.zip') ? 'zip' : 'video');
+    if (kind === 'cloud') initForm.append('file_kind', cloudFileKind(file));
     const initResp = await apiFetch('/api/videos/upload/init', { method: 'POST', body: initForm, signal: state.controller.signal });
     if (initResp.duplicate_of) {
-      setStatus(ids.status, prefix + `Bu video allaqachon serverda bor: "${initResp.duplicate_of.original_name}".`, 'ok');
+      setStatus(ids.status, pfx() + `Bu video allaqachon serverda bor: "${initResp.duplicate_of.original_name}".`, 'ok');
       uploadInProgress = false;
       refreshAfterUpload(kind);
       return;
@@ -1763,7 +1795,7 @@ async function handleUploadFile(file, kind, fileIndex, totalFiles) {
       const speed = secs > 3 ? (doneBytes - startBytes) / secs : 0;
       const eta = speed > 0 ? Math.ceil((file.size - doneBytes) / speed / 60) : 0;
       const extra = speed > 0 ? ` · ${fmtBytes(speed)}/s · ~${eta} daq qoldi` : '';
-      setStatus(ids.status, prefix + `Yuklanmoqda: ${fmtBytes(doneBytes)} / ${fmtBytes(file.size)} (${pct}%)${extra}`);
+      setStatus(ids.status, pfx() + `Yuklanmoqda: ${fmtBytes(doneBytes)} / ${fmtBytes(file.size)} (${pct}%)${extra}`);
     };
     showProgress();
 
@@ -1807,18 +1839,17 @@ async function handleUploadFile(file, kind, fileIndex, totalFiles) {
     await Promise.all(Array.from({ length: Math.min(UPLOAD_PARALLEL, pending.length) }, uploadWorker));
     if (firstError) throw firstError;
 
-    setStatus(ids.status, prefix + "Yuklash tugadi, serverda tekshirilmoqda...");
+    setStatus(ids.status, pfx() + "Yuklash tugadi, serverda tekshirilmoqda...");
     await apiFetch(`/api/videos/upload/${uploadId}/complete`, { method: 'POST', signal: state.controller.signal });
     bar.style.width = '100%';
-    const doneMsg = kind === 'split_only' ? "Video yuklandi, botga yuborilmoqda..."
-      : kind === 'cloud' ? "Video bulutga yuklandi."
+    const doneMsg = kind === 'split_only' ? "Video yuklandi, qismlarga bo'linmoqda..."
+      : kind === 'cloud' ? "Fayl bulutga yuklandi."
       : "Video serverga to'liq yuklandi.";
-    setStatus(ids.status, prefix + doneMsg, 'ok');
+    setStatus(ids.status, pfx() + doneMsg, 'ok');
     refreshAfterUpload(kind);
     loadStorage();
-    if (!isBatch || fileIndex === totalFiles) {
-      document.getElementById(ids.input).value = '';
-      setTimeout(() => { card.style.display = 'none'; }, 4000);
+    if (!uploadQueue.length) {
+      setTimeout(() => { if (!uploadQueueRunning) card.style.display = 'none'; }, 4000);
     }
   } catch (e) {
     if (state.cancelled || e.name === 'AbortError') {
@@ -1828,10 +1859,9 @@ async function handleUploadFile(file, kind, fileIndex, totalFiles) {
           state.cleaned = true;
         } catch (cleanupError) {}
       }
-      setStatus(ids.status, prefix + "Yuklash to'xtatildi.", 'err');
-      document.getElementById(ids.input).value = '';
+      setStatus(ids.status, pfx() + "Yuklash to'xtatildi.", 'err');
     } else {
-      setStatus(ids.status, prefix + 'Xato: ' + e.message + " — internet tiklangach xuddi shu faylni qayta tanlang, yuklash qoldiqdan davom etadi.", 'err');
+      setStatus(ids.status, pfx() + 'Xato: ' + e.message + " — internet tiklangach xuddi shu faylni qayta tanlang, yuklash qoldiqdan davom etadi.", 'err');
     }
   } finally {
     stopBtn.style.display = 'none';
@@ -5062,7 +5092,7 @@ async function loadCloudInbox() {
   try {
     const files = await apiFetch('/api/cloud-files');
     if (files.length === 0) {
-      list.innerHTML = '<p class="hint">Bulutda hali fayl yo\'q. "+" tugmasi bilan video yoki zip yuklang.</p>';
+      list.innerHTML = '<p class="hint">Bulutda hali fayl yo\'q. "+" tugmasi bilan fayl yuklang yoki fayllarni shu yerga tortib tashlang.</p>';
       return;
     }
     const order = { zip: 0, video: 1 };

@@ -10,7 +10,7 @@ def test_cloud_navigation_and_page_are_compact():
     assert "Tarjima uchun video yuklang yoki bulutga tushgan" not in INDEX_HTML
     assert 'id="cloudInboxList" class="vgrid"' in INDEX_HTML
     assert 'id="cloudFab"' in INDEX_HTML
-    assert 'aria-label="Bulutga video yoki zip yuklash"' in INDEX_HTML
+    assert 'aria-label="Bulutga fayl yuklash"' in INDEX_HTML
 
 
 def test_cloud_page_uses_library_style_cards_and_refreshes_directly():
