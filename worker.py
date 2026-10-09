@@ -1298,6 +1298,7 @@ async def run_auto_translate(video_id: str, provider: str = "openai"):
         _update_video(video_id, translation_text=plain,
                       translation_segments=json.dumps(translation_segments, ensure_ascii=False),
                       translation_status="ready", translation_source=f"auto_{provider}", status="translation_ready",
+                      translation_warnings=None,
                       blocked_reason=None, error=None, message="Avtomatik tarjima tayyor.")
 
         if usage_present:
@@ -1422,7 +1423,7 @@ def apply_manual_translation(video_id: str, texts: list, source: str):
     _update_video(video_id, translation_text=plain,
                   translation_segments=json.dumps(translation_segments, ensure_ascii=False),
                   translation_status=source, translation_source=source, status="translation_ready",
-                  blocked_reason=None, error=None, message="Tarjima qo'shildi.")
+                  translation_warnings=None, blocked_reason=None, error=None, message="Tarjima qo'shildi.")
     write_translation_results(video_id)
     log(video_id, f"Tarjima qo'lda kiritildi ({source}).")
 
@@ -1430,13 +1431,21 @@ def apply_manual_translation(video_id: str, texts: list, source: str):
 def apply_direct_srt_translation(video_id: str, segments: list):
     """Foydalanuvchi tayyorlagan SRT faylini o'z vaqt belgilari bilan to'g'ridan-to'g'ri
     tarjima sifatida saqlaydi (original transkripsiya bo'laklar soniga bog'liq emas)."""
+    import srt_checks
+    video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    warnings = srt_checks.translation_warnings(
+        segments, json.loads(video["transcript_segments"] or "[]"), json.loads(video["transcript_words"] or "[]"),
+        float(video["duration"] or 0))
     plain = "\n\n".join(s["text"] for s in segments)
     _update_video(video_id, translation_text=plain,
                   translation_segments=json.dumps(segments, ensure_ascii=False),
                   translation_status="uploaded", translation_source="srt_direct", status="translation_ready",
+                  translation_warnings=json.dumps(warnings, ensure_ascii=False),
                   blocked_reason=None, error=None, message=f"SRT fayldan {len(segments)} ta bo'lak yuklandi.")
     write_translation_results(video_id)
-    log(video_id, f"O'zbekcha SRT to'g'ridan-to'g'ri yuklandi ({len(segments)} ta bo'lak).")
+    log(video_id, f"O'zbekcha SRT to'g'ridan-to'g'ri yuklandi ({len(segments)} ta bo'lak"
+                  f"{f', {len(warnings)} ta ogohlantirish' if warnings else ''}).")
+    return warnings
 
 
 def write_translation_results(video_id: str):
@@ -1989,7 +1998,10 @@ def apply_learning_srt(video_id: str, srt_text: str, filename: str, segment_coun
         raise ValueError("Video topilmadi.")
     # So'z teglari: xato bo'lsa (LearningSrtError) yuklash rad etiladi - hech narsa o'zgarmaydi.
     blocks = translation.parse_learning_srt(srt_text)
+    import srt_checks
     warnings = translation.learning_srt_warnings(blocks)
+    # Learning bloklari UZBEK_FULL (asosiy tarjima) bilan bir xil tuzilishda bo'lishi kerak.
+    warnings += srt_checks.learning_vs_uzbek_warnings(blocks, json.loads(video["translation_segments"] or "[]"))
     existing = db.fetchone("SELECT * FROM learning_tracks WHERE video_id = ?", (video_id,))
     if existing and existing["tts_job_id"]:
         old_job = db.fetchone("SELECT status FROM tts_jobs WHERE id = ?", (existing["tts_job_id"],))

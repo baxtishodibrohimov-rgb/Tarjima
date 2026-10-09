@@ -692,6 +692,7 @@ async def get_video(video_id: str):
     out["flagged_issues"] = [{k: val for k, val in i.items() if k != "words"}
                              for i in (json.loads(v["flagged_issues"]) if v["flagged_issues"] else [])]
     out["stt_provider"] = v["stt_provider"]
+    out["translation_warnings"] = _json_or_none(v["translation_warnings"]) or []
     out["speaker_names"] = _json_or_none(v["speaker_names"]) or {}
     if v["tts_job_id"]:
         tj = db.fetchone("SELECT status, error, total_segments, completed_segments FROM tts_jobs WHERE id = ?",
@@ -1231,8 +1232,8 @@ async def translate_srt_direct_endpoint(video_id: str, file: UploadFile = File(.
         segments = translation.parse_srt_direct(text)
     except ValueError as e:
         raise HTTPException(400, str(e))
-    worker.apply_direct_srt_translation(video_id, segments)
-    return {"ok": True, "segment_count": len(segments)}
+    warnings = worker.apply_direct_srt_translation(video_id, segments)
+    return {"ok": True, "segment_count": len(segments), "warnings": warnings}
 
 
 @app.post("/api/videos/{video_id}/translate/srt-direct-from-cloud")
@@ -1260,8 +1261,8 @@ async def translate_srt_direct_from_cloud_endpoint(video_id: str, cloud_file_id:
         segments = translation.parse_srt_direct(text)
     except ValueError as e:
         raise HTTPException(400, str(e))
-    worker.apply_direct_srt_translation(video_id, segments)
-    return {"ok": True, "segment_count": len(segments)}
+    warnings = worker.apply_direct_srt_translation(video_id, segments)
+    return {"ok": True, "segment_count": len(segments), "warnings": warnings}
 
 
 def _json_or_empty(raw):

@@ -523,6 +523,8 @@ _VIDEO_NEW_COLUMNS = {
     "transcript_words": "TEXT",
     # Spikerlarga UI uchun berilgan nomlar (JSON: {"1": "Lektor"}), SRT'ga yozilmaydi.
     "speaker_names": "TEXT",
+    # Tarjima SRT'sini yuklashdagi ogohlantirishlar (JSON) - rad etilmaydi, faqat ko'rsatiladi.
+    "translation_warnings": "TEXT",
 }
 _UPLOAD_NEW_COLUMNS = {
     "owner_id": "TEXT",

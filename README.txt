@@ -1,6 +1,63 @@
 DARSLIK STUDIYASI — BULUTLI SERVER (persistent job tizimi)
 =============================================================
 
+YANGILANISH: SINXRONLIK, OVOZ, MATN OLISH, SPIKERLAR
+------------------------------------------------------
+MASTER INSTRUKSIYA v8 / LEARNING INSTRUKSIYA v3 bilan kelishilgan barcha
+raqamlar (tempo oralig'i, sekinlashish chegarasi, blok uzunligi, provayder
+chegaralari) bitta joyda: timing_contract.py.
+
+Asosiy tamoyil: har gapning o'zbekcha ovozi videoda shu gapning original
+boshlanish joyida boshlanadi. Ovoz sig'masa - video moslashadi (sekinlashadi),
+matn hech qachon qisqartirilmaydi.
+
+  - Video "qotib qolish" (freeze) o'rniga SEKINLASHADI: vaqt nuqtalari
+    {"type":"slow","start","end","extra"} (eski {"time","duration"} - freeze
+    sifatida o'qiladi). Sekinlashish 0.75 dan past tushmaydi; faqat undan
+    keyin ham sig'masa - qisqa kutish. Video bitta ffmpeg o'tishida yig'iladi.
+  - Yagona vaqt funksiyasi: transcription.source_time_to_final_time /
+    final_time_to_source_time - render, ovoz joylash, barcha SRT/VTT,
+    Learning va pleyer faqat shundan foydalanadi.
+  - Pleyer: video almashtirilganda ikkala subtitr ham tanlangan videoning vaqt
+    chizig'iga o'tkaziladi (original.vtt / uz.vtt ?timeline=source|final|final:<provider>)
+    va pleyer aynan shu gapga qaytadi.
+  - TTS birligi - GAP (bloklar . ? ! … bilan tugagan joyda yopiladi, spiker
+    almashsa ham). TTS har doim 1.0 tezlikda so'raladi; tezlik (tempo
+    0.90-1.15, qo'shni gaplar orasida <= 0.03 farq) lektorning o'z sur'atiga
+    ergashadi va pitch saqlanadigan usulda (rubberband yoki atempo) qo'llanadi.
+    Gaplar orasidagi bo'sh vaqt ham ishlatiladi. Qo'lda "tezlik" maydoni yo'q.
+  - [speed:fast]/[speed:slow] teglari bekor qilindi (o'qiladi, e'tiborsiz).
+  - "Tahrirlash va audio": bloklar gaplar bo'yicha guruhlangan, blok
+    tahrirlansa shu GAP qayta yaratiladi, qolganlari keshdan.
+  - ESKI loyihalar: oldin blokma-blok yaratilgan audio saqlanadi va qayta
+    ishlatiladi (pul sarflanmaydi). "Eski audioni yangi tartibda qayta
+    joylash" tugmasi eski ovozlarni gaplar bo'yicha qayta joylaydi; tahrirda
+    faqat o'zgargan blok qayta yaratiladi.
+  - Matn olish: ElevenLabs Scribe (standart) yoki OpenAI Whisper.
+    ElevenLabs - butun audio bitta so'rovda (<= 3 GB, <= 10 soat), qayta
+    kodlanmaydi, tibbiy atamalar (keyterms) yuboriladi; kalit Sozlamalar ->
+    API kalitlar -> ElevenLabs. OpenAI - so'z vaqtlari bilan, bo'laklar
+    jimlik joyida kesiladi.
+  - Bloklar so'z vaqtlaridan yasaladi: pauza >= 0.5 s, gap oxiri, spiker
+    almashishi, 7 s / 90 belgi chegarasi. 0 soniyalik bloklar yo'q.
+  - Uydirma matn ("Подпишись на канал", "Спасибо за просмотр" ...) natijadan
+    olib tashlanadi va "O'chirildi: N ta" ro'yxatida "Qaytarish" bilan turadi.
+    Qo'shimcha iboralar: sozlama hallucination_phrases (har qatorda bittadan).
+  - Spikerlar: ElevenLabs diarize yoki OpenAI gpt-4o-transcribe-diarize
+    (4 tagacha spiker). Spikerlar >= 2 bo'lsa SRT vaqt qatoriga [spk:N]
+    yoziladi va o'qiladi. Transkript ekranida rangli belgilar, nom berish
+    (faqat UI) va qo'lda tuzatish. Audio formasida har spikerga alohida ovoz
+    (namuna eshitish bilan), tanlov saqlanadi va qayta ishlatiladi.
+  - Tayyor original SRT video yuklangan zahoti yuklanishi mumkin
+    (bo'laklarga bo'lish shart emas).
+  - Tarjima va Learning SRT yuklanganda ogohlantirishlar paneli: gap tugash
+    belgilari, 60 s dan uzun gap, nutqdan oldin boshlangan gap, [spk]
+    yo'qolgani, gap ichida spiker almashishi, taxminiy kuchli sekinlashish;
+    Learning - UZBEK_FULL bilan bloklar/vaqtlar/belgilar/[spk] mosligi.
+  - Learning audiosi uchun standart provayder - OpenAI; Aisha tanlansa va
+    matnda kirill so'zlar bo'lsa ogohlantiriladi.
+  - Xarajatlarda alohida "ElevenLabs STT" va "OpenAI diarize" ustunlari.
+
 YANGILANISH (ikkinchi bosqich)
 --------------------------------
 Bu versiyaga qo'shildi:
@@ -135,8 +192,9 @@ o'tadi, har biri video kartasi/sahifasida aniq ko'rinadi:
 
   1. Video serverga yuklanadi (resumable/chunked) -> "uploaded".
      Bu bosqichda darhol thumbnail va davomiylik olinadi.
-  2. Foydalanuvchi "Bo'laklarga bo'lish"ni bosadi -> "segmenting" -> "segments_ready".
-     Bu bosqichda hali OpenAI'ga hech narsa yuborilmaydi.
+  2. (Faqat OpenAI Whisper uchun) "Bo'laklarga bo'lish" -> "segmenting" -> "segments_ready".
+     Bu bosqichda hali OpenAI'ga hech narsa yuborilmaydi. ElevenLabs Scribe
+     va tayyor original SRT uchun bu bosqich shart emas.
   3. "Video → Matn" bo'limida videoni tanlab, tilni belgilab
      "Transkripsiyani boshlash"ni bosadi -> "transcribing" -> "transcription_ready".
      Bo'lak-darajasidagi progress, xato/takrorlanishda pauza, API kalit
@@ -150,7 +208,8 @@ o'tadi, har biri video kartasi/sahifasida aniq ko'rinadi:
      "audio_processing" -> "audio_ready".
   7. "Videoga audio qo'shish" bosiladi -> "video_rendering" -> "completed".
      Server original video tasvirini saqlab, audio yo'lini yangi audio bilan
-     almashtiradi (ffmpeg, video qayta kodlanmaydi - tez ishlaydi).
+     almashtiradi. Sekinlashtirish nuqtalari bo'lmasa video qayta
+     kodlanmaydi (tez); bo'lsa - bitta ffmpeg o'tishida qayta kodlanadi.
 
 Har bir bosqichda xato yoki to'xtash sababi (blocked_reason) alohida
 ko'rsatiladi: "paused" (foydalanuvchi to'xtatgan), "api_key" (kalit kerak),

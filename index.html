@@ -3468,6 +3468,16 @@ function renderFoldableTranslationPanel(v, key, title, badge, body, dim) {
   </div>`;
 }
 
+/* Tarjima SRT'sini yuklashdagi ogohlantirishlar (instruksiya bilan moslik) - rad etilmaydi. */
+function translationWarningsHtml(v) {
+  const list = v.translation_warnings || [];
+  if (!list.length) return '';
+  const items = list.map(x => `<li>${x.block ? `${escapeHtml(String(x.block))}-blok${x.time != null ? ' (' + fmtMinSec(x.time) + ')' : ''}: ` : ''}${escapeHtml(x.reason)}</li>`).join('');
+  return `<details class="warn-box" ${list.length <= 5 ? 'open' : ''} style="margin-bottom:10px;">
+    <summary style="cursor:pointer;">⚠️ Tarjima SRT ogohlantirishlari (${list.length})</summary>
+    <ul class="lw-warn">${items}</ul></details>`;
+}
+
 function renderTranslationStage(v) {
   const before = !v.transcript_approved;
   let badge = stageStatusBadge('Yo\'q', '');
@@ -3480,7 +3490,7 @@ function renderTranslationStage(v) {
     body = `<p class="hint">Server avtomatik tarjima qilmoqda...</p>`;
   } else if (['ready', 'uploaded', 'pasted'].includes(v.translation_status)) {
     badge = stageStatusBadge('✅ Tayyor', 'done');
-    body = `<details><summary style="cursor:pointer; font-size:12.5px; color:var(--muted);">Tarjimani ko'rish</summary>
+    body = `${translationWarningsHtml(v)}<details><summary style="cursor:pointer; font-size:12.5px; color:var(--muted);">Tarjimani ko'rish</summary>
       <textarea readonly style="min-height:140px; margin-top:8px;">${escapeHtml(v.translation_text || '')}</textarea></details>
       <div class="row">
         <button class="action" onclick="openBlockEditor('${v.id}')">Tahrirlash va audio</button>
