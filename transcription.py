@@ -911,11 +911,18 @@ def is_key_error(exc: Exception) -> bool:
 #                          SRT / TXT YARATISH
 # ---------------------------------------------------------------------------
 
+def _split_ms(total_sec: float):
+    """Vaqtni soat/daqiqa/soniya/ms ga ajratadi. Avval butun millisekundga
+    yaxlitlanadi - aks holda 1.9996 s "00:00:01,1000" bo'lib qolardi."""
+    ms_total = int(round(max(total_sec or 0.0, 0.0) * 1000))
+    h, rem = divmod(ms_total, 3_600_000)
+    m, rem = divmod(rem, 60_000)
+    s, ms = divmod(rem, 1000)
+    return h, m, s, ms
+
+
 def fmt_srt_time(total_sec: float) -> str:
-    h = int(total_sec // 3600)
-    m = int((total_sec % 3600) // 60)
-    s = int(total_sec % 60)
-    ms = int(round((total_sec - int(total_sec)) * 1000))
+    h, m, s, ms = _split_ms(total_sec)
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
@@ -948,10 +955,7 @@ def build_txt(segments) -> str:
 
 
 def fmt_vtt_time(total_sec: float) -> str:
-    h = int(total_sec // 3600)
-    m = int((total_sec % 3600) // 60)
-    s = int(total_sec % 60)
-    ms = int(round((total_sec - int(total_sec)) * 1000))
+    h, m, s, ms = _split_ms(total_sec)
     return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
 
 
