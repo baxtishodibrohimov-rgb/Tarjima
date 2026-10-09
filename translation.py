@@ -252,6 +252,13 @@ def parse_manual_translation(content: str, expected_segments: list) -> list:
 
 
 SPEED_TAG_RE = re.compile(r"\[speed:(fast|slow)\]", re.IGNORECASE)
+# Spiker tegi (vaqt qatorida): [spk:N], N >= 1.
+SPK_TAG_RE = re.compile(r"\[spk:(\d+)\]", re.IGNORECASE)
+
+
+def speaker_from_time_line(time_line: str):
+    m = SPK_TAG_RE.search(time_line or "")
+    return int(m.group(1)) if m and int(m.group(1)) >= 1 else None
 
 
 def parse_srt_direct(content: str) -> list:
@@ -283,9 +290,13 @@ def parse_srt_direct(content: str) -> list:
         text = " ".join(lines[idx + 1:]).strip()
         if text:
             seg = {"start": start, "end": end, "text": text}
+            # [speed:*] - eski format: o'qiladi, lekin endi e'tiborsiz (tezlik avtomatik).
             tag_m = SPEED_TAG_RE.search(lines[idx])
             if tag_m:
                 seg["speed_tag"] = tag_m.group(1).lower()
+            speaker = speaker_from_time_line(lines[idx])
+            if speaker is not None:
+                seg["speaker"] = speaker
             segments.append(seg)
     if not segments:
         raise ValueError("SRT faylida to'g'ri formatdagi bloklar topilmadi.")
@@ -365,7 +376,11 @@ def parse_learning_srt(content: str) -> list:
             if not lemma or not meaning:
                 raise LearningSrtError(f"{number}-blok: tegda so'z yoki ma'no bo'sh: {m.group(0)}.")
             words.append({"kind": m.group(1), "lemma": lemma, "meaning": meaning})
-        blocks.append({"index": number, "start": start, "end": end, "text": text, "words": words})
+        block = {"index": number, "start": start, "end": end, "text": text, "words": words}
+        speaker = speaker_from_time_line(time_line)
+        if speaker is not None:
+            block["speaker"] = speaker
+        blocks.append(block)
     if not blocks:
         raise LearningSrtError("SRT faylida to'g'ri formatdagi bloklar topilmadi.")
     return blocks

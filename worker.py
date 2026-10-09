@@ -28,6 +28,7 @@ import httpx
 
 import database as db
 import keys_manager
+import stt_words
 import transcription
 import translation
 from storage import (CHUNKS_DIR, RESULTS_DIR, MAX_WHISPER_CONCURRENCY,
@@ -370,11 +371,16 @@ async def segment_consumer():
 #                          TRANSKRIPSIYA
 # ---------------------------------------------------------------------------
 
-def start_transcription(video_id: str, language: str, instruction: str, topic_group: str = None):
+def start_transcription(video_id: str, language: str, instruction: str, topic_group: str = None,
+                        stt_provider: str = "openai", diarize: bool = False, num_speakers: int = None,
+                        stt_options: dict = None):
     _update_video(video_id, status="transcribing", blocked_reason=None,
                   language=language or "", instruction=instruction or "", topic_group=topic_group or None,
                   progress=0, message="Navbatda...", error=None,
-                  repetition_chunk_index=None, repetition_info=None)
+                  repetition_chunk_index=None, repetition_info=None,
+                  stt_provider=stt_provider or "openai", diarize=1 if diarize else 0,
+                  num_speakers=num_speakers or None,
+                  stt_options=json.dumps(stt_options or {}, ensure_ascii=False))
     PAUSE_FLAGS.pop(video_id, None)
     CANCEL_FLAGS.pop(video_id, None)
     log(video_id, "Transkripsiya navbatga qo'yildi.")
@@ -618,11 +624,15 @@ async def _process_one_chunk(client, video, chunk, lock, ctx):
     ]
     detected_lang = data.get("language", "") or ""
     issues = transcription.assess_segment_issues(data.get("segments", []), offset, expected_language=effective_language or "")
+    # So'z vaqtlari (bo'lsa) - yakunlashda bloklar shulardan yasaladi; ishonchsiz
+    # (nutq yo'q joydagi) segmentlar so'zlari chiqarib tashlanadi.
+    words, removed = stt_words.whisper_chunk_words(data, offset)
 
     async with lock:
         db.execute(
             "UPDATE chunks SET status = 'completed', transcript = ?, error = NULL, updated_at = ? WHERE id = ?",
-            (json.dumps({"lang": detected_lang, "segments": segs, "issues": issues}, ensure_ascii=False),
+            (json.dumps({"lang": detected_lang, "segments": segs, "issues": issues, "words": words,
+                         "removed": removed}, ensure_ascii=False),
              db.now(), chunk["id"]),
         )
         total = db.fetchone("SELECT COUNT(*) c FROM chunks WHERE video_id = ?", (video["id"],))["c"]
@@ -642,6 +652,9 @@ async def run_transcription_job(video_id: str):
     if not video or video["status"] == "cancelled":
         return
     _update_video(video_id, blocked_reason=None)
+    if (video["stt_provider"] or "openai") == "elevenlabs":
+        await run_elevenlabs_transcription(video_id)
+        return
     pending_chunks = db.fetchall(
         "SELECT * FROM chunks WHERE video_id = ? AND status = 'pending' ORDER BY chunk_index ASC", (video_id,))
 
@@ -703,6 +716,8 @@ async def finalize_results(video_id: str):
 
     all_segments = []
     lang_votes = {}
+    chunk_words = []
+    removed = []
     for c in chunks:
         if not c["transcript"]:
             continue
@@ -710,8 +725,19 @@ async def finalize_results(video_id: str):
         lang = payload.get("lang") or ""
         if lang:
             lang_votes[lang] = lang_votes.get(lang, 0) + 1
-        all_segments.extend(payload.get("segments", []))
+        if payload.get("words"):
+            # So'z vaqtlari bor - bloklar keyin so'zlardan yasaladi (aniq chegaralar).
+            chunk_words.append(payload["words"])
+            removed.extend({**r, "chunk_index": c["chunk_index"]} for r in payload.get("removed") or [])
+        else:
+            all_segments.extend(payload.get("segments", []))
+    words = stt_words.dedupe_overlap(chunk_words)
+    if words:
+        all_segments.extend(stt_words.build_segments_from_words(words))
     all_segments.sort(key=lambda s: s["start"])
+    all_segments, words, removed_blocks = stt_words.remove_hallucinations(
+        all_segments, words, _hallucination_phrases(video["owner_id"]), transcription.detect_repetition)
+    removed.extend(removed_blocks)
 
     detected_lang = video["language"] or (max(lang_votes, key=lang_votes.get) if lang_votes else "")
     variants = transcription.variants_for_language(detected_lang)
@@ -729,6 +755,7 @@ async def finalize_results(video_id: str):
         payload = json.loads(c["transcript"])
         for issue in payload.get("issues", []):
             flagged_issues.append({**issue, "chunk_index": c["chunk_index"]})
+    flagged_issues.extend(removed)
     flagged_issues.sort(key=lambda i: i["start"])
 
     # Agar bu bo'lak QAYTA ishlangandan keyingi jamlash bo'lsa (video allaqachon
@@ -756,6 +783,7 @@ async def finalize_results(video_id: str):
                   detected_language=detected_lang, error=None,
                   transcript_text=txt_text,
                   transcript_segments=json.dumps(final_segments, ensure_ascii=False),
+                  transcript_words=json.dumps(words, ensure_ascii=False) if words else None,
                   flagged_issues=json.dumps(flagged_issues, ensure_ascii=False),
                   **extra_fields)
     write_transcript_results(video_id)
@@ -766,8 +794,146 @@ async def finalize_results(video_id: str):
     elif had_translation:
         log(video_id, "Diqqat: bo'lak qayta ishlandi, video allaqachon tarjima qilingan edi - "
                        "o'zgargan qismning tarjimasini \"Tahrirlash va audio\" bo'limidan tekshirib chiqing.")
-    issue_note = f" {len(flagged_issues)} ta shubhali joy topildi." if flagged_issues else ""
-    log(video_id, f"Yakunlandi. Jami {len(final_segments)} ta segment.{issue_note} Natijalar saqlandi.")
+    issue_note = f" {len(flagged_issues) - len(removed)} ta shubhali joy topildi." if len(flagged_issues) > len(removed) else ""
+    removed_note = f" Uydirma deb {len(removed)} ta bo'lak olib tashlandi (qaytarish mumkin)." if removed else ""
+    words_note = " Bloklar so'z vaqtlaridan yasaldi." if words else ""
+    log(video_id, f"Yakunlandi. Jami {len(final_segments)} ta segment.{words_note}{issue_note}{removed_note} "
+                  f"Natijalar saqlandi.")
+
+
+def _hallucination_phrases(owner_id: str) -> list:
+    """Sozlamalardagi qo'shimcha uydirma iboralar (har qatorda bittadan)."""
+    raw = db.get_user_setting(owner_id, "hallucination_phrases") if owner_id else None
+    return [line.strip() for line in (raw or "").splitlines() if line.strip()]
+
+
+def save_transcript_from_words(video_id: str, words: list, detected_lang: str, extra_issues: list = None,
+                               cost_note: str = ""):
+    """So'zlardan bloklar -> uydirma filtri -> lug'at tuzatishi -> transcript_* maydonlari.
+    ElevenLabs (va tashqi so'z manbalari) uchun umumiy yakunlash."""
+    video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    blocks = stt_words.build_segments_from_words(words)
+    blocks, words, removed = stt_words.remove_hallucinations(
+        blocks, words, _hallucination_phrases(video["owner_id"]), transcription.detect_repetition)
+    variants = transcription.variants_for_language(video["language"] or detected_lang)
+    final_segments = transcription.correct_segments_with_glossary(blocks, variants)
+    flagged = sorted((extra_issues or []) + removed, key=lambda i: i["start"])
+    speakers = transcription.speaker_count(final_segments)
+    _update_video(video_id, status="transcription_ready", blocked_reason=None, progress=100,
+                  message="Transkripsiya tayyor. Tekshirib tasdiqlang.",
+                  detected_language=video["language"] or detected_lang, error=None,
+                  transcript_text=transcription.build_txt(final_segments),
+                  transcript_segments=json.dumps(final_segments, ensure_ascii=False),
+                  transcript_words=json.dumps(words, ensure_ascii=False),
+                  flagged_issues=json.dumps(flagged, ensure_ascii=False),
+                  transcript_approved=0, translation_status="none", translation_text="",
+                  translation_segments="[]")
+    write_transcript_results(video_id)
+    long_blocks = sum(1 for b in final_segments if b["end"] - b["start"] > 7.0)
+    notes = []
+    if speakers >= 2:
+        notes.append(f"{speakers} ta spiker")
+    if removed:
+        notes.append(f"uydirma deb {len(removed)} ta bo'lak olib tashlandi (qaytarish mumkin)")
+    if long_blocks:
+        notes.append(f"{long_blocks} ta blok 7 s dan uzun (uzluksiz nutq)")
+    log(video_id, f"Yakunlandi{cost_note}: {len(final_segments)} ta blok, {len(words)} ta so'z"
+                  f"{'; ' + '; '.join(notes) if notes else ''}.")
+
+
+async def run_elevenlabs_transcription(video_id: str):
+    """ElevenLabs Scribe: fayl <= 3 GB va <= 10 soat bo'lsa - bitta so'rov
+    (bo'laklarga bo'linmaydi). Server qayta ishga tushsa, ish boshidan qayta yuboriladi."""
+    import stt_elevenlabs
+    video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    kid, api_key = keys_manager.get_next_active_key(provider="elevenlabs", owner_id=video["owner_id"])
+    if not api_key:
+        _update_video(video_id, blocked_reason="api_key",
+                      message="ElevenLabs API kalit topilmadi. Sozlamalar -> API kalitlar bo'limida qo'shing.")
+        log(video_id, "TO'XTATILDI: ElevenLabs kaliti yo'q.")
+        return
+    try:
+        options = json.loads(video["stt_options"] or "{}")
+    except (TypeError, ValueError):
+        options = {}
+    work_dir = CHUNKS_DIR / video_id / "elevenlabs"
+    loop = asyncio.get_event_loop()
+    try:
+        _update_video(video_id, progress=5, message="Audio ajratilmoqda (qayta kodlanmaydi)...")
+        source = Path(video["path"])
+        if options.get("send_video") and source.stat().st_size <= stt_elevenlabs.ELEVENLABS_MAX_BYTES:
+            audio_path = source
+        else:
+            audio_path = await loop.run_in_executor(None, stt_elevenlabs.extract_audio, source, work_dir)
+        duration = float(video["duration"] or 0) or transcription.get_duration_seconds(source)
+        if not video["duration"]:
+            _update_video(video_id, duration=duration)
+        size = audio_path.stat().st_size
+        parts = stt_elevenlabs.plan_parts(duration, size, [])
+        if len(parts) > 1:
+            silences = await loop.run_in_executor(None, transcription.find_silences, audio_path)
+            parts = stt_elevenlabs.plan_parts(duration, size, silences)
+        keyterms = (stt_elevenlabs.keyterms_for(video["language"] or "ru", video["topic_group"] or None)
+                    if options.get("keyterms", True) else [])
+        form = stt_elevenlabs.build_form(video["language"] or "", bool(video["diarize"]), video["num_speakers"],
+                                         keyterms)
+        words, speaker_ids, detected = [], {}, ""
+        for i, (start, end) in enumerate(parts):
+            part_path = audio_path
+            if len(parts) > 1:
+                part_path = await loop.run_in_executor(
+                    None, stt_elevenlabs.cut_part, audio_path, start, end, work_dir / f"part_{i:02d}{audio_path.suffix}")
+            _update_video(video_id, progress=10 + 80 * i // len(parts),
+                          message=f"ElevenLabs'ga yuborildi{f' ({i + 1}/{len(parts)}-qism)' if len(parts) > 1 else ''}"
+                                  f" - uzun videoda bir necha daqiqa kutiladi...")
+            log(video_id, f"ElevenLabs Scribe: {part_path.name} ({part_path.stat().st_size / 1e6:.1f} MB) "
+                          f"yuborilmoqda{', ' + str(len(keyterms)) + ' ta atama' if keyterms else ''}.")
+            data = await stt_elevenlabs.transcribe(part_path, api_key, form)
+            detected = detected or (data.get("language_code") or "")
+            part_words = stt_elevenlabs.response_words(data, start, speaker_ids)
+            words = stt_words.dedupe_overlap([words, part_words]) if words else part_words
+        keys_manager.mark_result(kid, True)
+        cost = stt_elevenlabs.estimate_cost(duration, bool(keyterms))
+        db.add_cost(video_id, "stt_elevenlabs", cost,
+                    detail=f"ElevenLabs STT, {duration / 3600:.2f} soat{' + atamalar' if keyterms else ''}",
+                    owner_id=video["owner_id"])
+        if not words:
+            raise RuntimeError("ElevenLabs javobida so'zlar yo'q (audio bo'sh yoki til noto'g'ri tanlangan).")
+        await loop.run_in_executor(None, save_transcript_from_words, video_id, words, detected[:2],
+                                   None, f" (ElevenLabs, ${cost:.2f})")
+    except PermissionError as e:
+        keys_manager.mark_result(kid, False, str(e))
+        _update_video(video_id, blocked_reason="api_key", message="ElevenLabs kaliti ishlamadi. Kalitni tekshiring.",
+                      error=str(e))
+        log(video_id, f"XATO (ElevenLabs kalit): {e}")
+    except Exception as e:
+        _update_video(video_id, blocked_reason="error", message="ElevenLabs matn olishda xato.", error=str(e))
+        log(video_id, f"XATO (ElevenLabs): {e}\n{traceback.format_exc()[-400:]}")
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def restore_removed_segment(video_id: str, issue_index: int) -> dict:
+    """Uydirma deb olib tashlangan bo'lakni original matnga qaytaradi."""
+    video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    issues = json.loads(video["flagged_issues"] or "[]")
+    if not (0 <= issue_index < len(issues)) or issues[issue_index].get("status") != "removed":
+        raise ValueError("Olib tashlangan bo'lak topilmadi.")
+    issue = issues[issue_index]
+    segments = json.loads(video["transcript_segments"] or "[]")
+    segments.append(issue["segment"])
+    segments.sort(key=lambda x: x["start"])
+    words = json.loads(video["transcript_words"] or "[]")
+    if issue.get("words"):
+        words = sorted(words + issue["words"], key=lambda w: w["s"])
+    issue["status"] = "restored"
+    _update_video(video_id, transcript_segments=json.dumps(segments, ensure_ascii=False),
+                  transcript_text=transcription.build_txt(segments),
+                  transcript_words=json.dumps(words, ensure_ascii=False) if words else video["transcript_words"],
+                  flagged_issues=json.dumps(issues, ensure_ascii=False))
+    write_transcript_results(video_id)
+    log(video_id, f"Olib tashlangan bo'lak qaytarildi: \u201c{issue['segment']['text'][:60]}\u201d.")
+    return {"ok": True, "segment_count": len(segments)}
 
 
 def write_transcript_results(video_id: str):
@@ -817,7 +983,7 @@ def apply_transcript_edits(video_id: str, new_texts: list) -> dict:
         new_text = (new_texts[i] or "").strip()
         if new_text != s["text"]:
             changed_count += 1
-        new_segments.append({"start": s["start"], "end": s["end"], "text": new_text})
+        new_segments.append({**s, "text": new_text})
 
     txt_text = transcription.build_txt(new_segments)
     _update_video(video_id, transcript_text=txt_text,
@@ -2163,7 +2329,7 @@ def _learning_burn_inputs(video_id: str, track: dict, video: dict):
     out_dir.mkdir(parents=True, exist_ok=True)
     base = safe_name(Path(video["original_name"]).stem) or "video"
     srt_path = out_dir / f"{base}.ru-learning.burn.srt"
-    srt_path.write_text(transcription.build_srt(adjusted), encoding="utf-8")
+    srt_path.write_text(transcription.build_srt(adjusted, speaker_tags=False), encoding="utf-8")
     return source_path, srt_path
 
 

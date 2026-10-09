@@ -720,35 +720,77 @@ def split_audio_into_pieces(input_path: Path, out_dir: Path, piece_seconds: int 
     return [(p, get_duration_seconds(p)) for p in piece_files]
 
 
+_SILENCE_RE = re.compile(r"silence_(start|end): (-?\d+(?:\.\d+)?)")
+
+
+def find_silences(audio_path: Path, noise_db: int = -35, min_sec: float = 0.3) -> list:
+    """ffmpeg silencedetect: [(boshi, oxiri), ...] - jimlik oraliqlari."""
+    proc = subprocess.run([ffmpeg_exe(), "-hide_banner", "-i", str(audio_path), "-af",
+                           f"silencedetect=n={noise_db}dB:d={min_sec}", "-f", "null", "-"],
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="ignore",
+                          timeout=FFMPEG_TIMEOUT)
+    silences, start = [], None
+    for kind, value in _SILENCE_RE.findall(proc.stdout or ""):
+        if kind == "start":
+            start = max(float(value), 0.0)
+        elif start is not None:
+            silences.append((start, float(value)))
+            start = None
+    return silences
+
+
+def plan_chunk_ranges(duration: float, silences: list, target: float, window: float = 20.0,
+                      overlap: float = 2.0) -> list:
+    """Bo'lak chegaralari: har ~target soniyada, +-window ichidagi ENG UZUN jimlik
+    o'rtasida kesiladi. Jimlik topilmasa - target da kesiladi va keyingi bo'lak
+    overlap soniya oldinroq boshlanadi (takroriy so'zlar keyin vaqt bo'yicha olinadi).
+    Qaytaradi: [(boshi, oxiri), ...]."""
+    ranges, start = [], 0.0
+    while duration - start > target + window:
+        ideal = start + target
+        candidates = [(e - s, (s + e) / 2) for s, e in silences
+                      if ideal - window <= (s + e) / 2 <= ideal + window and e > s]
+        if candidates:
+            cut = max(candidates)[1]
+            ranges.append((start, cut))
+            start = cut
+        else:
+            ranges.append((start, ideal))
+            start = ideal - overlap
+    ranges.append((start, duration))
+    return [(round(a, 3), round(b, 3)) for a, b in ranges]
+
+
 def extract_and_chunk(input_path: Path, work_dir: Path, chunk_seconds: int):
-    """Videoni audioga aylantiradi va belgilangan uzunlikdagi bo'laklarga bo'ladi.
-    Faqat preprocessing bosqichida chaqiriladi, OpenAI'ga hech narsa yubormaydi."""
+    """Videoni audioga aylantiradi va ~chunk_seconds uzunlikdagi bo'laklarga bo'ladi
+    (OpenAI 25 MB chegarasi sababli). Kesish joyi - so'z o'rtasi emas, eng yaqin
+    jimlik. Faqat preprocessing, OpenAI'ga hech narsa yubormaydi."""
     work_dir.mkdir(parents=True, exist_ok=True)
-    pattern = str(work_dir / "chunk_%05d.mp3")
-    cmd = [
-        ffmpeg_exe(), "-y", "-i", str(input_path),
-        "-vn", "-ac", "1", "-ar", "16000", "-b:a", "64k",
-        "-f", "segment", "-segment_time", str(chunk_seconds), "-reset_timestamps", "1",
-        pattern,
-    ]
+    full_audio = work_dir / "full_audio.mp3"
+    cmd = [ffmpeg_exe(), "-y", "-i", str(input_path), "-vn", "-ac", "1", "-ar", "16000", "-b:a", "64k",
+           str(full_audio)]
     try:
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="ignore",
                                timeout=FFMPEG_TIMEOUT)
     except subprocess.TimeoutExpired:
         raise RuntimeError("ffmpeg audio ajratib bo'laklashda juda uzoq davom etdi va to'xtatildi. Qayta urinib ko'ring.")
-    if proc.returncode != 0:
-        raise RuntimeError(f"ffmpeg xatosi: {(proc.stdout or '')[-2000:]}")
+    if proc.returncode != 0 or not full_audio.exists() or full_audio.stat().st_size < 100:
+        raise RuntimeError(f"Ovoz ajratilmadi (video ichida audio topilmadimi?): {(proc.stdout or '')[-1500:]}")
 
-    chunk_files = sorted(work_dir.glob("chunk_*.mp3"))
-    if not chunk_files:
-        raise RuntimeError("Ovoz bo'laklarga bo'linmadi (video ichida audio topilmadimi?).")
-
+    duration = get_duration_seconds(full_audio)
+    try:
+        silences = find_silences(full_audio)
+    except Exception:
+        silences = []
     chunks = []
-    cumulative = 0.0
-    for cf in chunk_files:
-        dur = get_duration_seconds(cf)
-        chunks.append({"path": cf, "start": cumulative, "end": cumulative + dur})
-        cumulative += dur
+    for i, (start, end) in enumerate(plan_chunk_ranges(duration, silences, chunk_seconds)):
+        path = work_dir / f"chunk_{i:05d}.mp3"
+        _run_ffmpeg([ffmpeg_exe(), "-y", "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", str(full_audio),
+                     "-ac", "1", "-ar", "16000", "-b:a", "64k", str(path)], f"{i + 1}-bo'lak")
+        chunks.append({"path": path, "start": start, "end": end})
+    full_audio.unlink(missing_ok=True)
+    if not chunks:
+        raise RuntimeError("Ovoz bo'laklarga bo'linmadi (video ichida audio topilmadimi?).")
     return chunks
 
 
@@ -849,7 +891,8 @@ def correct_segments_with_glossary(segments: list, variants) -> list:
         text = correct_segment_with_glossary(s["text"], variants) if variants else s["text"]
         text = " ".join(text.split())
         if text:
-            final_segments.append({"start": s["start"], "end": s["end"], "text": text})
+            # Qo'shimcha maydonlar (masalan spiker) saqlanadi.
+            final_segments.append({**s, "start": s["start"], "end": s["end"], "text": text})
     return final_segments
 
 
@@ -1008,7 +1051,10 @@ async def transcribe_chunk_via_api(client: httpx.AsyncClient, chunk_path: Path, 
                                     language: str, prompt: str) -> dict:
     with chunk_path.open("rb") as f:
         files = {"file": ("chunk.mp3", f, "audio/mpeg")}
-        data = {"model": "whisper-1", "response_format": "verbose_json"}
+        # So'z vaqtlari (bloklarni aniq yasash va lektor sur'ati uchun) + segmentlar
+        # (no_speech_prob/avg_logprob - uydirma matn filtri uchun).
+        data = {"model": "whisper-1", "response_format": "verbose_json",
+                "timestamp_granularities[]": ["word", "segment"]}
         if language:
             data["language"] = language
         if prompt:
@@ -1062,10 +1108,18 @@ def fmt_minsec(total_sec: float) -> str:
     return f"{m}:{s:02d}"
 
 
-def build_srt(segments) -> str:
+def speaker_count(segments) -> int:
+    return len({s.get("speaker") for s in segments or [] if s.get("speaker") is not None})
+
+
+def build_srt(segments, speaker_tags: bool = True) -> str:
+    """SRT matni. Spikerlar >= 2 bo'lsa vaqt qatoriga [spk:N] tegi yoziladi
+    (MASTER INSTRUKSIYA); bitta spiker bo'lsa teg yozilmaydi."""
+    tag = speaker_tags and speaker_count(segments) >= 2
     lines = []
     for i, s in enumerate(segments, start=1):
-        lines.append(f"{i}\n{fmt_srt_time(s['start'])} --> {fmt_srt_time(s['end'])}\n{s['text']}\n")
+        spk = f" [spk:{s['speaker']}]" if tag and s.get("speaker") is not None else ""
+        lines.append(f"{i}\n{fmt_srt_time(s['start'])} --> {fmt_srt_time(s['end'])}{spk}\n{s['text']}\n")
     return "\n".join(lines)
 
 

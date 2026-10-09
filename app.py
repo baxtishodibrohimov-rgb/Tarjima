@@ -24,6 +24,7 @@ from fastapi.staticfiles import StaticFiles
 import database as db
 import auth
 import keys_manager
+import stt_words
 import transcription
 import translation
 import glossary_data
@@ -687,7 +688,11 @@ async def get_video(video_id: str):
             pass
     out["learning_words"] = _learning_words_payload(video_id)
     out["expected_segment_count"] = len(chunks) if v["transcript_segments"] else None
-    out["flagged_issues"] = json.loads(v["flagged_issues"]) if v["flagged_issues"] else []
+    # "words" (olib tashlangan bo'lak so'zlari) faqat qaytarish uchun serverda kerak.
+    out["flagged_issues"] = [{k: val for k, val in i.items() if k != "words"}
+                             for i in (json.loads(v["flagged_issues"]) if v["flagged_issues"] else [])]
+    out["stt_provider"] = v["stt_provider"]
+    out["speaker_names"] = _json_or_none(v["speaker_names"]) or {}
     if v["tts_job_id"]:
         tj = db.fetchone("SELECT status, error, total_segments, completed_segments FROM tts_jobs WHERE id = ?",
                           (v["tts_job_id"],))
@@ -828,20 +833,47 @@ async def segment_video_endpoint(video_id: str):
 
 @app.post("/api/videos/{video_id}/transcribe")
 async def transcribe_endpoint(video_id: str, language: str = Form(""), instruction: str = Form(""),
-                                topic_group: str = Form("")):
+                                topic_group: str = Form(""), stt_provider: str = Form("openai"),
+                                diarize: bool = Form(False), num_speakers: int = Form(0),
+                                send_keyterms: bool = Form(True), send_video: bool = Form(False)):
+    """Matn olish: stt_provider = "elevenlabs" (Scribe, bitta so'rov, bo'laklarga
+    bo'lish shart emas) yoki "openai" (Whisper, 5 daqiqalik bo'laklar)."""
     v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
     if not v:
         raise HTTPException(404, "Video topilmadi.")
     _validate_transcribe_language(language)
-    if v["status"] not in ("segments_ready", "transcription_ready"):
-        raise HTTPException(400, f"Video holati '{v['status']}' - transkripsiyani boshlab bo'lmaydi. "
-                                  f"Avval videoni bo'laklarga bo'ling.")
-    if not keys_manager.has_any_active_key():
-        raise HTTPException(400, "Ishlaydigan OpenAI API kalit topilmadi. Avval API kalit qo'shing.")
-    db.execute("UPDATE chunks SET status = 'pending', transcript = NULL, language = NULL, force_split = 0 "
-               "WHERE video_id = ?", (video_id,))
-    worker.start_transcription(video_id, language, instruction, topic_group)
+    if stt_provider not in ("openai", "elevenlabs"):
+        raise HTTPException(400, "Noma'lum matn olish provayderi.")
+    if num_speakers and not (1 <= num_speakers <= 32):
+        raise HTTPException(400, "Spikerlar soni 1 dan 32 gacha bo'lishi kerak.")
+    if stt_provider == "elevenlabs":
+        if v["status"] not in ("uploaded", "segments_ready", "transcription_ready", "cancelled"):
+            raise HTTPException(400, f"Video holati '{v['status']}' - matn olishni boshlab bo'lmaydi.")
+        if not keys_manager.has_any_active_key(provider="elevenlabs"):
+            raise HTTPException(400, "ElevenLabs API kalit topilmadi. Sozlamalar -> API kalitlar bo'limida qo'shing.")
+    else:
+        if v["status"] not in ("segments_ready", "transcription_ready"):
+            raise HTTPException(400, f"Video holati '{v['status']}' - transkripsiyani boshlab bo'lmaydi. "
+                                      f"Avval videoni bo'laklarga bo'ling.")
+        if not keys_manager.has_any_active_key():
+            raise HTTPException(400, "Ishlaydigan OpenAI API kalit topilmadi. Avval API kalit qo'shing.")
+        if not db.fetchone("SELECT 1 FROM chunks WHERE video_id = ? LIMIT 1", (video_id,)):
+            raise HTTPException(400, "OpenAI Whisper uchun avval videoni bo'laklarga bo'ling.")
+        db.execute("UPDATE chunks SET status = 'pending', transcript = NULL, language = NULL, force_split = 0 "
+                   "WHERE video_id = ?", (video_id,))
+    worker.start_transcription(video_id, language, instruction, topic_group, stt_provider=stt_provider,
+                               diarize=diarize, num_speakers=num_speakers or None,
+                               stt_options={"keyterms": send_keyterms, "send_video": send_video})
     return {"ok": True}
+
+
+@app.post("/api/videos/{video_id}/transcript/restore-removed")
+async def restore_removed_endpoint(video_id: str, issue_index: int = Form(...)):
+    _ensure_video(video_id)
+    try:
+        return worker.restore_removed_segment(video_id, issue_index)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.post("/api/videos/{video_id}/transcript/srt-upload")
@@ -855,7 +887,7 @@ async def upload_original_transcript_srt_endpoint(video_id: str, file: UploadFil
     v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
     if not v:
         raise HTTPException(404, "Video topilmadi.")
-    if v["status"] not in ("segments_ready", "transcription_ready", "cancelled"):
+    if v["status"] not in ("uploaded", "segments_ready", "transcription_ready", "cancelled"):
         raise HTTPException(400, "Original SRT faqat matn olish bosqichida yuklanadi.")
     _validate_transcribe_language(language)
     name = file.filename or ""
@@ -873,13 +905,27 @@ async def upload_original_transcript_srt_endpoint(video_id: str, file: UploadFil
     except ValueError as e:
         raise HTTPException(400, str(e))
 
+    ordered = sorted(parsed, key=lambda s: (s["start"], s["end"]))
     segments = []
-    for i, item in enumerate(sorted(parsed, key=lambda s: (s["start"], s["end"]))):
+    fixed_zero = 0
+    for i, item in enumerate(ordered):
         start = float(item["start"])
         end = float(item["end"])
-        if start < 0 or end <= start:
-            raise HTTPException(400, f"SRT'dagi {i + 1}-bo'lak vaqt belgisi noto'g'ri.")
-        segments.append({"start": start, "end": end, "text": (item.get("text") or "").strip()})
+        if start < 0 or end < start:
+            raise HTTPException(400, f"SRT'dagi {i + 1}-bo'lak vaqt belgisi noto'g'ri (manfiy davomiylik).")
+        if end - start < stt_words.MIN_BLOCK_SEC:
+            # 0 soniyalik blok (masalan 1:41:29 --> 1:41:29) - keyingi blokka tegmasdan cho'ziladi.
+            limit = float(ordered[i + 1]["start"]) if i + 1 < len(ordered) else start + stt_words.MIN_BLOCK_SEC
+            end = max(end, min(start + stt_words.MIN_BLOCK_SEC, limit))
+            fixed_zero += 1
+        seg = {"start": start, "end": end, "text": (item.get("text") or "").strip()}
+        if item.get("speaker") is not None:
+            seg["speaker"] = item["speaker"]
+        segments.append(seg)
+    segments, _, removed = stt_words.remove_hallucinations(
+        segments, [], worker._hallucination_phrases(v["owner_id"]), transcription.detect_repetition)
+    if not segments:
+        raise HTTPException(400, "SRT'da matnli blok qolmadi.")
 
     duration = float(v["duration"] or 0)
     if duration and segments[-1]["end"] > duration + 5:
@@ -903,14 +949,26 @@ async def upload_original_transcript_srt_endpoint(video_id: str, file: UploadFil
         transcript_text=txt_text,
         transcript_segments=json.dumps(segments, ensure_ascii=False),
         transcript_approved=0,
-        flagged_issues="[]",
+        transcript_words=None,
+        stt_provider="srt",
+        flagged_issues=json.dumps(removed, ensure_ascii=False),
         translation_status="none",
         translation_text="",
         translation_segments="[]",
     )
     worker.write_transcript_results(video_id)
-    db.log_line(video_id, f"Original SRT qurilmadan yuklandi: {name} ({len(segments)} ta segment).")
-    return {"ok": True, "segment_count": len(segments)}
+    notes = []
+    if fixed_zero:
+        notes.append(f"{fixed_zero} ta 0 soniyalik blok tuzatildi")
+    if removed:
+        notes.append(f"uydirma deb {len(removed)} ta blok olib tashlandi (qaytarish mumkin)")
+    speakers = transcription.speaker_count(segments)
+    if speakers >= 2:
+        notes.append(f"{speakers} ta spiker")
+    db.log_line(video_id, f"Original SRT qurilmadan yuklandi: {name} ({len(segments)} ta segment"
+                          f"{'; ' + '; '.join(notes) if notes else ''}).")
+    return {"ok": True, "segment_count": len(segments), "removed_count": len(removed), "fixed_zero": fixed_zero,
+            "speaker_count": speakers}
 
 
 @app.get("/api/glossary/groups")
@@ -3140,7 +3198,9 @@ async def get_costs():
            SUM(CASE WHEN c.kind='transcription' THEN c.amount_usd ELSE 0 END) as transcription,
            SUM(CASE WHEN c.kind='translation' THEN c.amount_usd ELSE 0 END) as translation,
            SUM(CASE WHEN c.kind IN ('tts_openai','tts') THEN c.amount_usd ELSE 0 END) as tts_openai,
-           SUM(CASE WHEN c.kind='tts_aisha' THEN c.amount_som ELSE 0 END) as tts_aisha_som
+           SUM(CASE WHEN c.kind='tts_aisha' THEN c.amount_som ELSE 0 END) as tts_aisha_som,
+           SUM(CASE WHEN c.kind='stt_elevenlabs' THEN c.amount_usd ELSE 0 END) as stt_elevenlabs,
+           SUM(CASE WHEN c.kind='stt_diarize' THEN c.amount_usd ELSE 0 END) as stt_diarize
            FROM videos v LEFT JOIN costs c ON c.video_id = v.id
            WHERE v.owner_id = ? GROUP BY v.id ORDER BY v.created_at DESC""", (owner_id,))
     # O'chirilgan videolarning xarajatlari ham hisobotda qoladi.
@@ -3150,7 +3210,9 @@ async def get_costs():
            SUM(CASE WHEN c.kind='transcription' THEN c.amount_usd ELSE 0 END) as transcription,
            SUM(CASE WHEN c.kind='translation' THEN c.amount_usd ELSE 0 END) as translation,
            SUM(CASE WHEN c.kind IN ('tts_openai','tts') THEN c.amount_usd ELSE 0 END) as tts_openai,
-           SUM(CASE WHEN c.kind='tts_aisha' THEN c.amount_som ELSE 0 END) as tts_aisha_som
+           SUM(CASE WHEN c.kind='tts_aisha' THEN c.amount_som ELSE 0 END) as tts_aisha_som,
+           SUM(CASE WHEN c.kind='stt_elevenlabs' THEN c.amount_usd ELSE 0 END) as stt_elevenlabs,
+           SUM(CASE WHEN c.kind='stt_diarize' THEN c.amount_usd ELSE 0 END) as stt_diarize
            FROM costs c WHERE c.owner_id = ? AND c.video_id IS NOT NULL
            AND c.video_id NOT IN (SELECT id FROM videos)
            GROUP BY c.video_id ORDER BY MAX(c.created_at) DESC""", (owner_id,))
@@ -3180,6 +3242,8 @@ DEFAULT_SETTINGS = {
     "aisha_default_voice": "Gulnoza", "aisha_default_mood": "Neutral", "aisha_default_speed": "1.0",
     "openai_default_voice": "alloy", "openai_default_instructions": "",
     "default_language": "", "default_stretch_to_fit": "true",
+    # Matn olish: qo'shimcha uydirma iboralar (har qatorda bittadan).
+    "hallucination_phrases": "",
     "translation_instruction": "", "translation_context": "",
 }
 

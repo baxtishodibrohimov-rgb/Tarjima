@@ -1,5 +1,5 @@
 """
-API kalitlarini xavfsiz boshqarish (OpenAI va Claude/Anthropic).
+API kalitlarini xavfsiz boshqarish (OpenAI, Claude/Anthropic, ElevenLabs).
 
 - Kalitlar diskda Fernet (symmetric) shifrlash bilan saqlanadi.
 - Frontendga hech qachon to'liq kalit qaytarilmaydi, faqat maskalangan ko'rinish.
@@ -169,6 +169,13 @@ async def test_key(kid: str, owner_id: str = None) -> dict:
                     json={"model": "claude-haiku-4-5-20251001", "max_tokens": 1,
                           "messages": [{"role": "user", "content": "hi"}]},
                 )
+            elif provider == "elevenlabs":
+                resp = await client.get("https://api.elevenlabs.io/v1/user", headers={"xi-api-key": raw})
+                # Faqat "Speech to Text" ruxsati berilgan kalit /v1/user ni o'qiy olmaydi -
+                # bu kalit haqiqiy, lekin cheklangan degani (matn olish uchun yetarli).
+                if resp.status_code == 401 and "missing_permissions" in resp.text:
+                    mark_result(kid, True)
+                    return {"ok": True, "note": "Kalit ishlaydi (cheklangan ruxsatlar bilan)."}
             else:
                 resp = await client.get(
                     "https://api.openai.com/v1/models",

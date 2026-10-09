@@ -541,6 +541,16 @@
     <button class="action" onclick="addApiKey('claude')">Qo'shish</button>
   </div>
   <div class="status" id="keyStatus-claude"></div>
+
+  <h3 style="margin:16px 0 6px;">ElevenLabs</h3>
+  <p class="hint">Matn olish (ElevenLabs Scribe) uchun. Kalitni <a href="https://elevenlabs.io/app/settings/api-keys" target="_blank" rel="noopener">elevenlabs.io → API Keys</a> dan olasiz ("Speech to Text" ruxsati yetarli).</p>
+  <div id="keyList-elevenlabs"></div>
+  <div class="row">
+    <input type="text" id="newKeyLabel-elevenlabs" placeholder="Nom (ixtiyoriy)" style="max-width:140px;">
+    <input type="password" id="newKeyValue-elevenlabs" placeholder="sk_..." style="flex:1; min-width:160px;">
+    <button class="action" onclick="addApiKey('elevenlabs')">Qo'shish</button>
+  </div>
+  <div class="status" id="keyStatus-elevenlabs"></div>
 </div>
 
 <div class="modal-backdrop" id="botPlayerModal-backdrop" onclick="closeBotPlayer()"></div>
@@ -927,7 +937,7 @@
       <div><label class="field">Jami</label><div class="status ok" id="costAll">—</div></div>
     </div>
     <table id="costTable" style="margin-top:14px;">
-      <thead><tr><th>Video</th><th>Transkripsiya</th><th>Tarjima</th><th>Aisha TTS</th><th>OpenAI TTS</th><th>Jami</th></tr></thead>
+      <thead><tr><th>Video</th><th>Whisper</th><th>ElevenLabs STT</th><th>OpenAI diarize</th><th>Tarjima</th><th>Aisha TTS</th><th>OpenAI TTS</th><th>Jami</th></tr></thead>
       <tbody id="costTableBody"></tbody>
     </table>
     </div>
@@ -1330,7 +1340,7 @@ async function loadGlossaryGroups() {
 /*  API KALITLAR (modal)                                         */
 /* ============================================================ */
 async function loadApiKeys() {
-  for (const provider of ['openai', 'claude']) {
+  for (const provider of ['openai', 'claude', 'elevenlabs']) {
     try {
       const keys = await apiFetch('/api/api-keys?provider=' + provider);
       const body = document.getElementById('keyList-' + provider);
@@ -1388,7 +1398,7 @@ async function testApiKey(id, provider) {
   setStatus('keyStatus-' + provider, 'Tekshirilmoqda...');
   try {
     const r = await apiFetch(`/api/api-keys/${id}/test`, { method: 'POST' });
-    setStatus('keyStatus-' + provider, r.ok ? 'Kalit ishlayapti.' : ('Xato: ' + r.error), r.ok ? 'ok' : 'err');
+    setStatus('keyStatus-' + provider, r.ok ? (r.note || 'Kalit ishlayapti.') : ('Xato: ' + r.error), r.ok ? 'ok' : 'err');
   } catch (e) {
     setStatus('keyStatus-' + provider, 'Xato: ' + e.message, 'err');
   }
@@ -3151,8 +3161,8 @@ function renderSegmentStage(v) {
   let badge = stageStatusBadge("Bo'linmagan", '');
   if (v.status === 'uploaded') {
     const estimate = appConfig.chunk_seconds ? Math.ceil((v.duration || 0) / appConfig.chunk_seconds) : '?';
-    body = `<p class="hint">Bu video taxminan ${estimate} ta bo'lakka bo'linadi (${appConfig.chunk_seconds}s har biri).</p>
-      <button class="action" onclick="segmentVideo('${v.id}', this)">Bo'laklarga bo'lish</button>`;
+    body = `<p class="hint">Faqat OpenAI Whisper uchun kerak: video taxminan ${estimate} ta bo'lakka bo'linadi (${appConfig.chunk_seconds}s har biri, jimlik joyida kesiladi). ElevenLabs Scribe va tayyor SRT uchun bo'lish shart emas - pastdagi bo'limga o'ting.</p>
+      <button class="secondary" onclick="segmentVideo('${v.id}', this)">Bo'laklarga bo'lish (OpenAI uchun)</button>`;
   } else if (v.status === 'segmenting') {
     if (v.blocked_reason === 'error') {
       badge = stageStatusBadge('Xato', 'error');
@@ -3258,11 +3268,59 @@ async function saveChunkSegmentText(videoId, index, taEl) {
 }
 
 function renderFlaggedIssuesSummary(v) {
-  if (!v.flagged_issues || !v.flagged_issues.length) return '';
-  return `<details class="warn-box" style="margin-top:10px;">
-    <summary style="cursor:pointer;">⚠️ ${v.flagged_issues.length} ta shubhali joy aniqlandi (bosib ko'ring)</summary>
-    ${v.flagged_issues.map(i => `<div class="issue-line">Bo'lak ${i.chunk_index + 1}, ${fmtMinSec(i.start)}–${fmtMinSec(i.end)}: ${escapeHtml(ISSUE_LABELS[i.kind] || i.kind)} — ${escapeHtml(i.detail)}</div>`).join('')}
+  const all = (v.flagged_issues || []).map((i, index) => ({ ...i, index }));
+  const removed = all.filter(i => i.kind === 'removed' && i.status === 'removed');
+  const flagged = all.filter(i => i.kind !== 'removed');
+  let html = '';
+  if (removed.length) {
+    html += `<details class="warn-box" style="margin-top:10px;">
+      <summary style="cursor:pointer;">🗑 O'chirildi: ${removed.length} ta (uydirma matn - jimlikdagi "Подпишись на канал" va h.k.)</summary>
+      ${removed.map(i => `<div class="issue-line" style="display:flex; gap:8px; align-items:center; justify-content:space-between;">
+        <span>${fmtMinSec(i.start)}–${fmtMinSec(i.end)}: «${escapeHtml((i.segment && i.segment.text) || '')}» — ${escapeHtml(i.detail)}</span>
+        <button class="small-btn" onclick="restoreRemovedSegment('${v.id}', ${i.index}, this)">Qaytarish</button></div>`).join('')}
+    </details>`;
+  }
+  if (flagged.length) {
+    html += `<details class="warn-box" style="margin-top:10px;">
+    <summary style="cursor:pointer;">⚠️ ${flagged.length} ta shubhali joy aniqlandi (bosib ko'ring)</summary>
+    ${flagged.map(i => `<div class="issue-line">${i.chunk_index != null ? `Bo'lak ${i.chunk_index + 1}, ` : ''}${fmtMinSec(i.start)}–${fmtMinSec(i.end)}: ${escapeHtml(ISSUE_LABELS[i.kind] || i.kind)} — ${escapeHtml(i.detail)}</div>`).join('')}
   </details>`;
+  }
+  return html;
+}
+
+async function restoreRemovedSegment(videoId, index, btnEl) {
+  await withBusyButton(btnEl, '...', async () => {
+    const form = new FormData();
+    form.append('issue_index', index);
+    await apiFetch(`/api/videos/${videoId}/transcript/restore-removed`, { method: 'POST', body: form });
+    reloadVideoDetail(videoId);
+  });
+}
+
+function sttProviderChoice() {
+  try { return localStorage.getItem('stt_provider') || 'elevenlabs'; } catch (e) { return 'elevenlabs'; }
+}
+
+function sttProviderHint(provider, v) {
+  if (provider === 'elevenlabs') {
+    return "Butun audio bitta so'rovda yuboriladi (bo'laklarga bo'linmaydi), so'z vaqtlari va spikerlar bilan. Narx: soatiga ~$0.22 (atamalar bilan +20%). Kalit: Sozlamalar → API kalitlar → ElevenLabs.";
+  }
+  return v && v.status === 'uploaded'
+    ? "OpenAI Whisper uchun avval yuqorida \"Bo'laklarga bo'lish\" tugmasini bosing (25 MB chegarasi)."
+    : "Video 5 daqiqalik bo'laklarda yuboriladi, so'z vaqtlari bilan. Narx: daqiqasiga ~$0.006.";
+}
+
+function onSttProviderChange(id) {
+  const el = document.querySelector(`input[name="sttProvider-${id}"]:checked`);
+  const provider = el ? el.value : 'elevenlabs';
+  try { localStorage.setItem('stt_provider', provider); } catch (e) { /* ixtiyoriy */ }
+  const hint = document.getElementById('sttProviderHint-' + id);
+  if (hint) hint.textContent = sttProviderHint(provider, currentDetailVideoData);
+  for (const wrap of ['sttKeytermsWrap-', 'sttSendVideoWrap-']) {
+    const w = document.getElementById(wrap + id);
+    if (w) w.style.display = provider === 'elevenlabs' ? 'flex' : 'none';
+  }
 }
 
 function renderTranscriptStage(v) {
@@ -3272,7 +3330,7 @@ function renderTranscriptStage(v) {
   // mumkin bo'lishi kerak), aks holda "Tasdiqlangan" bo'limi ostiga tasodifan
   // tushib qolardi.
   const status = v.status === 'cancelled' ? 'segments_ready' : v.status;
-  const before = ['uploaded', 'segmenting'].includes(status);
+  const before = ['segmenting'].includes(status);
   const ready = status === 'transcription_ready';
   const approved = !['uploaded', 'segmenting', 'segments_ready', 'transcribing', 'transcription_ready'].includes(status);
 
@@ -3281,10 +3339,22 @@ function renderTranscriptStage(v) {
 
   if (before) {
     badge = stageStatusBadge('Kutilmoqda', '');
-    body = `<p class="hint">Avval videoni bo'laklarga bo'ling.</p>`;
-  } else if (status === 'segments_ready') {
+    body = `<p class="hint">Video bo'laklarga bo'linmoqda...</p>`;
+  } else if (status === 'segments_ready' || status === 'uploaded') {
     badge = stageStatusBadge('Boshlanmagan', '');
+    const sttProvider = sttProviderChoice();
     body = `
+      <div class="row" style="margin:10px 0 4px; gap:18px;">
+        <label style="display:flex; gap:6px; align-items:center;"><input type="radio" name="sttProvider-${v.id}" value="elevenlabs" ${sttProvider === 'elevenlabs' ? 'checked' : ''} onchange="onSttProviderChange('${v.id}')"> ElevenLabs Scribe (tavsiya)</label>
+        <label style="display:flex; gap:6px; align-items:center;"><input type="radio" name="sttProvider-${v.id}" value="openai" ${sttProvider === 'openai' ? 'checked' : ''} onchange="onSttProviderChange('${v.id}')"> OpenAI Whisper</label>
+      </div>
+      <p class="hint" id="sttProviderHint-${v.id}">${sttProviderHint(sttProvider, v)}</p>
+      <div class="row" style="gap:18px; flex-wrap:wrap;">
+        <label style="display:${sttProvider === 'elevenlabs' ? 'flex' : 'none'}; gap:6px; align-items:center;" id="sttKeytermsWrap-${v.id}"><input type="checkbox" id="sttKeyterms-${v.id}" checked> Tibbiy atamalar ro'yxatini yuborish</label>
+        <label style="display:${sttProvider === 'elevenlabs' ? 'flex' : 'none'}; gap:6px; align-items:center;" id="sttSendVideoWrap-${v.id}"><input type="checkbox" id="sttSendVideo-${v.id}"> Videoning o'zini yuborish</label>
+        <label style="display:flex; gap:6px; align-items:center;"><input type="checkbox" id="sttDiarize-${v.id}"> Spikerlarni ajratish</label>
+        <label style="display:flex; gap:6px; align-items:center;">Spikerlar soni <input type="number" id="sttSpeakers-${v.id}" min="1" max="32" placeholder="avto" style="width:70px;"></label>
+      </div>
       <div class="grid2" style="margin:10px 0;">
         <div>
           <label class="field">Til</label>
@@ -3316,6 +3386,15 @@ function renderTranscriptStage(v) {
   } else if (status === 'transcribing') {
     badge = v.blocked_reason ? stageStatusBadge(BLOCKED_LABELS[v.blocked_reason], 'error') : stageStatusBadge('Ishlanmoqda...', 'active');
     body = `<div class="progress-wrap"><div class="progress-bar" data-live-progress="transcription" style="width:${v.progress || 0}%;"></div></div>`;
+    if (v.stt_provider === 'elevenlabs') {
+      body += `<p class="hint">ElevenLabs Scribe: ${escapeHtml(v.message || '')}</p><div class="row">`;
+      body += v.blocked_reason
+        ? `<button class="action" onclick="jobAction('${v.id}','resume', this)">Qayta urinish</button>
+           <button class="small-btn" onclick="jobAction('${v.id}','cancel', this)">Bekor qilish</button>`
+        : '';
+      body += `</div>`;
+      return `<div class="stage"><div class="stage-head"><h3>Matn olish va tahrirlash</h3>${badge}</div>${body}</div>`;
+    }
     body += renderChunkDetailList(v.chunks);
     body += `<div class="row">`;
     if (v.blocked_reason) {
@@ -4942,10 +5021,18 @@ async function startTranscribe(id, btnEl) {
   const language = document.getElementById('lang-' + id).value;
   const instruction = document.getElementById('instr-' + id).value.trim();
   const topicGroup = document.getElementById('topicGroup-' + id).value;
+  const providerEl = document.querySelector(`input[name="sttProvider-${id}"]:checked`);
+  const provider = providerEl ? providerEl.value : 'openai';
+  const speakers = (document.getElementById('sttSpeakers-' + id) || {}).value || '';
   await withBusyButton(btnEl, 'Boshlanmoqda...', async () => {
     const form = new FormData();
     form.append('language', language); form.append('instruction', instruction);
     form.append('topic_group', topicGroup);
+    form.append('stt_provider', provider);
+    form.append('diarize', document.getElementById('sttDiarize-' + id).checked ? 'true' : 'false');
+    if (speakers) form.append('num_speakers', speakers);
+    form.append('send_keyterms', document.getElementById('sttKeyterms-' + id).checked ? 'true' : 'false');
+    form.append('send_video', document.getElementById('sttSendVideo-' + id).checked ? 'true' : 'false');
     await apiFetch(`/api/videos/${id}/transcribe`, { method: 'POST', body: form });
     reloadVideoDetail(id);
   });
@@ -5427,6 +5514,7 @@ async function loadCosts() {
     const body = document.getElementById('costTableBody');
     body.innerHTML = c.per_video.map(r => `
       <tr><td>${escapeHtml(r.original_name)}</td><td>${fmtUsd(r.transcription)}</td>
+      <td>${fmtUsd(r.stt_elevenlabs || 0)}</td><td>${fmtUsd(r.stt_diarize || 0)}</td>
       <td>${fmtUsd(r.translation)}</td><td>${fmtSom(r.tts_aisha_som)}</td><td>${fmtUsd(r.tts_openai)}</td>
       <td>${fmtUsd(r.total)}${r.total_som ? ' + ' + fmtSom(r.total_som) : ''}</td></tr>`).join('');
   } catch (e) {}
