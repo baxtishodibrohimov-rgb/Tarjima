@@ -247,44 +247,176 @@ def join_video_parts(parts: list, output_path: Path, expected_duration: float = 
         tmp_path.unlink(missing_ok=True)
 
 
-def source_time_to_final_time(source_time: float, freeze_points: list) -> float:
-    """Original (source) video/audio vaqtini, freeze_points asosida yakuniy
-    (freeze-frame bilan cho'zilgan) vaqt chizig'idagi vaqtga o'giradi.
+# --- Vaqt chizig'i: manba (original) vaqt <-> yakuniy (o'zbekcha video) vaqt ---
+#
+# Vaqt nuqtalari (bazada "freeze_points" ustunida saqlanadi):
+#   {"type": "slow", "start": a, "end": b, "extra": e} - manbadagi [a, b] oralig'i
+#       yakuniy videoda (b - a) + e soniyada ko'rsatiladi (video sekinlashadi);
+#   {"type": "freeze", "time": t, "duration": d} - t nuqtada kadr d soniya kutadi.
+#       Eski format {"time", "duration"} (type'siz) ham freeze deb o'qiladi.
+#
+# Barcha joylar (render, TTS joylash, barcha subtitr yozuvchilar, Learning,
+# pleyer) vaqtni FAQAT source_time_to_final_time / final_time_to_source_time
+# orqali hisoblaydi - aks holda audio, video va subtitr orasida farq paydo bo'ladi.
 
-    Bu - TTS audio joylashtirish (tts.py), video freeze qo'yish va yakuniy
-    SRT/VTT hisoblash uchun BITTA umumiy manba (single source of truth).
-    Har biri o'zicha alohida hisoblasa, ular orasida arifmetik farq paydo
-    bo'lib, audio/video/subtitr sinxronligini buzishi mumkin edi.
+FREEZE_MIN_SEC = 0.05  # bundan qisqa freeze render qilinmaydi (bir kadrdan ham kam)
+SLOW_MIN_EXTRA_SEC = 0.005
 
-    freeze_points: [{"time": <source vaqti>, "duration": <necha soniya>}, ...]
-    "time"dan OLDIN yoki AYNAN o'sha nuqtada joylashgan har bir freeze,
-    undan keyingi barcha vaqtlarni o'z duration'i qadar oldinga suradi."""
-    if not freeze_points:
+
+class _ActivePoints(list):
+    """active_timeline_points natijasi (qayta normallashtirish shart emas)."""
+
+
+def normalize_timeline_point(point: dict):
+    """Bitta nuqtani yagona ko'rinishga keltiradi. Yaroqsiz bo'lsa None."""
+    if not isinstance(point, dict):
+        return None
+    try:
+        if point.get("type") == "slow":
+            start = float(point.get("start") or 0.0)
+            end = float(point.get("end") or 0.0)
+            extra = float(point.get("extra") or 0.0)
+            if end - start <= 0.001 or extra <= 0:
+                return None
+            return {"type": "slow", "start": round(start, 3), "end": round(end, 3), "extra": round(extra, 3)}
+        duration = float(point.get("duration") or 0.0)
+        if duration <= 0:
+            return None
+        return {"type": "freeze", "time": round(float(point.get("time") or 0.0), 3), "duration": round(duration, 3)}
+    except (TypeError, ValueError):
+        return None
+
+
+def point_extra(point: dict) -> float:
+    """Nuqta yakuniy videoga qo'shadigan vaqt (soniya)."""
+    return (point.get("extra") if point.get("type") == "slow" else point.get("duration")) or 0.0
+
+
+def point_position(point: dict) -> float:
+    return point["start"] if point.get("type") == "slow" else point["time"]
+
+
+def active_timeline_points(points: list) -> list:
+    """Render va barcha vaqt hisoblari ishlatadigan nuqtalar: yaroqli, juda
+    kichiklari tashlangan, manba vaqti bo'yicha tartiblangan."""
+    if isinstance(points, _ActivePoints):
+        return points
+    result = _ActivePoints()
+    for p in points or []:
+        n = normalize_timeline_point(p)
+        if not n:
+            continue
+        if n["type"] == "freeze" and n["duration"] <= FREEZE_MIN_SEC:
+            continue
+        if n["type"] == "slow" and n["extra"] <= SLOW_MIN_EXTRA_SEC:
+            continue
+        result.append(n)
+    # Bir xil joyda freeze slow'dan oldin: slow [a, b] + freeze(b) + slow [b, c] zanjiri.
+    result.sort(key=lambda p: (point_position(p), 0 if p["type"] == "freeze" else 1))
+    return result
+
+
+def _timeline_shift(t: float, points: list) -> float:
+    shift = 0.0
+    for p in points:
+        if p["type"] == "slow":
+            a, b = p["start"], p["end"]
+            if t >= b:
+                shift += p["extra"]
+            elif t > a:
+                shift += p["extra"] * (t - a) / (b - a)
+        elif p["time"] <= t:
+            shift += p["duration"]
+    return shift
+
+
+def source_time_to_final_time(source_time: float, points: list) -> float:
+    """Original (manba) vaqtni yakuniy (sekinlashtirilgan/kutishli) video
+    vaqtiga o'giradi. Yagona manba: TTS joylash, render, SRT/VTT, Learning va
+    pleyer shu formuladan foydalanadi.
+
+    freeze: time <= t bo'lsa +duration; slow: t >= end bo'lsa +extra,
+    start < t < end bo'lsa +extra*(t-start)/(end-start)."""
+    source_time = source_time or 0.0
+    active = active_timeline_points(points)
+    if not active:
         return round(source_time, 3)
-    shift = sum(fp.get("duration", 0) or 0 for fp in freeze_points if (fp.get("time", 0) or 0) <= source_time)
-    return round(source_time + shift, 3)
+    return round(source_time + _timeline_shift(source_time, active), 3)
+
+
+def final_time_to_source_time(final_time: float, points: list) -> float:
+    """source_time_to_final_time ning teskarisi. Freeze (kutish) ichidagi
+    yakuniy vaqt shu freeze nuqtasining manba vaqtiga tushadi."""
+    final_time = max(final_time or 0.0, 0.0)
+    active = active_timeline_points(points)
+    if not active:
+        return round(final_time, 3)
+    lo, hi = max(final_time - sum(point_extra(p) for p in active), 0.0), final_time
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        if mid + _timeline_shift(mid, active) <= final_time + 1e-9:
+            lo = mid
+        else:
+            hi = mid
+    return round(lo, 3)
+
+
+def total_timeline_extra(points: list) -> float:
+    """Barcha nuqtalar yakuniy videoga qo'shadigan vaqt yig'indisi (soniya)."""
+    return round(sum(point_extra(p) for p in active_timeline_points(points)), 3)
 
 
 def total_freeze_duration(freeze_points: list) -> float:
-    """freeze_points ichidagi barcha 'kutish' vaqtlarining yig'indisi (soniya)."""
-    return sum(fp.get("duration", 0) or 0 for fp in (freeze_points or []))
+    """Eski nom (orqaga moslik) - total_timeline_extra bilan bir xil."""
+    return total_timeline_extra(freeze_points)
+
+
+def timeline_summary(points: list) -> dict:
+    """Foydalanuvchiga ko'rsatish uchun: nechta sekinlashtirish va kutish."""
+    active = active_timeline_points(points)
+    slows = [p for p in active if p["type"] == "slow"]
+    freezes = [p for p in active if p["type"] == "freeze"]
+    return {
+        "slow_count": len(slows), "slow_extra": round(sum(p["extra"] for p in slows), 2),
+        "freeze_count": len(freezes), "freeze_total": round(sum(p["duration"] for p in freezes), 2),
+        "total_extra": round(sum(point_extra(p) for p in active), 2),
+    }
+
+
+def timeline_message(points: list) -> str:
+    """"N ta joyda video sekinlashtirildi (jami X s), M ta joyda kutish"."""
+    s = timeline_summary(points)
+    parts = []
+    if s["slow_count"]:
+        parts.append(f"{s['slow_count']} ta joyda video sekinlashtirildi (jami {s['slow_extra']:.1f} s)")
+    if s["freeze_count"]:
+        parts.append(f"{s['freeze_count']} ta joyda kutish ({s['freeze_total']:.1f} s)")
+    return ", ".join(parts)
 
 
 def apply_freeze_to_segments(segments: list, freeze_points: list) -> list:
-    """SRT/VTT segmentlar ro'yxatini (har biri {"start","end","text"}) freeze_points
-    asosida yakuniy (freeze bilan cho'zilgan) vaqt chizig'iga moslaydi. Original
-    ro'yxatni O'ZGARTIRMAYDI - yangi ro'yxat qaytaradi, shuning uchun manba (source)
-    SRT/VTT har doim o'zgarishsiz qoladi."""
-    if not freeze_points:
+    """SRT/VTT segmentlarni ({"start","end","text"}) yakuniy vaqt chizig'iga
+    o'tkazadi. Original ro'yxat o'zgarmaydi - yangi ro'yxat qaytadi."""
+    active = active_timeline_points(freeze_points)
+    if not active:
         return segments
     result = []
     for s in segments:
         result.append({
             **s,
-            "start": source_time_to_final_time(s["start"], freeze_points),
-            "end": source_time_to_final_time(s["end"], freeze_points),
+            "start": source_time_to_final_time(s["start"], active),
+            "end": source_time_to_final_time(s["end"], active),
         })
     return result
+
+
+def final_segments_to_source(segments: list, points: list) -> list:
+    """apply_freeze_to_segments ning teskarisi (yakuniy -> manba vaqt)."""
+    active = active_timeline_points(points)
+    if not active:
+        return segments
+    return [{**s, "start": final_time_to_source_time(s["start"], active),
+             "end": final_time_to_source_time(s["end"], active)} for s in segments]
 
 
 def mux_video_audio(video_path: Path, audio_path: Path, out_path: Path, target_duration: float = None):
@@ -390,25 +522,73 @@ def _detect_fps(ffmpeg_info: str) -> float:
     return float(m.group(1)) if m else 25.0
 
 
+# Bitta setpts filtridagi eng ko'p nuqta (ifoda juda uzun bo'lmasin).
+_TIMELINE_GROUP_SIZE = 40
+
+
+def _timeline_point_end(p: dict) -> float:
+    return p["end"] if p["type"] == "slow" else p["time"]
+
+
+def _group_timeline_points(active: list) -> list:
+    """Nuqtalarni setpts guruhlariga bo'ladi. Guruh chegarasi faqat oldingi
+    nuqtalarning hammasi keyingi nuqta boshlanishidan oldin tugagan joyda
+    qo'yiladi - shunda keyingi guruh uchun oldingi siljish doimiy (C)."""
+    groups, current, max_end = [], [], float("-inf")
+    for p in active:
+        if len(current) >= _TIMELINE_GROUP_SIZE and max_end <= point_position(p):
+            groups.append(current)
+            current = []
+        current.append(p)
+        max_end = max(max_end, _timeline_point_end(p))
+    if current:
+        groups.append(current)
+    return groups
+
+
+def build_timeline_video_filter(points: list, fps: float, pad_sec: float = 0.0) -> str:
+    """Manba videoni yakuniy vaqt chizig'iga o'tkazadigan ffmpeg video filtri.
+
+    Har kadr vaqti T -> T + siljish(T) (source_time_to_final_time bilan bir xil
+    formula); keyin fps filtri bo'sh joylarni oldingi kadr bilan to'ldiradi:
+    slow oralig'ida kadrlar siyraklashadi (sekinlashish), freeze joyida esa
+    bitta kadr takrorlanadi. Hammasi bitta o'tishda - bo'laklarga bo'lib
+    qayta yig'ishdagi kadr yaxlitlash xatolari to'planmaydi."""
+    active = active_timeline_points(points)
+    chain = ["setpts=PTS-STARTPTS"]
+    offset = 0.0
+    for group in _group_timeline_points(active):
+        terms = []
+        for p in group:
+            if p["type"] == "slow":
+                a = p["start"] + offset
+                terms.append(f"{p['extra']:.6f}*clip((T-{a:.6f})/{p['end'] - p['start']:.6f}\\,0\\,1)")
+            else:
+                terms.append(f"{p['duration']:.6f}*gte(T\\,{p['time'] + offset:.6f})")
+        chain.append("setpts=(T+" + "+".join(terms) + ")/TB")
+        offset += sum(point_extra(p) for p in group)
+    if pad_sec > 0:
+        chain.append(f"tpad=stop_mode=clone:stop_duration={pad_sec:.3f}")
+    chain.append(f"fps={fps:g}")
+    chain.append("format=yuv420p")
+    return ",".join(chain)
+
+
 def mux_video_audio_with_freezes(video_path: Path, audio_path: Path, out_path: Path,
                                   freeze_points: list, work_dir: Path, target_duration: float = None):
-    """E-band: agar audio ba'zi joylarda o'ziga ajratilgan vaqtdan uzunroq chiqqan
-    bo'lsa (freeze_points), yakuniy videoda o'sha nuqtalarda kadr bir necha
-    soniya 'muzlab' turadi (video to'xtaydi, audio davom etadi) - shunda hech
-    qanday overlap yoki audio yo'qolishi bo'lmaydi. freeze_points bo'sh bo'lsa,
-    oddiy (tez, qayta kodlanmaydigan) mux ishlatiladi.
+    """Yakuniy videoni yig'adi: original tasvir + yangi (o'zbekcha) audio.
 
-    target_duration - yakuniy fayl uchun kutilgan aniq davomiylik (odatda: asl
-    video davomiyligi + shu funksiyaga berilgan freeze_points yig'indisi).
-    mux_video_audio()ga uzatiladi ("-shortest" o'rniga "-t" ishlatish uchun)."""
-    freeze_points = [f for f in (freeze_points or []) if f.get("duration", 0) > 0.05]
-    if not freeze_points:
+    Vaqt nuqtalari (slow/freeze) bo'lsa video bitta ffmpeg o'tishida qayta
+    kodlanadi: slow oraliqlari sekinlashadi, freeze joylarida kadr kutadi.
+    Nuqta bo'lmasa - tez, qayta kodlanmaydigan mux. Original audio ishlatilmaydi.
+
+    target_duration - kutilgan aniq davomiylik (original + barcha extra/duration)."""
+    active = active_timeline_points(freeze_points)
+    if not active:
         mux_video_audio(video_path, audio_path, out_path, target_duration=target_duration)
         return
 
     work_dir.mkdir(parents=True, exist_ok=True)
-    freeze_points = sorted(freeze_points, key=lambda f: f["time"])
-
     try:
         probe = subprocess.run([ffmpeg_exe(), "-i", str(video_path)], stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, text=True, errors="ignore",
@@ -417,91 +597,38 @@ def mux_video_audio_with_freezes(video_path: Path, audio_path: Path, out_path: P
     except subprocess.TimeoutExpired:
         fps = 25.0
     total_duration = get_duration_seconds(video_path)
+    extra = sum(point_extra(p) for p in active)
+    if not target_duration or target_duration <= 0:
+        target_duration = total_duration + extra
 
-    part_paths = []
-    prev_time = 0.0
-    for i, fp in enumerate(freeze_points):
-        # MUHIM: hech qachon videoning ANIQ oxiriga (yoki undan keyinga) "-ss"
-        # bilan sakramaymiz - ffmpeg ba'zan shu nuqtada xato bermay, lekin
-        # HECH QANDAY kadr ham chiqarmay qo'yishi mumkin (masalan oxirgi freeze
-        # nuqtasi video davomiyligiga to'g'ri kelib qolganda) - shuning uchun
-        # kichik xavfsizlik zaxirasi bilan orqaga suriladi.
-        t = min(fp["time"], max(total_duration - 0.05, 0))
-        dur = fp["duration"]
-        if t > prev_time:
-            trim_path = work_dir / f"part_{i:03d}_trim.mp4"
-            _run_ffmpeg([
-                ffmpeg_exe(), "-y", "-ss", str(prev_time), "-to", str(t), "-i", str(video_path),
-                "-an", "-r", str(fps), "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
-                str(trim_path),
-            ], f"{i + 1}-qism (oddiy)")
-            part_paths.append(trim_path)
-
-        frame_path = work_dir / f"freeze_{i:03d}.jpg"
-        _run_ffmpeg([
-            ffmpeg_exe(), "-y", "-ss", str(t), "-i", str(video_path), "-vframes", "1", str(frame_path),
-        ], f"{i + 1}-qism (kadr olish)")
-        if not frame_path.exists() or frame_path.stat().st_size == 0:
-            # Ba'zi videolarda konteyner metama'lumotidagi "Duration:" haqiqiy
-            # oxirgi dekodlanadigan kadrdan sezilarli uzoqroq bo'lishi mumkin
-            # (masalan uzoq/qayta remux qilingan fayllarda) - shuning uchun
-            # tobora ko'proq orqaga surib bir necha marta qayta urinamiz.
-            for back in (0.5, 1.5, 3.0, 6.0, 10.0):
-                retry_t = max(t - back, 0)
-                _run_ffmpeg([
-                    ffmpeg_exe(), "-y", "-ss", str(retry_t), "-i", str(video_path), "-vframes", "1",
-                    str(frame_path),
-                ], f"{i + 1}-qism (kadr olish, qayta urinish -{back:g}s)")
-                if frame_path.exists() and frame_path.stat().st_size > 0:
-                    break
-            else:
-                # Orqaga surishlarning hech biri yordam bermadi - faylning
-                # haqiqiy oxiridan (EOF) hisoblab so'nggi urinish.
-                _run_ffmpeg([
-                    ffmpeg_exe(), "-y", "-sseof", "-3", "-i", str(video_path), "-vframes", "1",
-                    str(frame_path),
-                ], f"{i + 1}-qism (kadr olish, EOF'dan)")
-                if not frame_path.exists() or frame_path.stat().st_size == 0:
-                    raise RuntimeError(
-                        f"{i + 1}-qism uchun video kadrini olib bo'lmadi (vaqt: {t:.3f}s, video "
-                        f"davomiyligi: {total_duration:.3f}s)."
-                    )
-        freeze_path = work_dir / f"part_{i:03d}_freeze.mp4"
-        _run_ffmpeg([
-            ffmpeg_exe(), "-y", "-loop", "1", "-i", str(frame_path), "-t", str(dur),
-            "-r", str(fps), "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
-            str(freeze_path),
-        ], f"{i + 1}-qism (muzlatish)")
-        part_paths.append(freeze_path)
-        prev_time = t
-
-    if prev_time < total_duration:
-        tail_path = work_dir / "part_zzz_tail.mp4"
-        _run_ffmpeg([
-            ffmpeg_exe(), "-y", "-ss", str(prev_time), "-i", str(video_path),
-            "-an", "-r", str(fps), "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
-            str(tail_path),
-        ], "oxirgi qism")
-        part_paths.append(tail_path)
-
-    concat_list_path = work_dir / "concat_list.txt"
-    concat_list_path.write_text(
-        "\n".join(f"file '{p.resolve()}'" for p in part_paths), encoding="utf-8"
-    )
-    video_only_path = work_dir / "video_only.mp4"
-    _run_ffmpeg([
-        ffmpeg_exe(), "-y", "-f", "concat", "-safe", "0", "-i", str(concat_list_path),
-        "-c", "copy", str(video_only_path),
-    ], "bo'laklarni birlashtirish")
-
-    mux_video_audio(video_only_path, audio_path, out_path, target_duration=target_duration)
-
-    for p in part_paths:
-        p.unlink(missing_ok=True)
-    for f in work_dir.glob("freeze_*.jpg"):
-        f.unlink(missing_ok=True)
-    concat_list_path.unlink(missing_ok=True)
-    video_only_path.unlink(missing_ok=True)
+    vf = build_timeline_video_filter(active, fps, pad_sec=extra + 1.0)
+    filter_path = work_dir / "timeline_filter.txt"
+    filter_path.write_text(vf, encoding="utf-8")
+    tmp_path = out_path.with_name(out_path.stem + ".render" + out_path.suffix)
+    cmd = [
+        ffmpeg_exe(), "-y", "-i", str(video_path), "-i", str(audio_path),
+        "-map", "0:v:0", "-map", "1:a:0",
+    ]
+    # Juda ko'p nuqtali uzun filtr buyruq qatoriga sig'masligi mumkin - fayldan o'qiladi.
+    cmd += ["-filter_script:v", str(filter_path)] if len(vf) > 60000 else ["-vf", vf]
+    cmd += [
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-c:a", "aac", "-b:a", "192k", "-t", f"{target_duration:.3f}",
+        "-movflags", "+faststart", str(tmp_path),
+    ]
+    try:
+        _run_ffmpeg(cmd, "videoni sekinlashtirish va audio bilan yig'ish",
+                    timeout=max(FFMPEG_TIMEOUT, int(total_duration * 2)))
+        if not tmp_path.exists() or tmp_path.stat().st_size < 1024:
+            raise RuntimeError("Yakuniy video fayli yaratilmadi yoki bo'sh.")
+        got = get_duration_seconds(tmp_path)
+        if got and abs(got - target_duration) > max(1.0, target_duration * 0.005):
+            raise RuntimeError(f"Yakuniy video davomiyligi mos kelmadi ({got:.2f}s, kutilgan "
+                               f"{target_duration:.2f}s).")
+        tmp_path.replace(out_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+        filter_path.unlink(missing_ok=True)
 
 
 _SENTENCE_SPLIT_RE = re.compile(r'(?<=[.!?…])\s+(?=[A-ZА-ЯЁ0-9"\'\(])|\n\s*\n')

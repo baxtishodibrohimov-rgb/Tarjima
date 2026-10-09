@@ -1233,7 +1233,7 @@ def write_final_subtitles(video_id: str, freeze_points: list):
     moslashtirilgan variant kerak."""
     db.execute("DELETE FROM results WHERE video_id = ? AND kind IN ('srt_uz_final', 'vtt_uz_final')",
                (video_id,))
-    active = [f for f in (freeze_points or []) if f.get("duration", 0) > 0.05]
+    active = transcription.active_timeline_points(freeze_points)
     if not active:
         return
     video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
@@ -1259,8 +1259,8 @@ def write_final_subtitles(video_id: str, freeze_points: list):
             "INSERT INTO results (id, video_id, kind, filename, path, created_at) VALUES (?, ?, ?, ?, ?, ?)",
             (db.new_id(), video_id, kind, path.name, str(path), db.now()),
         )
-    log(video_id, f"Yakuniy (freeze bilan moslashtirilgan) o'zbekcha subtitr fayllar yaratildi "
-                   f"({len(active)} ta freeze nuqtasi, jami {transcription.total_freeze_duration(active):.2f}s siljish).")
+    log(video_id, f"Yakuniy (video vaqtiga moslashtirilgan) o'zbekcha subtitr fayllar yaratildi "
+                   f"({transcription.timeline_message(active)}; jami {transcription.total_timeline_extra(active):.2f}s siljish).")
 
 
 def get_translation_blocks(video_id: str) -> list:
@@ -1383,10 +1383,10 @@ async def _mux_render_core(video: dict, audio_path: Path, freeze_points: list, o
         )
     tmp_out_path.unlink(missing_ok=True)
 
-    active_freeze_points = [f for f in freeze_points if f.get("duration", 0) > 0.05]
+    active_freeze_points = transcription.active_timeline_points(freeze_points)
     if active_freeze_points:
-        log(video_id, f"{log_prefix}Video yig'ilmoqda: {len(active_freeze_points)} ta joyda audio uzunroq, "
-                       f"video shu nuqtalarda kutib turadi.")
+        log(video_id, f"{log_prefix}Video yig'ilmoqda: {transcription.timeline_message(active_freeze_points)}. "
+                       f"Video qayta kodlanadi - uzun videoda ancha vaqt oladi.")
     else:
         log(video_id, f"{log_prefix}Video va audio ffmpeg orqali birlashtirilmoqda (fayl hajmiga qarab bir necha "
                        f"daqiqa vaqt olishi mumkin)...")
@@ -1400,7 +1400,7 @@ async def _mux_render_core(video: dict, audio_path: Path, freeze_points: list, o
     if video_duration and video_duration > 0:
         target_duration = video_duration + transcription.total_freeze_duration(active_freeze_points)
         log(video_id, f"{log_prefix}DEBUG render: video_duration={video_duration:.3f}s "
-                       f"freeze_total={transcription.total_freeze_duration(active_freeze_points):.3f}s "
+                       f"extra_total={transcription.total_timeline_extra(active_freeze_points):.3f}s "
                        f"target_duration={target_duration:.3f}s")
 
     loop = asyncio.get_event_loop()
@@ -1481,14 +1481,14 @@ def sync_video_from_tts_job(job_id: str):
                 freeze_points = json.loads(job["freeze_points"])
             except Exception:
                 pass
-        freeze_count = len([f for f in freeze_points if f.get("duration", 0) > 0.05])
+        timeline_text = transcription.timeline_message(freeze_points)
         message = "Audio tayyor."
-        if freeze_count:
-            message = f"Audio tayyor. {freeze_count} ta joyda yakuniy video 'kutib turadi' (audio uzunroq chiqdi)."
+        if timeline_text:
+            message = f"Audio tayyor. Yakuniy videoda: {timeline_text}."
         _update_video(video_id, status="audio_ready", blocked_reason=None, audio_status="ready",
                       audio_path=job["result_path"], freeze_points=job["freeze_points"], message=message)
         write_final_subtitles(video_id, freeze_points)
-        log(video_id, f"Audio tayyor (TTS ishi yakunlandi).{' ' + str(freeze_count) + ' ta muzlatish nuqtasi.' if freeze_count else ''}")
+        log(video_id, f"Audio tayyor (TTS ishi yakunlandi).{' ' + timeline_text + '.' if timeline_text else ''}")
 
         # Barcha audio segmentlari muvaffaqiyatli tayyor bo'lgani uchun (shu yerga
         # faqat merge_job() muvaffaqiyatli tugaganda kelinadi) - foydalanuvchi
@@ -1528,7 +1528,7 @@ def write_track_final_subtitles(video_id: str, provider: str, freeze_points: lis
     srt_kind = f"srt_uz_final_{provider}"
     vtt_kind = f"vtt_uz_final_{provider}"
     db.execute("DELETE FROM results WHERE video_id = ? AND kind IN (?, ?)", (video_id, srt_kind, vtt_kind))
-    active = [f for f in (freeze_points or []) if f.get("duration", 0) > 0.05]
+    active = transcription.active_timeline_points(freeze_points)
     if not active:
         return
     video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
@@ -1833,7 +1833,7 @@ def write_learning_final_subtitles(video_id: str, freeze_points: list):
     bitta manba-haqiqat (srt_path fayli), qo'shimcha sinxronizatsiya shart emas."""
     srt_kind, vtt_kind = "srt_ru_learning_final", "vtt_ru_learning_final"
     db.execute("DELETE FROM results WHERE video_id = ? AND kind IN (?, ?)", (video_id, srt_kind, vtt_kind))
-    active = [f for f in (freeze_points or []) if f.get("duration", 0) > 0.05]
+    active = transcription.active_timeline_points(freeze_points)
     if not active:
         return
     track = db.fetchone("SELECT * FROM learning_tracks WHERE video_id = ?", (video_id,))

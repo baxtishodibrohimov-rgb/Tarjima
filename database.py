@@ -513,6 +513,16 @@ _VIDEO_NEW_COLUMNS = {
     "subtitled_video_status": "TEXT DEFAULT 'none'",
     "subtitled_video_path": "TEXT",
     "subtitled_video_error": "TEXT",
+    # Matn olish provayderi: "elevenlabs" / "openai" (NULL - eski videolar, openai).
+    "stt_provider": "TEXT",
+    "diarize": "INTEGER DEFAULT 0",
+    "num_speakers": "INTEGER",
+    # Matn olish sozlamalari (JSON): keyterms, send_video ...
+    "stt_options": "TEXT",
+    # Original so'z vaqtlari (JSON: [{"w","s","e","spk"}]) - bloklar va lektor sur'ati uchun.
+    "transcript_words": "TEXT",
+    # Spikerlarga UI uchun berilgan nomlar (JSON: {"1": "Lektor"}), SRT'ga yozilmaydi.
+    "speaker_names": "TEXT",
 }
 _UPLOAD_NEW_COLUMNS = {
     "owner_id": "TEXT",
@@ -532,6 +542,10 @@ _TTS_JOB_NEW_COLUMNS = {
     # Learning treki uchun - sync_video_from_tts_job() shu belgi bilan
     # ikkalasini bir-biridan ajratadi (audio_tracks vs learning_tracks).
     "is_learning": "INTEGER DEFAULT 0",
+    # Har spikerga ovoz (JSON: {"1": {"voice": "...", "mood": "..."}}).
+    "voice_map": "TEXT",
+    # Gaplar tempo statistikasi (JSON) - natijada ko'rsatiladi.
+    "tempo_stats": "TEXT",
 }
 _API_KEY_NEW_COLUMNS = {
     "owner_id": "TEXT",
@@ -593,6 +607,16 @@ _TTS_SEGMENT_NEW_COLUMNS = {
     # bilib, qolgan "joy"ni hisoblab qayta namunalaydi (ikkala bosqich
     # BIRGALIKDA hech qachon 1.20dan oshmasligi uchun).
     "applied_speed": "REAL",
+    # Gap (sentence) birligidagi TTS: seg_index = gap tartibi, block_start..block_end -
+    # shu gapga kirgan yakuniy SRT bloklari (0-based), part_index - uzun gap bo'laklari.
+    "sentence_index": "INTEGER",
+    "block_start": "INTEGER",
+    "block_end": "INTEGER",
+    "part_index": "INTEGER DEFAULT 0",
+    "speaker": "INTEGER",
+    "tempo": "REAL",
+    # Ovozning 1.0 tezlikdagi haqiqiy davomiyligi (D_i).
+    "audio_duration": "REAL",
 }
 _CHUNK_NEW_COLUMNS = {
     # NULL = bo'lak uchun alohida til belgilanmagan (videoning umumiy tilidan foydalaniladi),
@@ -604,6 +628,12 @@ _CHUNK_NEW_COLUMNS = {
 }
 
 _MEMORY_NEW_COLUMNS = {"owner_id": "TEXT"}
+# Kichik jadvallar uchun umumiy ro'yxat: jadval -> {ustun: ta'rif}.
+_OTHER_NEW_COLUMNS = {
+    "freeze_point_events": {"type": "TEXT DEFAULT 'freeze'"},
+    "audio_tracks": {"voice_map": "TEXT"},
+    "learning_tracks": {"voice_map": "TEXT"},
+}
 _USER_NEW_COLUMNS = {"display_name": "TEXT DEFAULT ''"}
 _LEARNING_TRACK_NEW_COLUMNS = {
     # Learning SRT vaqt qatoridagi [yangi:..]/[takror:..] teglari (translation.parse_learning_srt)
@@ -699,6 +729,11 @@ def _migrate_columns():
         for col, decl in _LEARNING_TRACK_NEW_COLUMNS.items():
             if col not in existing_learning:
                 c.execute(f"ALTER TABLE learning_tracks ADD COLUMN {col} {decl}")
+        for table, columns in _OTHER_NEW_COLUMNS.items():
+            existing_other = {row[1] for row in c.execute(f"PRAGMA table_info({table})").fetchall()}
+            for col, decl in columns.items():
+                if col not in existing_other:
+                    c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
         for table in ("videos", "uploads", "api_keys", "tts_jobs", "costs", "folders", "cloud_files",
                       "translation_memory_chat", "translation_memory_notes"):
             c.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_owner ON {table}(owner_id)")

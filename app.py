@@ -471,15 +471,22 @@ def video_public(v: dict) -> dict:
         "primary_tts_provider": primary_tts_provider,
         # Video 'completed' bo'lgach ikkinchi provayder bilan yaratilgan
         # qo'shimcha audio/video track(lar) - odatda bo'sh ro'yxat.
-        "audio_tracks": [dict(r) for r in db.fetchall(
+        "audio_tracks": [_track_public(r) for r in db.fetchall(
             "SELECT provider, audio_status, final_video_status, subtitled_video_status, "
-            "subtitled_video_error, error FROM audio_tracks WHERE video_id = ?",
+            "subtitled_video_error, error, freeze_points FROM audio_tracks WHERE video_id = ?",
             (v["id"],))] if v["status"] == "completed" else [],
+        "timeline_summary": transcription.timeline_summary(_parse_points(v["freeze_points"])),
         # "Ruscha o'rganish" treki - Uzbek pipeline holatidan mustaqil, doim
         # ko'rsatiladi (video hali 'completed' bo'lmasa ham Learning SRT
         # yuklab, audio/video yaratish mumkin).
         "learning_track": learning_public,
     }
+
+
+def _track_public(r: dict) -> dict:
+    d = dict(r)
+    d["timeline_summary"] = transcription.timeline_summary(_parse_points(d.pop("freeze_points", None)))
+    return d
 
 
 def chunk_detail(c: dict, transcript_segments: list = None) -> dict:
@@ -645,6 +652,12 @@ async def get_video(video_id: str):
     logs = db.get_logs(video_id, 200)
     results = db.fetchall("SELECT id, kind, filename, created_at FROM results WHERE video_id = ?", (video_id,))
     out = video_public(v)
+    # Yakuniy videolarning vaqt nuqtalari (slow/freeze) - pleyer video
+    # almashtirilganda joriy vaqtni shu bilan o'tkazadi (faqat batafsil sahifada).
+    out["timeline_points"] = transcription.active_timeline_points(_parse_points(v["freeze_points"]))
+    out["track_timeline_points"] = {
+        t["provider"]: transcription.active_timeline_points(_parse_points(t["freeze_points"]))
+        for t in db.fetchall("SELECT provider, freeze_points FROM audio_tracks WHERE video_id = ?", (video_id,))}
     parsed_transcript_segments = _json_or_empty(v["transcript_segments"])
     out["chunks"] = [chunk_detail(c, parsed_transcript_segments) for c in chunks]
     out["logs"] = logs
@@ -2841,16 +2854,66 @@ def _result_by_kind(video_id: str, kind: str):
                         (video_id, kind))
 
 
+def _parse_points(raw) -> list:
+    try:
+        return json.loads(raw) if raw else []
+    except (TypeError, ValueError):
+        return []
+
+
+def _timeline_points_for(video_id: str, timeline: str) -> list:
+    """timeline: "source" - original vaqt; "final" - asosiy o'zbekcha video;
+    "final:<provider>" - shu provayderning qo'shimcha treki videosi."""
+    if not timeline or timeline == "source":
+        return []
+    if timeline == "final":
+        v = db.fetchone("SELECT freeze_points FROM videos WHERE id = ?", (video_id,))
+        return _parse_points(v["freeze_points"]) if v else []
+    if timeline.startswith("final:"):
+        t = db.fetchone("SELECT freeze_points FROM audio_tracks WHERE video_id = ? AND provider = ?",
+                        (video_id, timeline.split(":", 1)[1]))
+        return _parse_points(t["freeze_points"]) if t else []
+    raise HTTPException(400, "timeline: source, final yoki final:<provider> bo'lishi kerak.")
+
+
+_VTT_TIME_RE = re.compile(r"(?:(\d+):)?(\d{2}):(\d{2})\.(\d{3})")
+
+
+def _vtt_on_timeline(path: Path, points: list) -> str:
+    """Manba vaqtidagi VTT ni tanlangan videoning vaqt chizig'iga o'tkazadi
+    (transcription.source_time_to_final_time orqali - render bilan bir xil)."""
+    text = path.read_text(encoding="utf-8")
+    active = transcription.active_timeline_points(points)
+    if not active:
+        return text
+
+    def shift(m):
+        sec = int(m.group(1) or 0) * 3600 + int(m.group(2)) * 60 + int(m.group(3)) + int(m.group(4)) / 1000
+        return transcription.fmt_vtt_time(transcription.source_time_to_final_time(sec, active))
+
+    return "\n".join(_VTT_TIME_RE.sub(shift, line) if "-->" in line else line for line in text.split("\n"))
+
+
 @app.get("/api/videos/{video_id}/subtitles/original.vtt")
-async def subtitles_original_vtt(video_id: str):
+async def subtitles_original_vtt(video_id: str, timeline: str = "source"):
     r = _result_by_kind(video_id, "vtt_original")
     if not r or not Path(r["path"]).exists():
         raise HTTPException(404, "Original subtitr topilmadi.")
-    return FileResponse(r["path"], media_type="text/vtt")
+    points = _timeline_points_for(video_id, timeline)
+    if not points:
+        return FileResponse(r["path"], media_type="text/vtt")
+    return Response(_vtt_on_timeline(Path(r["path"]), points), media_type="text/vtt")
 
 
 @app.get("/api/videos/{video_id}/subtitles/uz.vtt")
-async def subtitles_uz_vtt(video_id: str, provider: str = None):
+async def subtitles_uz_vtt(video_id: str, provider: str = None, timeline: str = None):
+    # timeline berilsa (pleyer shuni ishlatadi): manba vaqtidagi vtt_uz tanlangan
+    # videoning vaqt chizig'iga o'tkaziladi - audio "Original" bo'lsa "source".
+    if timeline:
+        r = _result_by_kind(video_id, "vtt_uz")
+        if r and Path(r["path"]).exists():
+            return Response(_vtt_on_timeline(Path(r["path"]), _timeline_points_for(video_id, timeline)),
+                            media_type="text/vtt")
     # "uz" video treki - freeze bo'lsa - kadr kutib turishi bilan cho'zilgan yakuniy
     # videodir, shuning uchun mos keladigan subtitr ham freeze bilan moslashtirilgan
     # variant (vtt_uz_final) bo'lishi kerak, agar u mavjud bo'lsa. "Original" trek

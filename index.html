@@ -4280,14 +4280,9 @@ function renderRenderStage(v) {
     badge = stageStatusBadge('✅ Tayyor', 'done');
     const uzUrl = `${API_BASE}/api/videos/${v.id}/final-download`;
     const origUrl = `${API_BASE}/api/videos/${v.id}/original-stream`;
-    const subOrigUrl = `${API_BASE}/api/videos/${v.id}/subtitles/original.vtt`;
-    const subUzUrl = `${API_BASE}/api/videos/${v.id}/subtitles/uz.vtt`;
     body = `
       <div class="player-wrap">
-        <video id="player-${v.id}" controls>
-          <track id="track-original-${v.id}" kind="subtitles" src="${subOrigUrl}" srclang="orig" label="Original subtitr">
-          <track id="track-uz-${v.id}" kind="subtitles" src="${subUzUrl}" srclang="uz" label="O'zbekcha subtitr">
-        </video>
+        <video id="player-${v.id}" controls></video>
         <div class="player-controls">
           <button class="small-btn" onclick="seekPlayer('${v.id}', -10)">⏪ 10s</button>
           <button class="small-btn" onclick="seekPlayer('${v.id}', 10)">10s ⏩</button>
@@ -4726,46 +4721,103 @@ async function sendToBot(videoId, provider) {
   }
 }
 
+/* ---- Vaqt chizig'i (transcription.py dagi source_time_to_final_time bilan bir xil) ----
+   Nuqtalar: {type:'slow', start, end, extra} yoki {type:'freeze', time, duration}. */
+function timelineShift(t, points) {
+  let shift = 0;
+  for (const p of points || []) {
+    if (p.type === 'slow') {
+      if (t >= p.end) shift += p.extra;
+      else if (t > p.start) shift += p.extra * (t - p.start) / (p.end - p.start);
+    } else if (p.time <= t) {
+      shift += p.duration;
+    }
+  }
+  return shift;
+}
+
+function sourceToFinalTime(t, points) {
+  return t + timelineShift(t, points);
+}
+
+function finalToSourceTime(f, points) {
+  if (!points || !points.length) return f;
+  const total = points.reduce((a, p) => a + (p.type === 'slow' ? p.extra : p.duration), 0);
+  let lo = Math.max(f - total, 0), hi = Math.max(f, 0);
+  for (let i = 0; i < 60; i++) {
+    const mid = (lo + hi) / 2;
+    if (mid + timelineShift(mid, points) <= f + 1e-9) lo = mid; else hi = mid;
+  }
+  return lo;
+}
+
+/* Audio tanlovi -> {video manzili, vaqt chizig'i nomi, nuqtalar}. */
+function playerTimelineFor(videoId, val) {
+  const data = (currentDetailVideoData && currentDetailVideoData.id === videoId) ? currentDetailVideoData : {};
+  if (val === 'original') {
+    return { url: `${API_BASE}/api/videos/${videoId}/original-stream`, timeline: 'source', points: [] };
+  }
+  if (val && val.startsWith('uz_')) {
+    const provider = val.slice(3);
+    return { url: `${API_BASE}/api/videos/${videoId}/final-download?provider=${encodeURIComponent(provider)}`,
+             timeline: 'final:' + provider, points: (data.track_timeline_points || {})[provider] || [] };
+  }
+  return { url: `${API_BASE}/api/videos/${videoId}/final-download`, timeline: 'final', points: data.timeline_points || [] };
+}
+
+/* <track> ning src'ini almashtirish brauzerlarda ishonchli qayta yuklanmaydi -
+   shuning uchun eski track elementlari o'chirilib, yangilari qo'shiladi. */
+function setPlayerSubtitleTracks(videoId, timeline) {
+  const player = document.getElementById('player-' + videoId);
+  if (!player) return;
+  player.querySelectorAll('track').forEach(t => t.remove());
+  const tl = encodeURIComponent(timeline);
+  const tracks = [
+    { id: 'track-original-' + videoId, lang: 'orig', label: 'Original subtitr',
+      src: `${API_BASE}/api/videos/${videoId}/subtitles/original.vtt?timeline=${tl}` },
+    { id: 'track-uz-' + videoId, lang: 'uz', label: "O'zbekcha subtitr",
+      src: `${API_BASE}/api/videos/${videoId}/subtitles/uz.vtt?timeline=${tl}` },
+  ];
+  for (const t of tracks) {
+    const el = document.createElement('track');
+    el.id = t.id; el.kind = 'subtitles'; el.srclang = t.lang; el.label = t.label; el.src = t.src;
+    player.appendChild(el);
+  }
+  applySubtitleSelection(videoId);
+}
+
 function initPlayer(videoId) {
   const player = document.getElementById('player-' + videoId);
   if (!player) return;
-  player.dataset.origUrl = `${API_BASE}/api/videos/${videoId}/original-stream`;
-  player.dataset.uzUrl = `${API_BASE}/api/videos/${videoId}/final-download`;
-  player.src = player.dataset.uzUrl;
+  const sel = document.getElementById('audioTrackSel-' + videoId);
+  const tl = playerTimelineFor(videoId, sel ? sel.value : 'uz');
+  player.dataset.timelineVal = sel ? sel.value : 'uz';
+  player.src = tl.url;
+  setPlayerSubtitleTracks(videoId, tl.timeline);
   player.addEventListener('loadedmetadata', () => applySubtitleSelection(videoId));
 }
 
 function switchAudioTrack(videoId) {
   const player = document.getElementById('player-' + videoId);
   const sel = document.getElementById('audioTrackSel-' + videoId);
-  if (!player) return;
+  if (!player || !sel) return;
   const wasPlaying = !player.paused;
-  const savedTime = player.currentTime;
-  const val = sel.value; // 'original' | 'uz' | 'uz_<provider>' (qo'shimcha track)
-  let targetUrl, subUrl;
-  if (val === 'original') {
-    targetUrl = player.dataset.origUrl;
-    subUrl = `${API_BASE}/api/videos/${videoId}/subtitles/uz.vtt`;
-  } else if (val.startsWith('uz_')) {
-    // Qo'shimcha track - o'zining freeze bilan moslashtirilgan subtitri boshqacha
-    // bo'lishi mumkin (uning audio uzunligi asosiy trekdan farq qiladi).
-    const provider = val.slice(3);
-    targetUrl = `${API_BASE}/api/videos/${videoId}/final-download?provider=${provider}`;
-    subUrl = `${API_BASE}/api/videos/${videoId}/subtitles/uz.vtt?provider=${provider}`;
-  } else {
-    targetUrl = player.dataset.uzUrl;
-    subUrl = `${API_BASE}/api/videos/${videoId}/subtitles/uz.vtt`;
-  }
-  const uzTrack = document.getElementById('track-uz-' + videoId);
-  if (uzTrack) uzTrack.setAttribute('src', subUrl);
+  // Joriy vaqt avval manba vaqtiga, keyin yangi videoning vaqt chizig'iga o'tkaziladi -
+  // shunda pleyer aynan shu gapga qaytadi.
+  const oldTl = playerTimelineFor(videoId, player.dataset.timelineVal || 'uz');
+  const newTl = playerTimelineFor(videoId, sel.value);
+  const sourceTime = finalToSourceTime(player.currentTime || 0, oldTl.points);
+  const targetTime = sourceToFinalTime(sourceTime, newTl.points);
+  player.dataset.timelineVal = sel.value;
   const onReady = () => {
-    player.currentTime = savedTime;
+    player.removeEventListener('loadedmetadata', onReady);
+    player.currentTime = Math.min(targetTime, player.duration || targetTime);
     if (wasPlaying) player.play();
     applySubtitleSelection(videoId);
-    player.removeEventListener('loadedmetadata', onReady);
   };
   player.addEventListener('loadedmetadata', onReady);
-  player.src = targetUrl;
+  player.src = newTl.url;
+  setPlayerSubtitleTracks(videoId, newTl.timeline);
 }
 
 function applySubtitleSelection(videoId) {
