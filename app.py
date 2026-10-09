@@ -992,7 +992,28 @@ async def transcript_blocks_endpoint(video_id: str):
     if not v:
         raise HTTPException(404, "Video topilmadi.")
     segments = _json_or_empty(v["transcript_segments"])
-    return [{"index": i, "start": s["start"], "end": s["end"], "text": s["text"]} for i, s in enumerate(segments)]
+    return [{"index": i, "start": s["start"], "end": s["end"], "text": s["text"], "speaker": s.get("speaker")}
+            for i, s in enumerate(segments)]
+
+
+@app.post("/api/videos/{video_id}/transcript/speaker-names")
+async def speaker_names_endpoint(video_id: str, payload: dict):
+    """Spikerlarga nom ("Lektor", "Savol beruvchi") - faqat UI uchun, SRT'ga yozilmaydi."""
+    _ensure_video(video_id)
+    names = {str(int(k)): str(v).strip()[:40] for k, v in (payload.get("names") or {}).items()
+             if str(k).isdigit() and str(v).strip()}
+    worker._update_video(video_id, speaker_names=json.dumps(names, ensure_ascii=False))
+    return {"ok": True, "names": names}
+
+
+@app.post("/api/videos/{video_id}/transcript/segments/{index}/speaker")
+async def segment_speaker_endpoint(video_id: str, index: int, speaker: int = Form(0)):
+    """Blokni boshqa spikerga o'tkazish (qo'lda tuzatish). speaker=0 - spikersiz."""
+    _ensure_video(video_id)
+    try:
+        return worker.set_segment_speaker(video_id, index, speaker or None)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.get("/api/videos/{video_id}/transcript/segments/{index}/audio")
@@ -1397,6 +1418,103 @@ async def translation_fix_segments_endpoint(video_id: str, indices: str = Form(.
     return {"ok": True, "fixed_indices": [i + 1 for i in matched.keys()], **result}
 
 
+def _parse_voice_map(raw: str) -> dict:
+    """Har spikerga ovoz: {"1": {"voice": "...", "mood": "..."}} (bo'sh - bitta asosiy ovoz)."""
+    if not (raw or "").strip():
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        raise HTTPException(400, "voice_map noto'g'ri JSON.")
+    if not isinstance(data, dict):
+        raise HTTPException(400, "voice_map obyekt bo'lishi kerak.")
+    clean = {}
+    for k, v in data.items():
+        if str(k).isdigit() and isinstance(v, dict):
+            entry = {f: str(v[f])[:60] for f in ("voice", "mood") if v.get(f)}
+            if entry:
+                clean[str(int(k))] = entry
+    return clean or None
+
+
+def _speaker_summary(blocks: list, names: dict) -> list:
+    """Audio formasi uchun: har spiker - gaplar soni, umumiy vaqt, namuna matn."""
+    import tts_plan
+    units = [u for u in tts_plan.build_units(blocks, "openai") if not u["skipped"] and u["part_index"] == 0]
+    out = {}
+    for u in units:
+        if u.get("speaker") is None:
+            continue
+        info = out.setdefault(u["speaker"], {"speaker": u["speaker"], "name": names.get(str(u["speaker"])) or "",
+                                             "sentences": 0, "total_sec": 0.0, "sample": ""})
+        info["sentences"] += 1
+        info["total_sec"] += max(u["end"] - u["start"], 0)
+        if len(info["sample"]) < 70:  # ~5 soniyalik namuna
+            info["sample"] = (info["sample"] + " " + u["text"]).strip()[:120]
+    return [dict(v, total_sec=round(v["total_sec"], 1)) for _, v in sorted(out.items())]
+
+
+@app.get("/api/videos/{video_id}/speakers")
+async def video_speakers_endpoint(video_id: str, source: str = "translation"):
+    """Spikerlar ro'yxati (>= 2 bo'lsa audio formasida har biriga ovoz tanlanadi) va
+    avval tanlangan ovozlar xaritasi (bir marta tanlanadi, keyin qayta ishlatiladi)."""
+    v = _ensure_video(video_id)
+    names = _json_or_none(v["speaker_names"]) or {}
+    if source == "learning":
+        track = db.fetchone("SELECT srt_path FROM learning_tracks WHERE video_id = ?", (video_id,))
+        blocks = (translation.parse_srt_direct(Path(track["srt_path"]).read_text(encoding="utf-8"))
+                  if track and track["srt_path"] and Path(track["srt_path"]).exists() else [])
+    else:
+        blocks = _json_or_empty(v["translation_segments"])
+    saved = None
+    for raw in [db.fetchone("SELECT voice_map FROM learning_tracks WHERE video_id = ?", (video_id,)),
+                db.fetchone("SELECT voice_map FROM tts_jobs WHERE id = ?", (v["tts_job_id"] or "",)),
+                db.fetchone("SELECT voice_map FROM audio_tracks WHERE video_id = ? AND voice_map IS NOT NULL "
+                            "ORDER BY updated_at DESC LIMIT 1", (video_id,))]:
+        if raw and raw["voice_map"]:
+            saved = _json_or_none(raw["voice_map"])
+            if saved:
+                break
+    return {"speakers": _speaker_summary(blocks, names), "voice_map": saved or {}}
+
+
+@app.post("/api/tts/preview")
+async def tts_preview_endpoint(provider: str = Form(...), text: str = Form(...), voice: str = Form(""),
+                               mood: str = Form(""), instructions: str = Form(""), aisha_key: str = Form(""),
+                               video_id: str = Form("")):
+    """"Eshitib ko'rish": qisqa namuna (keshlanadi - bir xil namuna ikkinchi marta bepul)."""
+    text = (text or "").strip()[:200]
+    if not text:
+        raise HTTPException(400, "Namuna matni bo'sh.")
+    if provider == "aisha":
+        if not aisha_key.strip():
+            raise HTTPException(400, "Aisha API kalit kiritilmagan.")
+        params, raw_key = {"mood": mood, "speed": tts.TTS_SPEED}, aisha_key.strip()
+    else:
+        kid, raw_key = keys_manager.get_next_active_key()
+        if not raw_key:
+            raise HTTPException(400, "Ishlaydigan OpenAI API kalit topilmadi.")
+        params = {"voice": voice, "instructions": instructions, "speed": tts.TTS_SPEED}
+    cpath = tts.cache_path(tts.cache_key_for(provider, text, **params), "wav")
+    if not cpath.exists():
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                if provider == "aisha":
+                    audio = await tts.aisha_generate_one(client, text, mood, tts.TTS_SPEED, raw_key)
+                else:
+                    audio = await tts.openai_tts_generate_one(client, text, voice, raw_key, instructions)
+        except Exception as e:
+            raise HTTPException(502, str(e))
+        cpath.write_bytes(audio)
+        if provider == "aisha":
+            db.add_cost(video_id or None, "tts_aisha", 0, amount_som=round(len(text) * tts.AISHA_SOM_PER_CHAR, 2),
+                        detail="Ovoz namunasi (Aisha)", owner_id=auth.current_user_id())
+        else:
+            db.add_cost(video_id or None, "tts_openai", round(len(text) / 1000 * 0.015, 6),
+                        detail="Ovoz namunasi (OpenAI)", owner_id=auth.current_user_id())
+    return FileResponse(cpath, media_type="audio/wav")
+
+
 @app.post("/api/videos/{video_id}/audio")
 async def create_audio_endpoint(
     video_id: str,
@@ -1408,10 +1526,12 @@ async def create_audio_endpoint(
     aisha_key: str = Form(""),
     stretch_to_fit: bool = Form(True),
     skip_empty: bool = Form(False),
+    voice_map: str = Form(""),
 ):
     v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
     if not v:
         raise HTTPException(404, "Video topilmadi.")
+    voice_map_dict = _parse_voice_map(voice_map)
     if v["status"] not in ("translation_ready", "audio_processing", "audio_ready"):
         raise HTTPException(400, "Avval o'zbekcha tarjimani tayyorlang.")
     segments = _json_or_empty(v["translation_segments"])
@@ -1427,7 +1547,7 @@ async def create_audio_endpoint(
         raise HTTPException(400, "Ishlaydigan OpenAI API kalit topilmadi. Avval API kalit qo'shing.")
 
     job_id = tts.create_job(v["original_name"], provider, segments, voice, mood, speed, instructions,
-                             aisha_key.strip(), stretch_to_fit, video_id=video_id)
+                             aisha_key.strip(), stretch_to_fit, video_id=video_id, voice_map=voice_map_dict)
     worker._update_video(video_id, status="audio_processing", blocked_reason=None,
                           audio_status="generating", tts_job_id=job_id, message="Audio yaratilmoqda...")
     return {"ok": True, "tts_job_id": job_id}
@@ -1458,9 +1578,11 @@ async def create_audio_track_endpoint(
     aisha_key: str = Form(""),
     stretch_to_fit: bool = Form(True),
     skip_empty: bool = Form(False),
+    voice_map: str = Form(""),
 ):
     """Asosiy video 'completed' bo'lgach, IKKINCHI provayder bilan qo'shimcha
     audio+video yaratishni boshlaydi - asosiy natijaga tegmaydi."""
+    voice_map_dict = _parse_voice_map(voice_map)
     v = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
     if not v:
         raise HTTPException(404, "Video topilmadi.")
@@ -1475,7 +1597,7 @@ async def create_audio_track_endpoint(
         raise HTTPException(400, "Ishlaydigan OpenAI API kalit topilmadi. Avval API kalit qo'shing.")
     try:
         job_id = worker.start_secondary_track(video_id, provider, voice, mood, speed, instructions,
-                                               aisha_key.strip(), stretch_to_fit)
+                                               aisha_key.strip(), stretch_to_fit, voice_map=voice_map_dict)
     except ValueError as e:
         raise HTTPException(409, str(e))
     return {"ok": True, "tts_job_id": job_id}
@@ -1679,10 +1801,11 @@ async def download_learning_audio(video_id: str, request: Request):
 async def start_learning_audio_endpoint(
     video_id: str, provider: str = Form(...), voice: str = Form(""), mood: str = Form(""),
     speed: float = Form(1.0), instructions: str = Form(""), aisha_key: str = Form(""),
-    stretch_to_fit: bool = Form(True),
+    stretch_to_fit: bool = Form(True), voice_map: str = Form(""),
 ):
     """Yuklangan Learning SRT asosida, MAVJUD TTS mexanizmi orqali mustaqil
     Learning audio yaratishni boshlaydi - asosiy Uzbek audioga tegmaydi."""
+    voice_map_dict = _parse_voice_map(voice_map)
     v = db.fetchone("SELECT id FROM videos WHERE id = ?", (video_id,))
     if not v:
         raise HTTPException(404, "Video topilmadi.")
@@ -1692,7 +1815,7 @@ async def start_learning_audio_endpoint(
         raise HTTPException(400, "Ishlaydigan OpenAI API kalit topilmadi. Avval API kalit qo'shing.")
     try:
         job_id = worker.start_learning_track(video_id, provider, voice, mood, speed, instructions,
-                                              aisha_key.strip(), stretch_to_fit)
+                                              aisha_key.strip(), stretch_to_fit, voice_map=voice_map_dict)
     except ValueError as e:
         raise HTTPException(409, str(e))
     return {"ok": True, "tts_job_id": job_id}

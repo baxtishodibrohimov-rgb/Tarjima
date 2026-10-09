@@ -3848,7 +3848,7 @@ function renderBlockRow(videoId, b, i) {
   // Ovoz sekinlashtirilgan videoga ham sig'magan (kam uchraydi) - video shu joyda kutadi.
   const overflowBadge = (b.audio && b.audio.duration_overflow)
     ? '<span title="Gap ovozi sekinlashtirilgan videoga ham sig\'madi - video shu joyda \'kutib turadi\'">⚠️</span>' : '';
-  const speakerBadge = b.speaker ? `<span class="pill" style="font-size:10px; padding:1px 6px;">S${b.speaker}</span>` : '';
+  const speakerBadge = b.speaker ? `<span class="pill" style="font-size:10px; padding:1px 6px; background:${speakerColor(b.speaker)}; color:#fff;" title="${escapeHtml(speakerName(b.speaker))}">S${b.speaker}</span>` : '';
   const prev = i > 0 ? blockEditorData[i - 1] : null;
   const sentenceStart = i > 0 && prev && prev.sentence !== b.sentence;
   const retranscribeBtn = isMerged ? '' : `
@@ -3942,6 +3942,7 @@ async function openTranscriptBlockEditor(id) {
     <div class="card" style="margin-top:10px; background:var(--work);">
       <h3 style="margin-top:0;">Original matnni tahrirlash (${transcriptBlockEditorData.length} ta bo'lak)</h3>
       <p class="hint">Whisper xato yozgan joyni shu yerda to'g'ridan-to'g'ri tuzating - qayta Whisper'ga yuborilmaydi.</p>
+      ${speakerNamesPanelHtml(id)}
       <div id="transcriptBlockRows-${id}" style="max-height:420px; overflow-y:auto;">
         ${transcriptBlockEditorData.map((b, i) => renderTranscriptBlockRow(id, b, i)).join('')}
       </div>
@@ -3953,10 +3954,69 @@ async function openTranscriptBlockEditor(id) {
     </div>`;
 }
 
+const SPEAKER_COLORS = ['#5b6cff', '#e0692b', '#1f9d6b', '#b8439a', '#c49a00', '#2b8fc4', '#8a5a44', '#d23c4b'];
+
+function speakerColor(n) { return SPEAKER_COLORS[(Number(n) - 1) % SPEAKER_COLORS.length]; }
+
+function speakerName(n) {
+  const names = (currentDetailVideoData && currentDetailVideoData.speaker_names) || {};
+  return names[String(n)] || `Spiker ${n}`;
+}
+
+function transcriptSpeakers() {
+  return [...new Set((transcriptBlockEditorData || []).map(b => b.speaker).filter(x => x != null))].sort((a, b) => a - b);
+}
+
+/* Spikerlarga nom berish - faqat UI uchun, SRT matniga yozilmaydi. */
+function speakerNamesPanelHtml(videoId) {
+  const speakers = transcriptSpeakers();
+  if (!speakers.length) return '';
+  return `<div class="row" style="flex-wrap:wrap; gap:8px; margin:6px 0 10px;">
+    ${speakers.map(n => `<label style="display:flex; gap:6px; align-items:center;">
+      <span class="pill" style="background:${speakerColor(n)}; color:#fff;">S${n}</span>
+      <input type="text" id="spkName-${videoId}-${n}" value="${escapeHtml(speakerName(n))}" style="width:140px;"></label>`).join('')}
+    <button class="small-btn" onclick="saveSpeakerNames('${videoId}', this)">Nomlarni saqlash</button>
+  </div>`;
+}
+
+async function saveSpeakerNames(videoId, btnEl) {
+  const names = {};
+  for (const n of transcriptSpeakers()) {
+    const v = (document.getElementById(`spkName-${videoId}-${n}`) || {}).value || '';
+    if (v.trim()) names[n] = v.trim();
+  }
+  await withBusyButton(btnEl, '...', async () => {
+    const r = await apiFetch(`/api/videos/${videoId}/transcript/speaker-names`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ names }) });
+    if (currentDetailVideoData) currentDetailVideoData.speaker_names = r.names;
+  });
+}
+
+async function changeSegmentSpeaker(videoId, index, selectEl) {
+  const form = new FormData();
+  form.append('speaker', selectEl.value || '0');
+  try {
+    await apiFetch(`/api/videos/${videoId}/transcript/segments/${index}/speaker`, { method: 'POST', body: form });
+    transcriptBlockEditorData[index].speaker = selectEl.value ? Number(selectEl.value) : null;
+    selectEl.style.borderColor = selectEl.value ? speakerColor(selectEl.value) : '';
+  } catch (e) { alert('Xato: ' + e.message); }
+}
+
+function speakerSelectHtml(videoId, b, i) {
+  const speakers = transcriptSpeakers();
+  if (!speakers.length) return '';
+  const options = [...speakers, Math.max(...speakers) + 1];
+  return `<select style="margin-top:4px; font-size:10.5px; padding:1px 2px; max-width:56px; border-color:${b.speaker ? speakerColor(b.speaker) : ''};"
+      onchange="changeSegmentSpeaker('${videoId}', ${i}, this)" title="Spiker">
+      <option value="">-</option>
+      ${options.map(n => `<option value="${n}" ${b.speaker === n ? 'selected' : ''}>S${n}</option>`).join('')}
+    </select>`;
+}
+
 function renderTranscriptBlockRow(videoId, b, i) {
   return `
-    <div class="block-editor-row" style="grid-template-columns:60px 1fr 46px;" id="t-block-row-${videoId}-${i}">
-      <div class="bidx">${i + 1}<br>${fmtMinSec(b.start)}<br>
+    <div class="block-editor-row" style="grid-template-columns:60px 1fr 46px;${b.speaker ? ` border-left:3px solid ${speakerColor(b.speaker)};` : ''}" id="t-block-row-${videoId}-${i}">
+      <div class="bidx">${i + 1}<br>${fmtMinSec(b.start)}<br>${speakerSelectHtml(videoId, b, i)}
         <button class="small-btn" style="margin-top:4px; font-size:10.5px; padding:2px 6px;" onclick="playSegmentAudio('${videoId}', ${i}, this)" title="Bu bo'lakni tinglash">🔊</button>
       </div>
       <textarea id="t-block-text-${videoId}-${i}" oninput="markTranscriptBlockChanged('${videoId}', ${i})">${escapeHtml(b.text)}</textarea>
@@ -4168,16 +4228,98 @@ async function showAudioForm(id) {
         <option value="onyx">onyx</option><option value="nova">nova</option><option value="shimmer">shimmer</option>
       </select>
     </div>
+    <div id="audioSpeakerVoices-${id}"></div>
     <div class="save-hint"><label><input type="checkbox" id="audioStretch-${id}" ${settings.default_stretch_to_fit !== 'false' ? 'checked' : ''}> Kerak bo'lgandagina siqish</label></div>
     <div class="row"><button class="action" onclick="submitAudioJob('${id}')">Audio yaratish</button></div>
     <div class="status" id="audioFormStatus-${id}"></div>`;
   document.getElementById('audioMood-' + id).value = settings.aisha_default_mood || 'Neutral';
+  loadSpeakerVoices('audio', id, 'translation', () => document.getElementById('audioProvider-' + id).value);
+}
+
+/* ---- Har spikerga ovoz (spikerlar >= 2 bo'lsa) ---- */
+const OPENAI_VOICES = ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'];
+const AISHA_MOODS = ['Neutral', 'Cheerful', 'Happy', 'Sad'];
+const speakerVoiceState = {}; // `${prefix}-${id}` -> { speakers, saved, getProvider }
+
+async function loadSpeakerVoices(prefix, id, source, getProvider) {
+  const key = `${prefix}-${id}`;
+  try {
+    const r = await apiFetch(`/api/videos/${id}/speakers?source=${source}`);
+    speakerVoiceState[key] = { speakers: r.speakers || [], saved: r.voice_map || {}, getProvider };
+  } catch (e) {
+    speakerVoiceState[key] = { speakers: [], saved: {}, getProvider };
+  }
+  renderSpeakerVoices(prefix, id);
+}
+
+function renderSpeakerVoices(prefix, id) {
+  const el = document.getElementById(`${prefix}SpeakerVoices-${id}`);
+  const st = speakerVoiceState[`${prefix}-${id}`];
+  if (!el || !st) return;
+  if (st.speakers.length < 2) { el.innerHTML = ''; return; }
+  const provider = st.getProvider();
+  const options = provider === 'aisha' ? AISHA_MOODS : OPENAI_VOICES;
+  el.innerHTML = `<div class="card" style="margin-top:10px; background:var(--work);">
+    <h4 style="margin:0 0 6px;">Har spikerga ovoz (${st.speakers.length} ta spiker)</h4>
+    <p class="hint" style="margin-top:0;">${provider === 'aisha' ? 'Aisha: har spikerga kayfiyat' : 'OpenAI: har spikerga alohida ovoz'}. Tanlov saqlanadi va keyingi treklarda qayta ishlatiladi.</p>
+    ${st.speakers.map((sp, i) => {
+      const saved = st.saved[String(sp.speaker)] || {};
+      const current = provider === 'aisha' ? (saved.mood || 'Neutral') : (saved.voice || OPENAI_VOICES[i % OPENAI_VOICES.length]);
+      return `<div class="block-editor-row" style="grid-template-columns:120px 1fr 120px 36px; border-left:3px solid ${speakerColor(sp.speaker)};">
+        <div class="bidx"><strong>${escapeHtml(sp.name || speakerName(sp.speaker))}</strong><br>${sp.sentences} ta gap, ${fmtMinSec(sp.total_sec)}</div>
+        <div class="hint" style="margin:0; font-size:12px;" id="${prefix}SpkSample-${id}-${sp.speaker}">${escapeHtml(sp.sample)}</div>
+        <select id="${prefix}SpkVoice-${id}-${sp.speaker}">${options.map(o => `<option value="${o}" ${o === current ? 'selected' : ''}>${o}</option>`).join('')}</select>
+        <button class="small-btn" title="Eshitib ko'rish" onclick="previewSpeakerVoice('${prefix}', '${id}', ${sp.speaker}, this)">▶</button>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+function collectVoiceMap(prefix, id) {
+  const st = speakerVoiceState[`${prefix}-${id}`];
+  if (!st || st.speakers.length < 2) return '';
+  const provider = st.getProvider();
+  const map = {};
+  for (const sp of st.speakers) {
+    const sel = document.getElementById(`${prefix}SpkVoice-${id}-${sp.speaker}`);
+    if (sel) map[sp.speaker] = provider === 'aisha' ? { mood: sel.value } : { voice: sel.value };
+  }
+  return JSON.stringify(map);
+}
+
+async function previewSpeakerVoice(prefix, id, speaker, btnEl) {
+  const st = speakerVoiceState[`${prefix}-${id}`];
+  const provider = st.getProvider();
+  const form = new FormData();
+  form.append('provider', provider);
+  form.append('text', (document.getElementById(`${prefix}SpkSample-${id}-${speaker}`) || {}).textContent || 'Salom');
+  const value = document.getElementById(`${prefix}SpkVoice-${id}-${speaker}`).value;
+  form.append(provider === 'aisha' ? 'mood' : 'voice', value);
+  form.append('video_id', id);
+  if (provider === 'aisha') {
+    const keyEl = document.getElementById(`${prefix}AishaKey-${id}`) || document.getElementById(`${prefix === 'audio' ? 'audio' : prefix}AishaKey-${id}`);
+    form.append('aisha_key', (keyEl && keyEl.value.trim()) || localStorage.getItem(aishaStorageKey()) || '');
+  }
+  const original = btnEl.textContent;
+  btnEl.disabled = true; btnEl.textContent = '…';
+  try {
+    const resp = await fetch(`${API_BASE}/api/tts/preview`, { method: 'POST', body: form });
+    if (!resp.ok) { const j = await resp.json().catch(() => ({})); throw new Error(j.detail || ('HTTP ' + resp.status)); }
+    const audio = new Audio(URL.createObjectURL(await resp.blob()));
+    audio.addEventListener('ended', () => { btnEl.textContent = original; btnEl.disabled = false; });
+    await audio.play();
+    btnEl.textContent = '⏸';
+  } catch (e) {
+    btnEl.textContent = original; btnEl.disabled = false;
+    alert('Xato: ' + e.message);
+  }
 }
 
 function toggleAudioProviderUI(id) {
   const provider = document.getElementById('audioProvider-' + id).value;
   document.getElementById('audioAishaFields-' + id).style.display = provider === 'aisha' ? 'block' : 'none';
   document.getElementById('audioOpenaiFields-' + id).style.display = provider === 'openai' ? 'block' : 'none';
+  renderSpeakerVoices('audio', id);
 }
 
 const PROVIDER_LABEL = { aisha: 'Aisha', openai: 'OpenAI', learning: "Ruscha o'rganish" };
@@ -4212,11 +4354,13 @@ async function showTrackAudioForm(id, provider) {
     <div class="card" style="margin-top:10px; background:var(--work);">
       <h3 style="margin-top:0;">${PROVIDER_LABEL[provider] || provider} bilan qo'shimcha audio</h3>
       ${fieldsHtml}
+      <div id="trackAudioSpeakerVoices-${id}"></div>
       <div class="save-hint"><label><input type="checkbox" id="trackAudioStretch-${id}" ${settings.default_stretch_to_fit !== 'false' ? 'checked' : ''}> Kerak bo'lgandagina siqish</label></div>
       <div class="row"><button class="action" onclick="submitTrackAudioJob('${id}', '${provider}')">Yaratish</button></div>
       <div class="status" id="trackAudioFormStatus-${id}"></div>
     </div>`;
   if (provider === 'aisha') document.getElementById('trackAudioMood-' + id).value = settings.aisha_default_mood || 'Neutral';
+  loadSpeakerVoices('trackAudio', id, 'translation', () => provider);
 }
 
 async function submitTrackAudioJob(id, provider) {
@@ -4233,6 +4377,8 @@ async function submitTrackAudioJob(id, provider) {
   } else {
     form.append('voice', document.getElementById('trackAudioVoice-' + id).value);
   }
+  const voiceMap = collectVoiceMap('trackAudio', id);
+  if (voiceMap) form.append('voice_map', voiceMap);
   await startAudioJob(id, form, `${API_BASE}/api/videos/${id}/audio/track`);
 }
 
@@ -4253,6 +4399,8 @@ async function submitAudioJob(id) {
   } else {
     form.append('voice', document.getElementById('audioVoice-' + id).value);
   }
+  const voiceMap = collectVoiceMap('audio', id);
+  if (voiceMap) form.append('voice_map', voiceMap);
   await startAudioJob(id, form);
 }
 
@@ -4702,16 +4850,24 @@ async function showLearningAudioForm(id) {
         <option value="onyx">onyx</option><option value="nova">nova</option><option value="shimmer">shimmer</option>
       </select>
     </div>
+    <p class="status err" id="learningAishaWarn-${id}" style="display:none;">Aisha ruscha so'zlarni to'g'ri o'qimasligi mumkin — OpenAI tavsiya etiladi.</p>
+    <div id="learningSpeakerVoices-${id}"></div>
     <div class="save-hint"><label><input type="checkbox" id="learningStretch-${id}" ${settings.default_stretch_to_fit !== 'false' ? 'checked' : ''}> Kerak bo'lgandagina siqish</label></div>
     <div class="row"><button class="action" onclick="submitLearningAudioJob('${id}')">Audio yaratish</button></div>
     <div class="status" id="learningAudioFormStatus-${id}"></div>`;
   document.getElementById('learningMood-' + id).value = settings.aisha_default_mood || 'Neutral';
+  loadSpeakerVoices('learning', id, 'learning', () => document.getElementById('learningProvider-' + id).value);
 }
 
 function toggleLearningProviderFields(id) {
   const provider = document.getElementById('learningProvider-' + id).value;
   document.getElementById('learningOpenaiFields-' + id).style.display = provider === 'openai' ? 'block' : 'none';
   document.getElementById('learningAishaFields-' + id).style.display = provider === 'aisha' ? 'block' : 'none';
+  // Learning matnida kirill (ruscha) so'zlar bo'lsa - Aisha ularni noto'g'ri o'qishi mumkin.
+  const text = (currentDetailVideoData && currentDetailVideoData.learning_text) || '';
+  const warn = document.getElementById('learningAishaWarn-' + id);
+  if (warn) warn.style.display = provider === 'aisha' && /[\u0400-\u04FF]/.test(text) ? 'block' : 'none';
+  renderSpeakerVoices('learning', id);
 }
 
 async function submitLearningAudioJob(id) {
@@ -4729,6 +4885,8 @@ async function submitLearningAudioJob(id) {
   } else {
     form.append('voice', document.getElementById('learningVoice-' + id).value);
   }
+  const voiceMap = collectVoiceMap('learning', id);
+  if (voiceMap) form.append('voice_map', voiceMap);
   try {
     await apiFetch(`/api/videos/${id}/learning/audio`, { method: 'POST', body: form });
     setStatus('learningAudioFormStatus-' + id, 'Learning audio yaratish boshlandi.', 'ok');

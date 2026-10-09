@@ -732,6 +732,8 @@ async def finalize_results(video_id: str):
         else:
             all_segments.extend(payload.get("segments", []))
     words = stt_words.dedupe_overlap(chunk_words)
+    if words and video["diarize"]:
+        words = await _diarize_openai_words(video, chunks, words)
     if words:
         all_segments.extend(stt_words.build_segments_from_words(words))
     all_segments.sort(key=lambda s: s["start"])
@@ -799,6 +801,37 @@ async def finalize_results(video_id: str):
     words_note = " Bloklar so'z vaqtlaridan yasaldi." if words else ""
     log(video_id, f"Yakunlandi. Jami {len(final_segments)} ta segment.{words_note}{issue_note}{removed_note} "
                   f"Natijalar saqlandi.")
+
+
+async def _diarize_openai_words(video: dict, chunks: list, words: list) -> list:
+    """OpenAI yo'li: "Spikerlarni ajratish" yoqilgan bo'lsa - gpt-4o-transcribe-diarize
+    bilan qo'shimcha so'rov, so'zlarga spiker beriladi. Xato bo'lsa matn spikersiz qoladi."""
+    import stt_diarize
+    video_id = video["id"]
+    kid, raw = keys_manager.get_next_active_key(owner_id=video["owner_id"])
+    if not raw:
+        log(video_id, "Spikerlarni ajratib bo'lmadi: OpenAI kaliti yo'q.")
+        return words
+    try:
+        _update_video(video_id, message="Spikerlar ajratilmoqda (OpenAI diarize)...")
+        segments, seconds, too_many = await stt_diarize.diarize_chunks(
+            [c for c in chunks if c["path"] and Path(c["path"]).exists()], raw, video["language"] or "",
+            CHUNKS_DIR / video_id / "diarize", log=lambda m: log(video_id, m))
+        db.add_cost(video_id, "stt_diarize", stt_diarize.estimate_cost(seconds),
+                    detail=f"OpenAI diarize, {seconds / 60:.1f} daqiqa", owner_id=video["owner_id"])
+        if too_many:
+            log(video_id, "Diqqat: 4 tadan ko'p spiker - OpenAI ularni bo'laklar orasida aniq moslay olmaydi. "
+                          "Ko'p spikerli video uchun ElevenLabs Scribe tavsiya etiladi.")
+        words = stt_diarize.assign_speakers(words, segments)
+        count = len({w["spk"] for w in words if w.get("spk") is not None})
+        if count < 2:
+            words = [{**w, "spk": None} for w in words]  # bitta spiker - teg yozilmaydi
+        log(video_id, f"Spikerlar ajratildi: {count} ta.")
+    except Exception as e:
+        log(video_id, f"Spikerlarni ajratishda xato (matn spikersiz saqlanadi): {e}")
+    finally:
+        shutil.rmtree(CHUNKS_DIR / video_id / "diarize", ignore_errors=True)
+    return words
 
 
 def _hallucination_phrases(owner_id: str) -> list:
@@ -911,6 +944,41 @@ async def run_elevenlabs_transcription(video_id: str):
         log(video_id, f"XATO (ElevenLabs): {e}\n{traceback.format_exc()[-400:]}")
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def set_segment_speaker(video_id: str, index: int, speaker) -> dict:
+    """Original blok spikerini o'zgartiradi; shu blokni qamragan tarjima bloklari ham yangilanadi."""
+    video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
+    segments = json.loads(video["transcript_segments"] or "[]")
+    if not (0 <= index < len(segments)):
+        raise ValueError("Bunday blok yo'q.")
+    if speaker is not None and not (1 <= int(speaker) <= 32):
+        raise ValueError("Spiker raqami 1 dan 32 gacha bo'lishi kerak.")
+    if speaker is None:
+        segments[index].pop("speaker", None)
+    else:
+        segments[index]["speaker"] = int(speaker)
+    fields = {"transcript_segments": json.dumps(segments, ensure_ascii=False)}
+    translations = json.loads(video["translation_segments"] or "[]")
+    changed_blocks = 0
+    for i, block in enumerate(translations):
+        src = block.get("source_indices") or ([i] if len(translations) == len(segments) else [])
+        if index in src:
+            new_speaker = _speaker_of(segments, src)
+            if block.get("speaker") != new_speaker:
+                changed_blocks += 1
+                if new_speaker is None:
+                    block.pop("speaker", None)
+                else:
+                    block["speaker"] = new_speaker
+    if changed_blocks:
+        fields["translation_segments"] = json.dumps(translations, ensure_ascii=False)
+    _update_video(video_id, **fields)
+    write_transcript_results(video_id)
+    if changed_blocks:
+        write_translation_results(video_id)
+    log(video_id, f"{index + 1}-blok spikeri: {speaker or 'yo`q'}.")
+    return {"ok": True, "translation_blocks_changed": changed_blocks}
 
 
 def restore_removed_segment(video_id: str, issue_index: int) -> dict:
@@ -1173,6 +1241,14 @@ def _chunk_original_segments(segments: list, chunk_size: int = 100, pad_search: 
     return chunks
 
 
+def _speaker_of(originals: list, indices: list):
+    """Tarjima bloki spikeri - u qamragan original segmentlarning birinchi spikeri."""
+    for i in indices:
+        if 0 <= i < len(originals) and originals[i].get("speaker") is not None:
+            return originals[i]["speaker"]
+    return None
+
+
 async def run_auto_translate(video_id: str, provider: str = "openai"):
     video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
     if not video:
@@ -1204,10 +1280,13 @@ async def run_auto_translate(video_id: str, provider: str = "openai"):
                     chunk_blocks, usage = await translation.translate_segments_via_openai(
                         client, raw, chunk_segments, extra_instructions=instruction, extra_context=full_context)
                 for b in chunk_blocks:
-                    all_blocks.append({
-                        "source_indices": [offset + x for x in b["source_indices"]],
-                        "start": b["start"], "end": b["end"], "text": b["text"],
-                    })
+                    source_indices = [offset + x for x in b["source_indices"]]
+                    block = {"source_indices": source_indices, "start": b["start"], "end": b["end"],
+                             "text": b["text"]}
+                    speaker = _speaker_of(segments, source_indices)
+                    if speaker is not None:
+                        block["speaker"] = speaker
+                    all_blocks.append(block)
                 if usage:
                     usage_present = True
                     total_input_tok += usage.get("prompt_tokens", 0)
@@ -1336,7 +1415,9 @@ async def fill_empty_translations(video_id: str, provider: str = "openai"):
 def apply_manual_translation(video_id: str, texts: list, source: str):
     video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
     segments = json.loads(video["transcript_segments"] or "[]")
-    translation_segments = [{"start": s["start"], "end": s["end"], "text": t} for s, t in zip(segments, texts)]
+    translation_segments = [{"start": s["start"], "end": s["end"], "text": t,
+                             **({"speaker": s["speaker"]} if s.get("speaker") is not None else {})}
+                            for s, t in zip(segments, texts)]
     plain = "\n\n".join(texts)
     _update_video(video_id, translation_text=plain,
                   translation_segments=json.dumps(translation_segments, ensure_ascii=False),
@@ -1713,7 +1794,8 @@ def write_track_final_subtitles(video_id: str, provider: str, freeze_points: lis
 
 
 def start_secondary_track(video_id: str, provider: str, voice: str = "", mood: str = "", speed: float = 1.0,
-                           instructions: str = "", aisha_key: str = "", stretch_to_fit: bool = True) -> str:
+                           instructions: str = "", aisha_key: str = "", stretch_to_fit: bool = True,
+                           voice_map: dict = None) -> str:
     """Video 'completed' bo'lgach, IKKINCHI provayder bilan qo'shimcha
     audio+video yaratishni boshlaydi - asosiy (birinchi) natijaga UMUMAN
     tegmaydi (videos.* maydonlar o'zgarishsiz qoladi)."""
@@ -1736,17 +1818,18 @@ def start_secondary_track(video_id: str, provider: str, voice: str = "", mood: s
 
     import tts
     job_id = tts.create_job(video["original_name"], provider, segments, voice, mood, speed, instructions,
-                             aisha_key, stretch_to_fit, video_id=video_id, for_track=True)
+                             aisha_key, stretch_to_fit, video_id=video_id, for_track=True, voice_map=voice_map)
     now = db.now()
+    voice_map_json = json.dumps(voice_map, ensure_ascii=False) if voice_map else None
     if existing_track:
         db.execute("UPDATE audio_tracks SET tts_job_id = ?, audio_status = 'generating', audio_path = NULL, "
                    "final_video_path = NULL, final_video_status = 'none', freeze_points = NULL, error = NULL, "
-                   "updated_at = ? WHERE id = ?", (job_id, now, existing_track["id"]))
+                   "voice_map = ?, updated_at = ? WHERE id = ?", (job_id, voice_map_json, now, existing_track["id"]))
     else:
         db.execute(
             "INSERT INTO audio_tracks (id, video_id, provider, tts_job_id, audio_status, final_video_status, "
-            "created_at, updated_at) VALUES (?, ?, ?, ?, 'generating', 'none', ?, ?)",
-            (db.new_id(), video_id, provider, job_id, now, now))
+            "voice_map, created_at, updated_at) VALUES (?, ?, ?, ?, 'generating', 'none', ?, ?, ?)",
+            (db.new_id(), video_id, provider, job_id, voice_map_json, now, now))
     log(video_id, f"Qo'shimcha audio ({PROVIDER_LABELS.get(provider, provider)}) yaratish boshlandi.")
     return job_id
 
@@ -1950,7 +2033,8 @@ def apply_learning_srt(video_id: str, srt_text: str, filename: str, segment_coun
 
 
 def start_learning_track(video_id: str, provider: str, voice: str = "", mood: str = "", speed: float = 1.0,
-                          instructions: str = "", aisha_key: str = "", stretch_to_fit: bool = True) -> str:
+                          instructions: str = "", aisha_key: str = "", stretch_to_fit: bool = True,
+                          voice_map: dict = None) -> str:
     """Yuklangan Learning SRT asosida, MAVJUD TTS mexanizmi orqali (tts.create_job)
     mustaqil Learning audio yaratishni boshlaydi. Original video 'completed'
     bo'lishi SHART EMAS - ikki yo'nalish (Uzbek/Learning) mustaqil ishlaydi."""
@@ -1971,7 +2055,8 @@ def start_learning_track(video_id: str, provider: str, voice: str = "", mood: st
 
     import tts
     job_id = tts.create_job(video["original_name"] + " (Ruscha o'rganish)", provider, segments, voice, mood,
-                             speed, instructions, aisha_key, stretch_to_fit, video_id=video_id, for_track=True)
+                             speed, instructions, aisha_key, stretch_to_fit, video_id=video_id, for_track=True,
+                             voice_map=voice_map)
     db.execute("UPDATE tts_jobs SET is_learning = 1 WHERE id = ?", (job_id,))
     now = db.now()
     db.execute(
@@ -1979,8 +2064,9 @@ def start_learning_track(video_id: str, provider: str, voice: str = "", mood: st
         "stretch_to_fit = ?, tts_job_id = ?, audio_status = 'generating', audio_path = NULL, "
         "final_video_path = NULL, final_video_status = 'none', freeze_points = NULL, error = NULL, "
         "export_status = 'none', export_error = NULL, subtitled_video_status = 'none', "
-        "subtitled_video_path = NULL, subtitled_video_error = NULL, updated_at = ? WHERE video_id = ?",
-        (provider, voice, mood, speed, instructions, 1 if stretch_to_fit else 0, job_id, now, video_id))
+        "subtitled_video_path = NULL, subtitled_video_error = NULL, voice_map = ?, updated_at = ? WHERE video_id = ?",
+        (provider, voice, mood, speed, instructions, 1 if stretch_to_fit else 0, job_id,
+         json.dumps(voice_map, ensure_ascii=False) if voice_map else None, now, video_id))
     log(video_id, f"Learning audio ({PROVIDER_LABELS.get(provider, provider)}) yaratish boshlandi.")
     return job_id
 
