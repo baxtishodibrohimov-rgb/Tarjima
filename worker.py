@@ -942,17 +942,10 @@ def _invalidate_translation_blocks_covering(video_id: str, source_index: int) ->
     write_translation_results(video_id)
 
     if video["tts_job_id"] and invalidated_final_indices:
-        placeholders = ",".join("?" * len(invalidated_final_indices))
-        # Matnni ham bo'shatamiz (nafaqat statusni) - aks holda tarjima
-        # tozalangan bo'lsa-da, tts_segments.text eski (endi mos kelmaydigan)
-        # matnni saqlab qolib, keyingi ishga tushirishda o'sha ESKI matn bilan
-        # qayta sintez qilinib ketishi mumkin edi.
-        db.execute(
-            f"UPDATE tts_segments SET status = 'pending', audio_path = NULL, cache_key = NULL, error = NULL, "
-            f"duration_overflow = 0, text = '' "
-            f"WHERE job_id = ? AND status = 'completed' AND seg_index IN ({placeholders})",
-            (video["tts_job_id"], *invalidated_final_indices),
-        )
+        # Matn ham bo'shatiladi (nafaqat status) - aks holda eski (endi mos
+        # kelmaydigan) matn bilan qayta sintez qilinib ketishi mumkin edi.
+        import tts
+        tts.rebuild_job_units(video["tts_job_id"], translations, invalidated_final_indices)
     return len(invalidated_final_indices)
 
 
@@ -1273,15 +1266,11 @@ def get_translation_blocks(video_id: str) -> list:
     video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
     originals = json.loads(video["transcript_segments"] or "[]")
     translations = json.loads(video["translation_segments"] or "[]")
-    audio_status_by_index = {}
-    if video["tts_job_id"]:
-        segs = db.fetchall("SELECT seg_index, status, error, duration_overflow FROM tts_segments WHERE job_id = ?",
-                            (video["tts_job_id"],))
-        audio_status_by_index = {
-            s["seg_index"]: {"status": s["status"], "error": s["error"],
-                              "duration_overflow": bool(s["duration_overflow"])}
-            for s in segs
-        }
+    import tts
+    import tts_plan
+    audio_status_by_index = tts.block_audio_status(video["tts_job_id"]) if video["tts_job_id"] else {}
+    # Gap chegarasi (UI'da ingichka chiziq) - TTS shu gaplar bo'yicha yaratiladi.
+    sentence_ids = tts_plan.sentence_ids_for_blocks(translations)
     blocks = []
     for i, block in enumerate(translations):
         src = block.get("source_indices")
@@ -1297,6 +1286,8 @@ def get_translation_blocks(video_id: str) -> list:
             # Tashqi SRT'dan (parse_srt_direct) kelgan ixtiyoriy tezlik belgisi -
             # "fast"/"slow"/None (oddiy). Faqat ko'rsatish uchun, bu yerda o'zgartirilmaydi.
             "speed_tag": block.get("speed_tag"),
+            "speaker": block.get("speaker"),
+            "sentence": sentence_ids[i],
             "audio": audio_status_by_index.get(i),
         })
     return blocks
@@ -1329,17 +1320,19 @@ def apply_block_edits(video_id: str, new_texts: list):
         return {"changed_count": 0, "audio_requeued": False}
 
     if video["tts_job_id"]:
-        for i in changed_indices:
-            db.execute("UPDATE tts_segments SET text = ?, status = 'pending', audio_path = NULL, "
-                       "cache_key = NULL, error = NULL, duration_overflow = 0 WHERE job_id = ? AND seg_index = ?",
-                       (new_texts[i], video["tts_job_id"], i))
+        import tts
+        # Blok kirgan GAP qayta yaratiladi (gap - TTS birligi), qolganlari keshdan/tayyor.
+        # Eski (blokma-blok yaratilgan) ishlarda faqat o'zgargan blok - eski audio saqlanadi.
+        legacy = tts.is_legacy_job(video["tts_job_id"])
+        regen = tts.rebuild_job_units(video["tts_job_id"], translations, changed_indices)
+        unit = "blok" if legacy else "gap"
         db.execute("UPDATE tts_jobs SET status = 'queued', error = NULL WHERE id = ?", (video["tts_job_id"],))
         _update_video(video_id, status="audio_processing", blocked_reason=None, audio_status="generating",
-                      message=f"{len(changed_indices)} ta blok uchun audio qayta yaratilmoqda...")
-        import tts
+                      message=f"{regen} ta {unit} uchun audio qayta yaratilmoqda...")
         tts.TTS_QUEUE.put_nowait(video["tts_job_id"])
-        log(video_id, f"{len(changed_indices)} ta o'zgargan blok uchun audio qayta navbatga qo'yildi.")
-        return {"changed_count": len(changed_indices), "audio_requeued": True}
+        log(video_id, f"{len(changed_indices)} ta o'zgargan blok: {regen} ta {unit} qayta yaratiladi.")
+        return {"changed_count": len(changed_indices), "audio_requeued": True,
+                "regenerate_count": regen, "regenerate_unit": unit}
 
     return {"changed_count": len(changed_indices), "audio_requeued": False}
 

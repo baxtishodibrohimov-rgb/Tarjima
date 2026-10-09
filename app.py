@@ -424,11 +424,20 @@ async def pwa_service_worker():
 #                          VIDEO KUTUBXONASI
 # ---------------------------------------------------------------------------
 
+def _json_or_none(raw):
+    try:
+        return json.loads(raw) if raw else None
+    except (TypeError, ValueError):
+        return None
+
+
 def video_public(v: dict) -> dict:
     primary_tts_provider = None
+    tempo_stats = None
     if v["tts_job_id"]:
-        pj = db.fetchone("SELECT provider FROM tts_jobs WHERE id = ?", (v["tts_job_id"],))
+        pj = db.fetchone("SELECT provider, tempo_stats FROM tts_jobs WHERE id = ?", (v["tts_job_id"],))
         primary_tts_provider = pj["provider"] if pj else None
+        tempo_stats = _json_or_none(pj["tempo_stats"]) if pj else None
     learning_track = db.fetchone(
         "SELECT srt_filename, srt_status, segment_count, provider, tts_job_id, audio_status, "
         "final_video_status, error, updated_at, export_status, export_with_intro, export_error, "
@@ -476,6 +485,8 @@ def video_public(v: dict) -> dict:
             "subtitled_video_error, error, freeze_points FROM audio_tracks WHERE video_id = ?",
             (v["id"],))] if v["status"] == "completed" else [],
         "timeline_summary": transcription.timeline_summary(_parse_points(v["freeze_points"])),
+        # Ovoz tezligi statistikasi (gaplar tempo min/max/o'rtacha) - natijada ko'rsatiladi.
+        "tempo_stats": tempo_stats,
         # "Ruscha o'rganish" treki - Uzbek pipeline holatidan mustaqil, doim
         # ko'rsatiladi (video hali 'completed' bo'lmasa ham Learning SRT
         # yuklab, audio/video yaratish mumkin).

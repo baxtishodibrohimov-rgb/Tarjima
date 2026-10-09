@@ -23,7 +23,9 @@ import httpx
 import database as db
 import keys_manager
 import transcription
+import tts_plan
 from storage import TTS_DIR, MAX_ACTIVE_TTS_JOBS, safe_name
+from timing_contract import TTS_CPS_ESTIMATE, TTS_MAX_CHARS
 
 AISHA_API_BASE = os.environ.get("AISHA_API_BASE", "https://back.aisha.group").rstrip("/")
 CACHE_DIR = TTS_DIR / "cache"
@@ -33,9 +35,8 @@ TTS_QUEUE: asyncio.Queue = asyncio.Queue()
 PAUSE_FLAGS: dict = {}
 CANCEL_FLAGS: dict = {}
 
-# TTS'ga yuborishdan OLDIN, matn uzunligiga qarab tezlikni moslashtirish uchun
-# (audio yaratilgach ffmpeg bilan siqishdan ko'ra tabiiyroq eshitiladi).
-UZBEK_CHARS_PER_SECOND = 14.0
+# Faqat oldindan baho uchun (timing_contract.TTS_CPS_ESTIMATE bilan bir xil).
+UZBEK_CHARS_PER_SECOND = TTS_CPS_ESTIMATE
 
 # Aisha TTS narxi - har bir belgi (harf) uchun 1 so'm. Dollarga
 # AYLANTIRILMAYDI (kurs vaqt o'tishi bilan eskirib, noto'g'ri ko'rsatishi
@@ -69,39 +70,11 @@ def estimate_speech_duration(text: str, chars_per_second: float = UZBEK_CHARS_PE
     return length / chars_per_second
 
 
-# USTUVORLIK ZANJIRI - butun audio tezligini moslashtirish quvuri shu YAGONA
-# 0.85-1.20 "byudjet" atrofida quriladi (ikkita alohida chegara endi bitta):
-#   1) TTS'ga so'raladigan boshlang'ich tezlik - [speed:fast]/[speed:slow]
-#      tegidan (1.12/0.92) yoki teg yo'q bo'lsa 1.0 (yoki Aisha uchun job
-#      sozlamasi) - compute_segment_speed() shu yerda ishlatiladi;
-#   2) Agar HAQIQIY sintez qilingan audio baribir blok vaqtiga sig'masa,
-#      audio birlashtirish bosqichida (merge_job -> _merge_segments_pure_python)
-#      RAW audio qayta namunalanadi (resample) - lekin 1-bosqichda
-#      ALLAQACHON ishlatilgan tezlikni hisobga olib, JAMI (ikkala bosqich
-#      birgalikda) tezlik hech qachon SPEED_HARD_MAX'dan oshmaydi;
-#   3) Faqat shundan keyin ham sig'masa - freeze-point (video "kutib turadi"),
-#      ENG OXIRGI, kam uchraydigan zaxira chora sifatida.
-SPEED_TAG_BASE = {"fast": 1.12, "slow": 0.92}
-SPEED_HARD_MIN = 0.85
-SPEED_HARD_MAX = 1.20
-
-
-def compute_segment_speed(text: str, available_seconds: float, base_speed: float = 1.0,
-                           max_speed: float = SPEED_HARD_MAX, min_speed: float = 1.0):
-    """Segment matnini mavjud vaqt oralig'iga sig'dirish uchun TTS'ga yuboriladigan
-    'speed' qiymatini oldindan hisoblaydi. `min_speed` - natijaviy tezlik hech
-    qachon shundan past bo'lmaydi (standart 1.0 - ya'ni sekinlashtirilmaydi;
-    [speed:slow] tegi kelganda chaqiruvchi buni pastga tushiradi, masalan 0.85gacha).
-    Qaytaradi: (speed, matn tezlashtirilgandan keyin ham sig'maydimi: bool)."""
-    base_speed = max(base_speed, min_speed)
-    if not available_seconds or available_seconds <= 0:
-        return base_speed, False
-    needed = estimate_speech_duration(text)
-    if needed <= available_seconds:
-        return base_speed, False
-    ratio = needed / available_seconds
-    speed = min(max(base_speed, ratio), max_speed)
-    return speed, (needed / speed) > available_seconds
+# TTS har doim 1.0 tezlikda so'raladi (kesh barqaror). Tezlik (tempo) keyin,
+# yig'ishda, lektor sur'ati bo'yicha pitch saqlanadigan usulda qo'llanadi
+# (tts_plan.compute_tempos + _apply_tempo). Eski [speed:fast]/[speed:slow]
+# teglari o'qiladi, lekin e'tiborsiz qoldiriladi.
+TTS_SPEED = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +85,7 @@ async def aisha_generate_one(client: httpx.AsyncClient, text: str, mood: str, sp
     if not AISHA_API_BASE:
         raise RuntimeError("AISHA_API_BASE sozlanmagan (environment variable orqali kiriting).")
     data = {"language": "uz", "model": "Gulnoza", "mood": mood, "speed": str(speed),
-             "transcript": text[:1000]}
+             "transcript": text[:TTS_MAX_CHARS["aisha"]]}
     resp = await client.post(f"{AISHA_API_BASE}/api/v1/tts/post/",
                               headers={"X-Api-Key": api_key}, data=data)
     if resp.status_code >= 400:
@@ -137,7 +110,7 @@ async def aisha_generate_one(client: httpx.AsyncClient, text: str, mood: str, sp
 
 async def openai_tts_generate_one(client: httpx.AsyncClient, text: str, voice: str,
                                    api_key: str, instructions: str, speed: float = 1.0) -> bytes:
-    body = {"model": "gpt-4o-mini-tts", "voice": voice, "input": text[:2000], "response_format": "wav",
+    body = {"model": "gpt-4o-mini-tts", "voice": voice, "input": text[:TTS_MAX_CHARS["openai"]], "response_format": "wav",
             "speed": min(max(speed, 0.25), 4.0)}
     if instructions:
         body["instructions"] = instructions[:1000]
@@ -165,40 +138,122 @@ async def openai_tts_generate_one(client: httpx.AsyncClient, text: str, voice: s
 def create_job(title: str, provider: str, segments: list, voice: str = "", mood: str = "",
                speed: float = 1.0, instructions: str = "", aisha_key: str = "",
                stretch_to_fit: bool = True, video_id: str = None, for_track: bool = False,
-               owner_id: str = None) -> str:
+               owner_id: str = None, voice_map: dict = None) -> str:
+    """TTS ishini yaratadi. `segments` - yakuniy SRT bloklari; TTS birligi esa
+    gap (tts_plan.build_units). `speed` eski API bilan moslik uchun qabul
+    qilinadi, lekin ishlatilmaydi - TTS har doim 1.0 tezlikda so'raladi."""
     job_id = db.new_id()
     if not owner_id and video_id:
         video = db.fetchone("SELECT owner_id FROM videos WHERE id = ?", (video_id,))
         owner_id = video["owner_id"] if video else None
     aisha_enc = keys_manager.encrypt_raw(aisha_key) if aisha_key else None
+    units = tts_plan.build_units(segments, provider)
     db.execute(
         """INSERT INTO tts_jobs (id, title, provider, voice, mood, speed, instructions,
            aisha_key_encrypted, stretch_to_fit, status, total_segments, completed_segments, created_at, video_id,
-           for_track, owner_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?, ?)""",
-        (job_id, title or "TTS ishi", provider, voice, mood, speed, instructions,
-         aisha_enc, 1 if stretch_to_fit else 0, len(segments), db.now(), video_id, 1 if for_track else 0, owner_id),
+           for_track, owner_id, voice_map)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?, ?, ?)""",
+        (job_id, title or "TTS ishi", provider, voice, mood, TTS_SPEED, instructions,
+         aisha_enc, 1 if stretch_to_fit else 0, len(units), db.now(), video_id, 1 if for_track else 0, owner_id,
+         json.dumps(voice_map, ensure_ascii=False) if voice_map else None),
     )
-    for i, seg in enumerate(segments):
-        # Matni bo'sh bo'lak - foydalanuvchi ataylab "tarjima qilmayman, o'tkazib
-        # yubor" desa shu yerga tushadi: TTS'ga umuman yuborilmaydi, yakuniy
-        # audioda shu joyda jim (silence) qoladi (merge_job faqat 'completed'
-        # bo'laklarni ishlatadi).
-        status = "skipped" if not (seg["text"] or "").strip() else "pending"
-        # Tashqi tayyorlangan SRT'dan (translation.parse_srt_direct) kelgan
-        # ixtiyoriy [speed:fast]/[speed:slow] belgisi - bo'lsa, shu blok uchun
-        # TTS audio tezligini moslashtirishda ishlatiladi (compute_segment_speed).
-        speed_tag = seg.get("speed_tag") if seg.get("speed_tag") in ("fast", "slow") else None
-        db.execute(
-            """INSERT INTO tts_segments (id, job_id, seg_index, start_sec, end_sec, text, status, speed_tag)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (db.new_id(), job_id, i, seg["start"], seg["end"], seg["text"], status, speed_tag),
-        )
-    skipped_count = sum(1 for seg in segments if not (seg["text"] or "").strip())
+    # Matni bo'sh blok - foydalanuvchi ataylab "tarjima qilmayman, o'tkazib
+    # yubor" desa shu yerga tushadi: TTS'ga umuman yuborilmaydi, yakuniy
+    # audioda shu joyda jim (silence) qoladi.
+    _insert_units(job_id, units, lambda u: "skipped" if u["skipped"] else "pending")
+    skipped_count = sum(1 for u in units if u["skipped"])
     if skipped_count:
         db.execute("UPDATE tts_jobs SET completed_segments = ? WHERE id = ?", (skipped_count, job_id))
     TTS_QUEUE.put_nowait(job_id)
     return job_id
+
+
+def _insert_units(job_id: str, units: list, status_for, reuse: dict = None):
+    for i, u in enumerate(units):
+        old = (reuse or {}).get(_unit_identity(u))
+        if old:
+            status, audio_path, cache_key = "completed", old["audio_path"], old["cache_key"]
+        else:
+            status, audio_path, cache_key = status_for(u), None, None
+        db.execute(
+            """INSERT INTO tts_segments (id, job_id, seg_index, start_sec, end_sec, text, status, audio_path,
+               cache_key, sentence_index, block_start, block_end, part_index, speaker)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (db.new_id(), job_id, i, u["start"], u["end"], u["text"], status, audio_path, cache_key,
+             u["sentence_index"], u["block_start"], u["block_end"], u["part_index"], u.get("speaker")),
+        )
+
+
+def _unit_identity(u: dict) -> tuple:
+    return ((u.get("text") or "").strip(), u.get("speaker"))
+
+
+def is_legacy_job(job_id: str) -> bool:
+    """Eski ish: har SRT bloki alohida TTS qilingan (sentence_index yo'q).
+    Bunday ishlarda eski audio fayllar qayta ishlatiladi - yig'ishda bloklar
+    gaplarga birlashtiriladi, tahrirda faqat o'zgargan blok qayta yaratiladi."""
+    row = db.fetchone("SELECT COUNT(*) c FROM tts_segments WHERE job_id = ? AND sentence_index IS NOT NULL",
+                      (job_id,))
+    return not row or row["c"] == 0
+
+
+def unit_blocks(seg: dict) -> range:
+    """Birlik qamragan yakuniy SRT bloklari (eski ishlarda seg_index = blok)."""
+    if seg.get("block_start") is None:
+        return range(seg["seg_index"], seg["seg_index"] + 1)
+    return range(seg["block_start"], (seg["block_end"] if seg.get("block_end") is not None else seg["block_start"]) + 1)
+
+
+def block_audio_status(job_id: str) -> dict:
+    """{blok indeksi: {"status", "error", "duration_overflow"}} - blok kirgan
+    gap(lar)ning umumiy holati ('Tahrirlash va audio' uchun)."""
+    result = {}
+    rank = {"error": 4, "running": 3, "pending": 2, "completed": 1, "skipped": 0}
+    for s in db.fetchall("SELECT * FROM tts_segments WHERE job_id = ?", (job_id,)):
+        for i in unit_blocks(s):
+            cur = result.get(i)
+            if cur is None or rank.get(s["status"], 2) > rank.get(cur["status"], 2):
+                result[i] = {"status": s["status"], "error": s["error"],
+                             "duration_overflow": bool(s["duration_overflow"])}
+            elif s["duration_overflow"]:
+                cur["duration_overflow"] = True
+    return result
+
+
+def rebuild_job_units(job_id: str, blocks: list, changed_blocks: list) -> int:
+    """Bloklar tahrirlangandan keyin TTS birliklarini qayta quradi.
+
+    Yangi ish: gaplar qaytadan guruhlanadi (tinish belgisi o'zgarsa chegaralar
+    ham o'zgaradi); matni va spikeri o'zgarmagan gap tayyor audiosini saqlaydi,
+    o'zgargan gaplar 'pending' bo'ladi (kesh bor bo'lsa pul sarflanmaydi).
+    Eski ish: faqat o'zgargan bloklar qayta yaratiladi, qolgan eski audio saqlanadi.
+    Qaytaradi: qayta yaratiladigan gaplar (eski ishda bloklar) soni."""
+    job = db.fetchone("SELECT provider FROM tts_jobs WHERE id = ?", (job_id,))
+    if not job:
+        return 0
+    if is_legacy_job(job_id):
+        for i in changed_blocks:
+            text = (blocks[i].get("text") or "") if 0 <= i < len(blocks) else ""
+            db.execute("UPDATE tts_segments SET text = ?, status = 'pending', audio_path = NULL, "
+                       "cache_key = NULL, error = NULL, duration_overflow = 0 WHERE job_id = ? AND seg_index = ?",
+                       (text, job_id, i))
+        return len(changed_blocks)
+    old = db.fetchall("SELECT * FROM tts_segments WHERE job_id = ?", (job_id,))
+    reuse = {_unit_identity(o): o for o in old if o["status"] == "completed" and o["audio_path"]}
+    skipped_before = {i for o in old if o["status"] == "skipped" for i in unit_blocks(o)}
+    units = tts_plan.build_units(blocks, job["provider"])
+    db.execute("DELETE FROM tts_segments WHERE job_id = ?", (job_id,))
+    # Bo'sh blok faqat avval ham ataylab o'tkazib yuborilgan bo'lsa 'skipped';
+    # yangi bo'shab qolgan blok 'pending' - yig'ishdan oldin to'ldirish so'raladi.
+    _insert_units(job_id, units,
+                  lambda u: "skipped" if u["skipped"] and u["block_start"] in skipped_before else "pending",
+                  reuse)
+    done = db.fetchone("SELECT COUNT(*) c FROM tts_segments WHERE job_id = ? AND status IN ('completed', 'skipped')",
+                       (job_id,))["c"]
+    _update_job(job_id, total_segments=len(units), completed_segments=done)
+    pending = db.fetchall("SELECT DISTINCT sentence_index FROM tts_segments WHERE job_id = ? AND status = 'pending'",
+                          (job_id,))
+    return len(pending)
 
 
 def resume_job(job_id: str):
@@ -237,6 +292,20 @@ def _notify_video(job_id: str):
 #                          SEGMENT ISHLASH
 # ---------------------------------------------------------------------------
 
+def voice_for_speaker(job: dict, speaker) -> tuple:
+    """(voice, mood) - spikerga xaritada ovoz berilgan bo'lsa o'sha, aks holda asosiy."""
+    voice, mood = job["voice"], job["mood"]
+    try:
+        voice_map = json.loads(job["voice_map"]) if job["voice_map"] else {}
+    except (TypeError, ValueError):
+        voice_map = {}
+    entry = voice_map.get(str(speaker)) if speaker is not None else None
+    if isinstance(entry, dict):
+        voice = entry.get("voice") or voice
+        mood = entry.get("mood") or mood
+    return voice, mood
+
+
 async def _process_segment(client, job, seg, lock, ctx, out_dir):
     if CANCEL_FLAGS.get(job["id"]) or PAUSE_FLAGS.get(job["id"]) or ctx["stop"]:
         return
@@ -246,23 +315,7 @@ async def _process_segment(client, job, seg, lock, ctx, out_dir):
                     seg["id"]))
         return
     provider = job["provider"]
-
-    # 1-BOSQICH (ustuvorlik zanjiri boshi): TTS'ga yuborishdan oldin, matn
-    # uzunligiga qarab tezlikni moslashtiramiz. Agar bu blokda tashqi SRT'dan
-    # kelgan [speed:fast]/[speed:slow] belgisi bo'lsa, u boshlang'ich tezlik
-    # sifatida ishlatiladi (1.12/0.92); bo'lmasa - Aisha uchun job sozlamasi
-    # (orqaga moslik), OpenAI uchun 1.0. Matn baribir sig'may qolsa, tezlik
-    # SPEED_HARD_MIN-SPEED_HARD_MAX (0.85-1.20) YAGONA byudjeti ichida
-    # oshiriladi - bu byudjet 2-bosqich (audio birlashtirishdagi qayta
-    # namunalash) bilan BIRGALIKDA taqsimlanadi (pastda, merge_job'da).
-    available = (seg["end_sec"] or 0) - (seg["start_sec"] or 0)
-    speed_tag = seg["speed_tag"] if "speed_tag" in seg.keys() else None
-    if speed_tag in SPEED_TAG_BASE:
-        base_speed = SPEED_TAG_BASE[speed_tag]
-    else:
-        base_speed = float(job["speed"] or 1.0) if provider == "aisha" else 1.0
-    seg_speed, _likely_overflow = compute_segment_speed(
-        seg["text"], available, base_speed=base_speed, max_speed=SPEED_HARD_MAX, min_speed=SPEED_HARD_MIN)
+    voice, mood = voice_for_speaker(job, seg["speaker"] if "speaker" in seg.keys() else None)
 
     if provider == "aisha":
         raw = keys_manager.decrypt_raw(job["aisha_key_encrypted"]) if job["aisha_key_encrypted"] else ""
@@ -272,8 +325,7 @@ async def _process_segment(client, job, seg, lock, ctx, out_dir):
                 ctx["stop"] = True
             _notify_video(job["id"])
             return
-        aisha_speed = min(max(seg_speed, 0.5), 2.0)
-        key_params = {"mood": job["mood"], "speed": aisha_speed}
+        key_params = {"mood": mood, "speed": TTS_SPEED}
         ext = "wav"
     else:
         kid, raw = keys_manager.get_next_active_key(owner_id=job["owner_id"])
@@ -285,7 +337,7 @@ async def _process_segment(client, job, seg, lock, ctx, out_dir):
                 ctx["stop"] = True
             _notify_video(job["id"])
             return
-        key_params = {"voice": job["voice"], "instructions": job["instructions"], "speed": seg_speed}
+        key_params = {"voice": voice, "instructions": job["instructions"], "speed": TTS_SPEED}
         ext = "wav"
 
     key = cache_key_for(provider, seg["text"], **key_params)
@@ -306,10 +358,10 @@ async def _process_segment(client, job, seg, lock, ctx, out_dir):
             for attempt in range(3):
                 try:
                     if provider == "aisha":
-                        audio_bytes = await aisha_generate_one(client, seg["text"], job["mood"], aisha_speed, raw)
+                        audio_bytes = await aisha_generate_one(client, seg["text"], mood, TTS_SPEED, raw)
                     else:
                         audio_bytes = await openai_tts_generate_one(
-                            client, seg["text"], job["voice"], raw, job["instructions"], speed=seg_speed)
+                            client, seg["text"], voice, raw, job["instructions"], speed=TTS_SPEED)
                     last_err = None
                     break
                 except Exception as retry_err:
@@ -320,23 +372,15 @@ async def _process_segment(client, job, seg, lock, ctx, out_dir):
                 raise last_err
             cpath.write_bytes(audio_bytes)
             from_cache = False
-        seg_path = out_dir / f"seg_{seg['seg_index']:05d}.{ext}"
+        # Fayl nomi birlik id'si bilan - tahrirdan keyin birliklar qayta raqamlansa
+        # ham saqlab qolingan boshqa birlikning faylini bosib ketmaydi.
+        seg_path = out_dir / f"seg_{seg['id']}.{ext}"
         seg_path.write_bytes(audio_bytes)
 
-        # 1-bosqichda TTS'ga aynan qanday tezlik so'ralgani saqlanadi - audio
-        # birlashtirish bosqichi (2-bosqich, merge_job) buni bilib, qolgan
-        # "joy"ni (SPEED_HARD_MAX gacha) hisoblab qayta namunalaydi.
-        # MUHIM: bu yerda "sig'dimi-yo'qmi" tekshirilmaydi - buni faqat
-        # merge_job (haqiqiy, YAKUNIY holatni bilgan yagona joy) hal qiladi.
-        applied_speed = key_params.get("speed", seg_speed)
-
         async with lock:
-            # duration_overflow bu yerda 0ga qaytariladi - u faqat merge_job
-            # freeze-point'ni HAQIQATAN ishga tushirganda qayta 1ga o'rnatiladi
-            # (pastda, merge_job/_merge_segments_pure_python'da).
             db.execute("UPDATE tts_segments SET status = 'completed', audio_path = ?, cache_key = ?, "
                        "applied_speed = ?, duration_overflow = 0 WHERE id = ?",
-                       (str(seg_path), key, applied_speed, seg["id"]))
+                       (str(seg_path), key, TTS_SPEED, seg["id"]))
             done = db.fetchone(
                 "SELECT COUNT(*) c FROM tts_segments WHERE job_id = ? AND status IN ('completed', 'skipped')",
                 (job["id"],))["c"]
@@ -344,13 +388,13 @@ async def _process_segment(client, job, seg, lock, ctx, out_dir):
             db.log_line(job["id"], f"Segment {seg['seg_index']+1} tayyor{' (kesh)' if from_cache else ''}.")
             if not from_cache:
                 if provider == "aisha":
-                    chars = len(seg["text"][:1000])
+                    chars = len(seg["text"][:TTS_MAX_CHARS["aisha"]])
                     som_cost = round(chars * AISHA_SOM_PER_CHAR, 2)
                     db.add_cost(job["video_id"], "tts_aisha", amount_usd=0, amount_som=som_cost,
                                  detail=f"Aisha TTS, segment {seg['seg_index']+1}, ~{chars} belgi",
                                  owner_id=job["owner_id"])
                 else:
-                    chars = len(seg["text"][:2000])
+                    chars = len(seg["text"][:TTS_MAX_CHARS["openai"]])
                     cost = round((chars / 1000) * 0.015, 6)
                     db.add_cost(job["video_id"], "tts_openai", cost,
                                  detail=f"OpenAI TTS, segment {seg['seg_index']+1}, ~{chars} belgi",
@@ -431,13 +475,15 @@ async def merge_job(job_id: str):
         v = db.fetchone("SELECT translation_segments FROM videos WHERE id = ?", (job["video_id"],))
         if v:
             blocks = json.loads(v["translation_segments"] or "[]")
-            seg_by_index = {s["seg_index"]: s for s in segs}
+            status_by_block = {}
+            for seg in segs:
+                for i in unit_blocks(seg):
+                    status_by_block.setdefault(i, set()).add(seg["status"])
             missing_blocks = []
             for i, block in enumerate(blocks):
                 if (block.get("text") or "").strip():
                     continue
-                seg = seg_by_index.get(i)
-                if seg is None or seg["status"] != "skipped":
+                if status_by_block.get(i) != {"skipped"}:
                     missing_blocks.append(i + 1)
             if missing_blocks:
                 shown = ", ".join(str(x) for x in missing_blocks[:20])
@@ -456,25 +502,36 @@ async def merge_job(job_id: str):
         return
 
     video_duration = 0.0
+    pace_items = []
     if job["video_id"]:
-        v = db.fetchone("SELECT duration FROM videos WHERE id = ?", (job["video_id"],))
+        v = db.fetchone("SELECT duration, transcript_words, transcript_segments FROM videos WHERE id = ?",
+                        (job["video_id"],))
         if v and v["duration"]:
             video_duration = float(v["duration"])
+        if v:
+            # Lektor sur'ati: so'z vaqtlari bo'lsa - ulardan, bo'lmasa original SRT bloklaridan.
+            try:
+                pace_items = tts_plan.pace_items_from_words(json.loads(v["transcript_words"] or "[]"))
+                if not pace_items:
+                    pace_items = tts_plan.pace_items_from_segments(json.loads(v["transcript_segments"] or "[]"))
+            except (TypeError, ValueError):
+                pace_items = []
 
     loop = asyncio.get_event_loop()
     out_path = TTS_DIR / job_id / f"{safe_name(job['title'])}_yakuniy.mp3"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        freeze_points = await loop.run_in_executor(
-            None, _merge_segments_pure_python, ok_segs, out_path, bool(job["stretch_to_fit"]),
-            video_duration, job_id, job["video_id"])
+        points, stats = await loop.run_in_executor(
+            None, merge_sentences, segs, out_path, bool(job["stretch_to_fit"]),
+            video_duration, job_id, job["video_id"], pace_items)
         _update_job(job_id, status="completed", finished_at=db.now(), result_path=str(out_path), error=None,
-                    freeze_points=json.dumps(freeze_points, ensure_ascii=False))
-        if freeze_points:
-            db.log_line(job_id, f"Yakuniy audio yig'ildi. {len(freeze_points)} ta joyda video "
-                                 f"'kutib turishi' kerak bo'ladi (audio uzunroq chiqdi).")
-        else:
-            db.log_line(job_id, "Yakuniy audio yig'ildi.")
+                    freeze_points=json.dumps(points, ensure_ascii=False),
+                    tempo_stats=json.dumps(stats, ensure_ascii=False))
+        timeline_text = transcription.timeline_message(points)
+        db.log_line(job_id, f"Yakuniy audio yig'ildi: {stats['sentences']} ta gap, ovoz tezligi "
+                             f"{stats['tempo_min']:.2f}-{stats['tempo_max']:.2f} (o'rtacha {stats['tempo_avg']:.2f}, "
+                             f"asosiy {stats['base']:.2f}, {stats['engine']})."
+                             f"{' Videoda: ' + timeline_text + '.' if timeline_text else ''}")
     except Exception as e:
         _update_job(job_id, status="error", error=f"Birlashtirishda xato: {e}")
         db.log_line(job_id, f"XATO (merge): {e}\n{traceback.format_exc()[-400:]}")
@@ -502,8 +559,8 @@ def _read_wav_file(path: Path):
 
 
 def _resample_raw(raw: bytes, nchannels: int, sampwidth: int, target_frame_count: int) -> bytes:
-    """Oddiy chiziqli interpolatsiya orqali audio uzunligini target_frame_count'ga
-    moslaydi (tezlik/pitch bir xilda o'zgaradi)."""
+    """Chiziqli interpolatsiya bilan uzunlikni o'zgartiradi (pitch ham o'zgaradi!) -
+    endi faqat format moslash uchun; tempo _apply_tempo (atempo/rubberband) bilan."""
     typecode = _TYPECODE_BY_WIDTH.get(sampwidth)
     if typecode is None or target_frame_count <= 0:
         return raw
@@ -528,147 +585,213 @@ def _resample_raw(raw: bytes, nchannels: int, sampwidth: int, target_frame_count
     return out.tobytes()
 
 
-def _merge_segments_pure_python(ok_segs: list, out_path: Path, stretch_to_fit: bool,
-                                 video_duration: float = 0.0, job_id: str = None, video_id: str = None):
-    """Har bir bo'lak WAV faylini o'qib, bitta katta jim buferga joylaydi.
+# Gap bo'laklari (uzun gap provayder chegarasida bo'linganda) orasidagi pauza.
+PART_GAP_SEC = 0.12
+# Ovoz boshida/oxirida qoldiriladigan jimlik (TTS bergan uzun jimlik kesiladi).
+LEAD_PAD_SEC = 0.03
+TAIL_PAD_SEC = 0.06
+SILENCE_THRESHOLD = 300  # 16-bit amplituda (~ -40 dBFS)
 
-    USTUVORLIK ZANJIRI (freeze-point ENG OXIRGI, zaxira chora): 1-bosqichda
-    (tts._process_segment) TTS'ning o'ziga allaqachon [speed:fast]/[speed:slow]
-    tegidan yoki avtomatik moslashuvdan kelgan tezlik so'ralgan (p["applied_speed"]
-    - 0.85-1.20 oralig'ida). Agar audio baribir sig'masa:
-      - 2-BOSQICH: shu YERDA, RAW audio qayta namunalanadi (resample) - lekin
-        1-bosqichda ALLAQACHON ishlatilgan tezlikni hisobga olib, faqat
-        SPEED_HARD_MAX (1.20) gacha QOLGAN "joy" ishlatiladi (rate_cap =
-        SPEED_HARD_MAX / applied_speed) - ikkala bosqich BIRGALIKDA hech
-        qachon 1.20dan oshmaydi;
-      - 3-BOSQICH (ENG OXIRGI): agar shundan keyin ham sig'masa, ortiqcha
-        qism uchun "muzlatish nuqtasi" qaytariladi - buni video render
-        bosqichi asl videoga qo'llab, o'sha joyda kadrni bir necha soniya
-        "kutib turadi". Bu KAM UCHRAYDIGAN zaxira chora bo'lishi kerak -
-        har safar ishga tushganda alohida log yoziladi va
-        freeze_point_events jadvaliga qayd etiladi (qanchalik tez-tez
-        ishlatilayotganini kuzatish uchun - ko'p bo'lsa, 0.85-1.20
-        byudjeti qayta ko'rib chiqilishi kerak degani).
+_TEMPO_ENGINE = None
 
-    MUHIM: har bir bo'lakning "mavjud vaqti" (natural_gap) HAR DOIM shu
-    bo'lakning O'ZINING end_sec - start_sec farqi bilan hisoblanadi - keyingi
-    bo'lak boshlanishigacha bo'lgan masofa bilan EMAS. Aks holda: (1) audio
-    original pauzani "yeb qo'yishi" mumkin edi va freeze hech qachon
-    ishlamas edi; (2) oxirgi bo'lak umuman tekshirilmas edi. Bu bitta
-    o'zgarish freeze vaqtini ham to'g'irlaydi (freeze "time" = bo'lakning
-    o'z end_sec'i, keyingi bo'lak start_sec'i emas), chunki
-    adjusted_start + natural_gap == p["end_sec"] endi har doim to'g'ri.
 
-    adjusted_start hisoblanishi transcription.source_time_to_final_time()
-    orqali qilinadi - bu video freeze qo'yish va yakuniy SRT/VTT hisoblash
-    bilan BITTA umumiy manbadan foydalanishni kafolatlaydi.
+def tempo_engine() -> str:
+    """Pitch saqlanadigan tempo filtri: rubberband (mavjud bo'lsa) yoki atempo."""
+    global _TEMPO_ENGINE
+    if _TEMPO_ENGINE is None:
+        try:
+            out = subprocess.run([transcription.ffmpeg_exe(), "-hide_banner", "-filters"], capture_output=True,
+                                 text=True, errors="ignore", timeout=30).stdout
+        except Exception:
+            out = ""
+        _TEMPO_ENGINE = "rubberband" if " rubberband " in out else "atempo"
+    return _TEMPO_ENGINE
 
-    Qaytaradi: freeze_points - [{"time": <original video vaqti>, "duration": <necha soniya kutish>}, ...]
-    """
-    parsed = []
-    for s in ok_segs:
-        nchannels, sampwidth, framerate, raw = _read_wav_file(Path(s["audio_path"]))
-        parsed.append({**s, "nchannels": nchannels, "sampwidth": sampwidth, "framerate": framerate, "raw": raw})
-    parsed.sort(key=lambda p: p["start_sec"])
 
-    nchannels = parsed[0]["nchannels"]
-    sampwidth = parsed[0]["sampwidth"]
-    framerate = parsed[0]["framerate"]
-    typecode = _TYPECODE_BY_WIDTH.get(sampwidth, "h")
+def _tempo_filter(tempo: float) -> str:
+    if tempo_engine() == "rubberband":
+        return f"rubberband=tempo={tempo:.4f}"
+    return f"atempo={tempo:.4f}"
 
-    # 1-o'tish: har bir bo'lak uchun moslashtirilgan (surilgan) boshlanish vaqtini,
-    # kerak bo'lsa qolgan "joy" ichida tezlashtirishni va "muzlatish nuqtalari"ni hisoblaymiz.
-    freeze_points = []
-    adjusted = []
-    for idx, p in enumerate(parsed):
-        raw = p["raw"]
-        orig_frame_count = len(raw) // (p["nchannels"] * p["sampwidth"])
-        orig_duration = orig_frame_count / p["framerate"] if p["framerate"] else 0
 
-        adjusted_start = transcription.source_time_to_final_time(p["start_sec"], freeze_points)
-        natural_gap = p["end_sec"] - p["start_sec"]
+def _apply_tempo(pcm: bytes, nchannels: int, framerate: int, tempo: float) -> bytes:
+    """16-bit PCM ovoz tezligini pitch'ni o'zgartirmasdan o'zgartiradi."""
+    if abs(tempo - 1.0) < 0.002 or not pcm:
+        return pcm
+    fmt = ["-f", "s16le", "-ar", str(framerate), "-ac", str(nchannels)]
+    proc = subprocess.run([transcription.ffmpeg_exe(), "-hide_banner", "-loglevel", "error", *fmt, "-i", "pipe:0",
+                           "-af", _tempo_filter(tempo), *fmt, "pipe:1"],
+                          input=pcm, capture_output=True, timeout=300)
+    if proc.returncode != 0 or not proc.stdout:
+        raise RuntimeError(f"Ovoz tezligini o'zgartirib bo'lmadi (ffmpeg): "
+                           f"{proc.stderr.decode('utf-8', 'ignore')[-500:]}")
+    return proc.stdout[:len(proc.stdout) - len(proc.stdout) % (2 * nchannels)]
 
-        effective_duration = orig_duration
-        freeze_added = 0.0
-        if stretch_to_fit and natural_gap > 0 and orig_duration > natural_gap:
-            applied_speed = p["applied_speed"] if p.get("applied_speed") else 1.0
-            # 1-bosqich allaqachon ishlatgan "joy"ni ayirib, qolganini hisoblaymiz -
-            # hech qachon 1.0dan past bo'lmaydi (bu yerda hech qachon sekinlashtirilmaydi).
-            rate_cap = max(SPEED_HARD_MAX / applied_speed, 1.0)
-            rate = min(orig_duration / natural_gap, rate_cap)
-            if rate > 1.001:
-                target_frame_count = max(int(round(orig_frame_count / rate)), 1)
-                raw = _resample_raw(raw, p["nchannels"], p["sampwidth"], target_frame_count)
-                orig_frame_count = target_frame_count
-                effective_duration = orig_frame_count / p["framerate"] if p["framerate"] else 0
 
-            if effective_duration > natural_gap + 0.01:
-                # 3-BOSQICH: 1 va 2-bosqich (jami 0.85-1.20 byudjeti) ham
-                # yetmadi - ENG OXIRGI zaxira chora sifatida freeze-point.
-                overflow = round(effective_duration - natural_gap, 3)
-                freeze_points.append({"time": round(p["end_sec"], 3), "duration": overflow})
-                freeze_added = overflow
-                total_speed = round(applied_speed * min(rate, rate_cap), 4)
-                if job_id:
-                    db.log_line(
-                        job_id,
-                        f"FREEZE-POINT ISHGA TUSHDI: {p['seg_index'] + 1}-segment "
-                        f"({p['start_sec']:.2f}-{p['end_sec']:.2f}s) {overflow:.2f}s sig'madi - "
-                        f"1-2-bosqich tezligi jami {total_speed}x (0.85-1.20 byudjeti yetarli bo'lmadi)."
-                    )
-                    db.execute(
-                        "UPDATE tts_segments SET duration_overflow = 1 WHERE job_id = ? AND seg_index = ?",
-                        (job_id, p["seg_index"]))
-                    db.execute(
-                        "INSERT INTO freeze_point_events (id, video_id, tts_job_id, seg_index, source_time, "
-                        "duration, applied_speed, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                        (db.new_id(), video_id, job_id, p["seg_index"], round(p["end_sec"], 3), overflow,
-                         total_speed, db.now()))
+def _to_pcm16(path: Path, nchannels: int = None, framerate: int = None):
+    """WAV -> (16-bit PCM, kanallar, sample rate). Format boshqacha bo'lsa
+    (kanal/sample rate) - ffmpeg bilan umumiy formatga keltiriladi."""
+    ch, width, rate, raw = _read_wav_file(path)
+    if width == 2 and (nchannels is None or (ch == nchannels and rate == framerate)):
+        return raw, ch, rate
+    nchannels = nchannels or ch
+    framerate = framerate or rate
+    proc = subprocess.run([transcription.ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-i", str(path),
+                           "-f", "s16le", "-ar", str(framerate), "-ac", str(nchannels), "pipe:1"],
+                          capture_output=True, timeout=300)
+    if proc.returncode != 0:
+        raise RuntimeError(f"Audio formatini o'zgartirib bo'lmadi: {path.name}")
+    return proc.stdout, nchannels, framerate
 
-        adjusted.append({**p, "raw": raw, "adjusted_start": adjusted_start, "orig_duration": effective_duration})
 
-        if job_id:
-            db.log_line(
-                job_id,
-                f"DEBUG segment {p['seg_index']}: source=[{p['start_sec']:.3f}, {p['end_sec']:.3f}] "
-                f"natural_gap={natural_gap:.3f}s orig_dur={orig_duration:.3f}s "
-                f"effective_dur={effective_duration:.3f}s adjusted_start={adjusted_start:.3f}s "
-                f"freeze_added={freeze_added:.3f}s"
-            )
+def _trim_silence(pcm: bytes, nchannels: int, framerate: int) -> bytes:
+    """TTS bergan boshidagi/oxiridagi uzun jimlikni kesadi (ozgina zaxira qoladi) -
+    shunda gap ovozi aynan gap boshida eshitiladi va keraksiz sekinlashish bo'lmaydi."""
+    samples = array.array("h")
+    samples.frombytes(pcm[:len(pcm) - len(pcm) % 2])
+    n = len(samples)
+    win = max(int(framerate * 0.01), 1) * nchannels
 
-    natural_end = adjusted[-1]["adjusted_start"] + adjusted[-1]["orig_duration"]
-    target_end = transcription.source_time_to_final_time(video_duration, freeze_points) if video_duration > 0 else 0.0
-    # Kichik xavfsizlik zaxirasi (0.3s) - yaxlitlash xatoligi tufayli oxirgi
-    # so'zning kesilib qolmasligi uchun. Ilgari doim +3.0s qo'shilardi -
-    # bu asl video/audio davomiyligini hisobga olmasdi.
-    total_duration = max(natural_end, target_end) + 0.3
-    total_frames = int(total_duration * framerate)
-    buffer = array.array(typecode, bytes(total_frames * nchannels * sampwidth))
+    def loud(i):
+        return max((abs(x) for x in samples[i:i + win]), default=0) > SILENCE_THRESHOLD
 
-    for p in adjusted:
-        raw = p["raw"]
-        if p["nchannels"] != nchannels or p["framerate"] != framerate:
-            raw = _convert_format(raw, p["nchannels"], p["sampwidth"], p["framerate"], nchannels, framerate)
+    first = 0
+    while first < n and not loud(first):
+        first += win
+    if first >= n:
+        return b""
+    last = n - (n % win or win)
+    while last > first and not loud(last):
+        last -= win
+    start = max(first - int(LEAD_PAD_SEC * framerate) * nchannels, 0)
+    end = min(last + win + int(TAIL_PAD_SEC * framerate) * nchannels, n)
+    start -= start % nchannels
+    end -= end % nchannels
+    return samples[start:end].tobytes()
 
-        seg_samples = array.array(typecode)
-        seg_samples.frombytes(raw)
-        orig_frame_count = len(seg_samples) // nchannels
 
-        start_frame = int(p["adjusted_start"] * framerate)
-        end_frame = min(start_frame + orig_frame_count, total_frames)
-        n_to_copy = max(end_frame - start_frame, 0)
-        for i in range(n_to_copy * nchannels):
-            buffer[start_frame * nchannels + i] = seg_samples[i]
+def _sentence_pcm(sentence: dict, fmt: dict) -> bytes:
+    """Gap birliklari (bo'laklari) ovozini ketma-ket qo'shadi va jimlikni kesadi."""
+    gap = bytes(int(PART_GAP_SEC * fmt["rate"]) * fmt["channels"] * 2)
+    pieces = []
+    for u in sentence["units"]:
+        if u["status"] != "completed" or not u.get("audio_path"):
+            continue
+        pcm, _, _ = _to_pcm16(Path(u["audio_path"]), fmt["channels"], fmt["rate"])
+        pcm = _trim_silence(pcm, fmt["channels"], fmt["rate"])
+        if pcm:
+            pieces.append(pcm)
+    return gap.join(pieces)
+
+
+def merge_sentences(segs: list, out_path: Path, stretch_to_fit: bool, video_duration: float = 0.0,
+                    job_id: str = None, video_id: str = None, pace_items: list = None):
+    """Yakuniy audio: har gap ovozi videoda shu gapning original boshlanish
+    joyida boshlanadi (MASTER INSTRUKSIYA).
+
+    1) Birliklar gaplarga yig'iladi (eski ishlarda bloklar audiosi qayta ishlatiladi).
+    2) D_i - gap ovozining 1.0 tezlikdagi davomiyligi, A_i - keyingi gapgacha vaqt.
+    3) tempo_i - lektor sur'atiga ergashadi (tts_plan.compute_tempos), pitch saqlanadi.
+    4) need_i = D_i / tempo_i > A_i bo'lsa video sekinlashadi (slow), juda kam holatda kutadi.
+    5) Har gap ovozi source_time_to_final_time(gap boshi) da yoziladi - ustma-ust tushmaydi.
+    Qaytaradi: (vaqt nuqtalari, statistika)."""
+    sentences = [s for s in tts_plan.group_sentences(segs) if s["voiced"]]
+    if not sentences:
+        raise RuntimeError("Birlashtirish uchun tayyor ovoz yo'q.")
+    for s in sentences:
+        s["start"] = round(s["start"], 3)
+        s["end"] = max((u["end_sec"] or s["start"]) for u in s["units"])
+    first = next(u for s in sentences for u in s["units"] if u["status"] == "completed" and u.get("audio_path"))
+    ch0, _, rate0, _ = _read_wav_file(Path(first["audio_path"]))
+    fmt = {"channels": ch0, "rate": rate0}
+    bytes_per_sec = fmt["rate"] * fmt["channels"] * 2
+
+    # 1-o'tish: D_i (xotirani tejash uchun ovozlar saqlanmaydi - 2-o'tishda qayta o'qiladi).
+    durations = [len(_sentence_pcm(s, fmt)) / bytes_per_sec for s in sentences]
+    starts = [s["start"] for s in sentences]
+    available = tts_plan.available_times(starts, video_duration)
+    paces = tts_plan.sentence_paces(sentences, pace_items or [])
+    speakers = [s.get("speaker") for s in sentences]
+    tempos, base = tts_plan.compute_tempos(durations, available, paces, speakers)
+
+    # 2-o'tish: tempo qo'llanadi (parallel ffmpeg), haqiqiy uzunlik bilan reja tuziladi.
+    from concurrent.futures import ThreadPoolExecutor
+
+    def render(i):
+        return _apply_tempo(_sentence_pcm(sentences[i], fmt), fmt["channels"], fmt["rate"], tempos[i])
+
+    tmp_dir = out_path.parent / "sentences"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    needs = []
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        # Kichik guruhlar bilan - uzun videoda barcha ovozlar bir vaqtda xotirada turmasin.
+        for batch_start in range(0, len(sentences), 16):
+            batch = range(batch_start, min(batch_start + 16, len(sentences)))
+            for i, pcm in zip(batch, pool.map(render, batch)):
+                (tmp_dir / f"{i:05d}.pcm").write_bytes(pcm)
+                needs.append(len(pcm) / bytes_per_sec)
+
+    points = tts_plan.plan_points(starts, available, needs) if stretch_to_fit else []
+    active = transcription.active_timeline_points(points)
 
     merged_wav_path = out_path.with_suffix(".merged.wav")
-    with wave.open(str(merged_wav_path), "wb") as wf:
-        wf.setnchannels(nchannels)
-        wf.setsampwidth(sampwidth)
-        wf.setframerate(framerate)
-        wf.writeframes(buffer.tobytes())
+    total_end = transcription.source_time_to_final_time(video_duration, active) if video_duration > 0 else 0.0
+    frame_bytes = fmt["channels"] * 2
+    written = 0
+    max_start_error = 0.0
+    try:
+        with wave.open(str(merged_wav_path), "wb") as wf:
+            wf.setnchannels(fmt["channels"])
+            wf.setsampwidth(2)
+            wf.setframerate(fmt["rate"])
+            for i, s in enumerate(sentences):
+                pcm = (tmp_dir / f"{i:05d}.pcm").read_bytes()
+                final_start = transcription.source_time_to_final_time(s["start"], active)
+                start_frame = int(round(final_start * fmt["rate"]))
+                if start_frame > written:
+                    wf.writeframes(bytes((start_frame - written) * frame_bytes))
+                    written = start_frame
+                elif start_frame < written:
+                    # Ustma-ust tushish (faqat stretch_to_fit o'chiq yoki yaxlitlashda) -
+                    # yangi gap boshidagi zaxira jimlik qisqaradi.
+                    pcm = pcm[(written - start_frame) * frame_bytes:]
+                max_start_error = max(max_start_error, abs(written / fmt["rate"] - final_start))
+                wf.writeframes(pcm)
+                written += len(pcm) // frame_bytes
+                total_end = max(total_end, written / fmt["rate"])
+            end_frame = int((total_end + 0.3) * fmt["rate"])
+            if end_frame > written:
+                wf.writeframes(bytes((end_frame - written) * frame_bytes))
+    finally:
+        for f in tmp_dir.glob("*.pcm"):
+            f.unlink(missing_ok=True)
+        try:
+            tmp_dir.rmdir()
+        except OSError:
+            pass
 
-    # Oxirida: bitta oddiy (filtrsiz) ffmpeg chaqiruvi - murakkab filtr grafigi yo'q,
-    # shuning uchun ffmpeg versiyasiga bog'liq muammolar bo'lmaydi.
+    if job_id:
+        overflow_sentences = []
+        for p in active:
+            if p["type"] != "freeze":
+                continue
+            idx = max((i for i, st in enumerate(starts) if st < p["time"]), default=0)
+            overflow_sentences.append(idx)
+            unit = sentences[idx]["units"][0]
+            db.log_line(job_id, f"KUTISH (freeze): {idx + 1}-gap ({starts[idx]:.2f}s) ovozi sekinlashtirilgan "
+                                f"videoga ham sig'madi - {p['time']:.2f}s da {p['duration']:.2f}s kutiladi.")
+            db.execute("INSERT INTO freeze_point_events (id, video_id, tts_job_id, seg_index, source_time, "
+                       "duration, applied_speed, created_at, type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'freeze')",
+                       (db.new_id(), video_id, job_id, unit["seg_index"], p["time"], p["duration"],
+                        tempos[idx], db.now()))
+        for idx in overflow_sentences:
+            for u in sentences[idx]["units"]:
+                db.execute("UPDATE tts_segments SET duration_overflow = 1 WHERE id = ?", (u["id"],))
+        for s, t, d in zip(sentences, tempos, durations):
+            for u in s["units"]:
+                db.execute("UPDATE tts_segments SET tempo = ?, audio_duration = ? WHERE id = ?",
+                           (t, round(d, 3), u["id"]))
+
     cmd = [
         transcription.ffmpeg_exe(), "-y", "-i", str(merged_wav_path),
         "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
@@ -690,7 +813,16 @@ def _merge_segments_pure_python(ok_segs: list, out_path: Path, stretch_to_fit: b
     actual_duration = transcription.get_duration_seconds(out_path)
     if actual_duration < 1.0:
         raise RuntimeError(f"Yakuniy audio davomiyligi {actual_duration:.2f}s - bu noto'g'ri, fayl yaroqsiz bo'lishi mumkin.")
-    return freeze_points
+
+    summary = transcription.timeline_summary(active)
+    stats = {
+        "sentences": len(sentences),
+        "tempo_min": min(tempos), "tempo_max": max(tempos),
+        "tempo_avg": round(sum(tempos) / len(tempos), 3), "base": base,
+        "engine": tempo_engine(), "max_start_error": round(max_start_error, 3),
+        **summary,
+    }
+    return active, stats
 
 
 def _convert_format(raw: bytes, nchannels: int, sampwidth: int, framerate: int,
