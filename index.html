@@ -4756,7 +4756,7 @@ function renderLearningWordsPanel(v) {
   if (!w) return '';
   const item = (x, cls) => `<li><span class="${cls}">${escapeHtml(x.lemma)}</span> — ${escapeHtml(x.meaning)} <span class="hint">· videoda ${Number(x.occurrences) || 0} marta</span></li>`;
   const warnings = (w.warnings || []).map(x =>
-    `<li>${x.block ? `${escapeHtml(String(x.block))}-blok: ` : ''}${escapeHtml(x.reason)}</li>`).join('');
+    `<li>${x.block ? `${escapeHtml(String(x.block))}-blok${x.time != null ? ' (' + fmtMinSec(x.time) + ')' : ''}: ` : ''}${escapeHtml(x.reason)}</li>`).join('');
   const body = (w.new_count || w.repeat_count) ? `
       <div class="lw-counts">
         <span>Yangi so'zlar: <b>${w.new_count}</b></span>

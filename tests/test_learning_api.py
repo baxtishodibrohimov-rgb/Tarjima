@@ -149,3 +149,16 @@ def test_uzbek_translation_srt_upload_unchanged(client, video_id):
     v = db.fetchone("SELECT translation_segments, translation_status FROM videos WHERE id = ?", (video_id,))
     assert v["translation_status"] == "uploaded"
     assert '"speed_tag": "slow"' in v["translation_segments"]
+
+
+def test_learning_gets_timing_warnings_like_uzbek(client, video_id):
+    """Learning SRT uchun ham gap/vaqt tekshiruvlari (taxminiy sekinlashish, UZBEK_FULL bilan moslik)."""
+    import json
+    uz = [{"start": 1.0, "end": 3.0, "text": "Birinchi gap."}, {"start": 4.0, "end": 6.0, "text": "Ikkinchi gap."}]
+    db.execute("UPDATE videos SET translation_segments = ?, duration = 10 WHERE id = ?", (json.dumps(uz), video_id))
+    long_text = "Juda uzun Learning gapi челюсть bilan " * 6 + "."
+    text = TAGGED.replace("Pastki челюстьning суставi.", long_text + " челюсть сустав").replace("Tegsiz blok.", "Tegsiz blok")
+    assert _upload(client, video_id, text).status_code == 200
+    reasons = [w["reason"] for w in client.get(f"/api/videos/{video_id}/learning/words").json()["warnings"]]
+    assert any("sekinlashishi kerak" in r for r in reasons)
+    assert any("O'zbekcha tarjimadagi blokdan farq: gap tugash belgisi" in r for r in reasons)

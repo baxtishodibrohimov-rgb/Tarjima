@@ -1998,10 +1998,9 @@ def apply_learning_srt(video_id: str, srt_text: str, filename: str, segment_coun
         raise ValueError("Video topilmadi.")
     # So'z teglari: xato bo'lsa (LearningSrtError) yuklash rad etiladi - hech narsa o'zgarmaydi.
     blocks = translation.parse_learning_srt(srt_text)
-    import srt_checks
+    # Teg ogohlantirishlari saqlanadi; vaqt/gap tekshiruvlari (srt_checks.learning_warnings)
+    # har safar joriy holatdan hisoblanadi - eski Learning SRT'larda ham ko'rinadi.
     warnings = translation.learning_srt_warnings(blocks)
-    # Learning bloklari UZBEK_FULL (asosiy tarjima) bilan bir xil tuzilishda bo'lishi kerak.
-    warnings += srt_checks.learning_vs_uzbek_warnings(blocks, json.loads(video["translation_segments"] or "[]"))
     existing = db.fetchone("SELECT * FROM learning_tracks WHERE video_id = ?", (video_id,))
     if existing and existing["tts_job_id"]:
         old_job = db.fetchone("SELECT status FROM tts_jobs WHERE id = ?", (existing["tts_job_id"],))

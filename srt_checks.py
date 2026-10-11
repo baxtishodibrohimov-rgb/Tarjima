@@ -122,3 +122,15 @@ def learning_vs_uzbek_warnings(learning_blocks: list, uzbek_blocks: list) -> lis
         warnings.append(_warn(None, None, f"... yana {shown - 10} ta blok farq qiladi."))
     return warnings
 
+
+
+def learning_warnings(learning_blocks: list, video: dict) -> list:
+    """Learning SRT uchun: o'zbekcha tarjimadagi kabi gap/vaqt tekshiruvlari
+    (gap tugash belgilari, nutqdan oldin boshlanish, taxminiy sekinlashish ...)
+    va UZBEK_FULL bilan moslik."""
+    import json
+    originals = json.loads(video.get("transcript_segments") or "[]")
+    words = json.loads(video.get("transcript_words") or "[]")
+    uzbek = json.loads(video.get("translation_segments") or "[]")
+    return (learning_vs_uzbek_warnings(learning_blocks, uzbek)
+            + translation_warnings(learning_blocks, originals, words, float(video.get("duration") or 0)))

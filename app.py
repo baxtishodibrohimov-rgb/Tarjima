@@ -24,6 +24,7 @@ from fastapi.staticfiles import StaticFiles
 import database as db
 import auth
 import keys_manager
+import srt_checks
 import stt_words
 import transcription
 import translation
@@ -1877,11 +1878,18 @@ def _learning_words_payload(video_id: str):
         return None
     blocks = worker.learning_blocks(track)
     lists = translation.learning_word_lists(blocks)
+    warnings = _json_or_empty(track["warnings_json"])
+    video = db.fetchone("SELECT transcript_segments, transcript_words, translation_segments, duration "
+                        "FROM videos WHERE id = ?", (video_id,))
+    if video and blocks:
+        seen = {(w.get("block"), w.get("reason")) for w in warnings}
+        warnings += [w for w in srt_checks.learning_warnings(blocks, video)
+                     if (w.get("block"), w.get("reason")) not in seen]
     return {
         "new": lists["new"], "repeat": lists["repeat"],
         "new_count": len(lists["new"]), "repeat_count": len(lists["repeat"]),
         "tagged_blocks": sum(1 for b in blocks if b["words"]),
-        "warnings": _json_or_empty(track["warnings_json"]),
+        "warnings": warnings,
         "intro_slides": _json_or_empty(track["intro_slides_json"]),
     }
 
