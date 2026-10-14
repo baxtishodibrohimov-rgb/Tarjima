@@ -26,6 +26,16 @@ GLOSSARY_MATCH_THRESHOLD = 0.86
 # edi, hech qanday xato yoki signalsiz).
 FFMPEG_PROBE_TIMEOUT = 120  # faqat metadata o'qish (Duration/fps) - deyarli tezkor bo'lishi kerak
 FFMPEG_TIMEOUT = 1800  # haqiqiy ishlov berish (mux/encode) - 30 daqiqa
+# Videoni to'liq QAYTA KODLASH (subtitr kuydirish, Learning eksport, sekinlashtirish)
+# vaqti video uzunligiga bog'liq: kuchsiz serverda 2 soatlik video 30 daqiqada
+# tugamaydi. Shuning uchun chegara - video davomiyligining shuncha barobari.
+ENCODE_TIMEOUT_FACTOR = 4
+
+
+def encode_timeout(duration_sec: float) -> int:
+    """Qayta kodlash uchun ffmpeg vaqt chegarasi (soniya): kamida 30 daqiqa,
+    uzun videoda - davomiylik x ENCODE_TIMEOUT_FACTOR."""
+    return max(FFMPEG_TIMEOUT, int((duration_sec or 0) * ENCODE_TIMEOUT_FACTOR) + 600)
 
 
 def ffmpeg_exe():
@@ -490,12 +500,13 @@ def burn_subtitles_into_video(video_path: Path, srt_path: Path, out_path: Path):
     kodlanadi (subtitr filtri shuni talab qiladi), audio esa o'zgarishsiz
     ko'chiriladi (-c:a copy)."""
     cmd = build_subtitle_burn_cmd(video_path, srt_path, out_path)
+    timeout = encode_timeout(get_duration_seconds(video_path))
     try:
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="ignore",
-                               timeout=FFMPEG_TIMEOUT, cwd=str(srt_path.parent))
+                               timeout=timeout, cwd=str(srt_path.parent))
     except subprocess.TimeoutExpired:
         raise RuntimeError(
-            f"ffmpeg (subtitr kuydirish) {FFMPEG_TIMEOUT // 60} daqiqadan ortiq davom etdi va to'xtatildi. "
+            f"ffmpeg (subtitr kuydirish) {timeout // 60} daqiqadan ortiq davom etdi va to'xtatildi. "
             f"Qayta urinib ko'ring."
         )
     if proc.returncode != 0:
@@ -618,7 +629,7 @@ def mux_video_audio_with_freezes(video_path: Path, audio_path: Path, out_path: P
     ]
     try:
         _run_ffmpeg(cmd, "videoni sekinlashtirish va audio bilan yig'ish",
-                    timeout=max(FFMPEG_TIMEOUT, int(total_duration * 2)))
+                    timeout=encode_timeout(total_duration))
         if not tmp_path.exists() or tmp_path.stat().st_size < 1024:
             raise RuntimeError("Yakuniy video fayli yaratilmadi yoki bo'sh.")
         got = get_duration_seconds(tmp_path)

@@ -281,8 +281,15 @@ def build_export(clean_video: Path, out_path: Path, work_dir: Path, info: dict,
             cmd = [exe, "-y", "-i", str(intro_video), "-i", str(clean_video), "-filter_complex", graph, *maps,
                    *venc, *(aenc if n_audio else []), "-movflags", "+faststart", str(out_path)]
             method = "intro ulandi (qayta kodlash" + (", so'zlar kuydirildi)" if vfilter else ")")
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="ignore",
-                          timeout=transcription.FFMPEG_TIMEOUT, cwd=str(work_dir))
+    # Qayta kodlash vaqti video uzunligiga bog'liq (uzun videoda 30 daqiqa yetmaydi).
+    total = (info.get("duration") or 0) + ((intro_info.get("duration") or 0) if intro_video is not None else 0)
+    timeout = transcription.encode_timeout(total)
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="ignore",
+                              timeout=timeout, cwd=str(work_dir))
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"Learning videoni yig'ish {timeout // 60} daqiqadan ortiq davom etdi va to'xtatildi. "
+                           f"Qayta urinib ko'ring.")
     if proc.returncode != 0 or not out_path.exists() or out_path.stat().st_size < 1024:
         raise RuntimeError(f"ffmpeg xatosi (Learning eksport): {(proc.stdout or '')[-1500:]}")
     return method
