@@ -260,7 +260,8 @@
     padding:6px 12px 6px 4px; box-shadow:var(--shadow); user-select:none; -webkit-user-select:none; }
   .reorder-row.dragging { position:relative; z-index:5; box-shadow:0 8px 24px rgba(0,0,0,.18); opacity:.96; }
   .reorder-handle { flex:none; width:44px; height:44px; display:flex; align-items:center; justify-content:center;
-    font-size:22px; color:var(--muted); cursor:grab; touch-action:none; border-radius:10px; }
+    font-size:22px; color:var(--muted); cursor:grab; touch-action:none; border-radius:10px;
+    -webkit-touch-callout:none; }
   .reorder-handle:active { cursor:grabbing; background:var(--neutral-bg); }
   .reorder-row .rthumb { flex:none; width:96px; aspect-ratio:16/9; border-radius:8px;
     background:var(--neutral-bg) center/cover no-repeat; }
@@ -2596,6 +2597,7 @@ function toggleVideoReorder() {
   videoReorderMode = !videoReorderMode;
   renderFolderBar();
   renderVideoGrid();
+  if (!videoReorderMode) loadVideos();  // tartiblash paytida to'xtatilgan yangilanish
 }
 
 /* Joriy bo'limdagi videolar (filtr va qidiruvsiz) - API bergan tartibda. */
@@ -2629,22 +2631,25 @@ function startVideoDrag(e, handle) {
   const list = document.getElementById('reorderList');
   if (!row || !list || videoDrag) return;
   e.preventDefault();
-  handle.setPointerCapture(e.pointerId);
   const before = [...list.children].map(r => r.dataset.id);
   videoDrag = { row, list, handle, pointerId: e.pointerId, startY: e.clientY, baseTop: row.offsetTop,
-                before, lastY: e.clientY, scrollTimer: null };
+                before, lastY: e.clientY, scrollTimer: null, frame: 0 };
   row.classList.add('dragging');
-  handle.addEventListener('pointermove', onVideoDragMove);
-  handle.addEventListener('pointerup', endVideoDrag);
-  handle.addEventListener('pointercancel', endVideoDrag);
-  videoDrag.scrollTimer = setInterval(autoScrollWhileDragging, 30);
+  // Hodisalar butun hujjatdan tinglanadi: qator DOM'da ko'chirilganda element
+  // "pointer capture"ni yo'qotadi va surish to'xtab qolardi.
+  document.addEventListener('pointermove', onVideoDragMove, { passive: false });
+  document.addEventListener('pointerup', endVideoDrag);
+  document.addEventListener('pointercancel', endVideoDrag);
+  videoDrag.scrollTimer = setInterval(autoScrollWhileDragging, 16);
 }
 
 function onVideoDragMove(e) {
   const d = videoDrag;
   if (!d || e.pointerId !== d.pointerId) return;
+  e.preventDefault();
   d.lastY = e.clientY;
-  placeDraggedRow();
+  // Bir kadrda bir marta joylash - tez harakatda ham silliq.
+  if (!d.frame) d.frame = requestAnimationFrame(() => { d.frame = 0; if (videoDrag === d) placeDraggedRow(); });
 }
 
 function placeDraggedRow() {
@@ -2667,8 +2672,9 @@ function autoScrollWhileDragging() {
   if (!d) return;
   const edge = 70;
   let dy = 0;
-  if (d.lastY < edge) dy = -12;
-  else if (d.lastY > window.innerHeight - edge) dy = 12;
+  // Chetga qanchalik yaqin bo'lsa, shuncha tez suriladi.
+  if (d.lastY < edge) dy = -Math.ceil((edge - d.lastY) / 3);
+  else if (d.lastY > window.innerHeight - edge) dy = Math.ceil((d.lastY - (window.innerHeight - edge)) / 3);
   if (dy) {
     window.scrollBy(0, dy);
     d.startY -= dy;  // sahifa siljigani uchun boshlang'ich nuqta ham siljiydi
@@ -2681,9 +2687,10 @@ async function endVideoDrag(e) {
   if (!d || e.pointerId !== d.pointerId) return;
   videoDrag = null;
   clearInterval(d.scrollTimer);
-  d.handle.removeEventListener('pointermove', onVideoDragMove);
-  d.handle.removeEventListener('pointerup', endVideoDrag);
-  d.handle.removeEventListener('pointercancel', endVideoDrag);
+  if (d.frame) cancelAnimationFrame(d.frame);
+  document.removeEventListener('pointermove', onVideoDragMove);
+  document.removeEventListener('pointerup', endVideoDrag);
+  document.removeEventListener('pointercancel', endVideoDrag);
   d.row.classList.remove('dragging');
   d.row.style.transform = '';
   const ids = [...d.list.children].map(r => r.dataset.id);
@@ -5898,7 +5905,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       if (currentDetailVideoId) {
         if (videoDetailHasActiveWork(currentDetailVideoData) && !anyPanelOpen)
           pollVideoDetail(currentDetailVideoId);
-      } else loadVideos();
+      } else if (!videoReorderMode) loadVideos();  // tartiblash paytida ro'yxat qayta chizilmaydi
     } else if (id === 'page-transcribe') loadTranscribeList();
     else if (id === 'page-translate') loadCloudInbox();
     else if (id === 'page-audio') loadAudioList();
