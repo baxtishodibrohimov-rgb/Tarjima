@@ -1660,6 +1660,17 @@ async def _mux_render_core(video: dict, audio_path: Path, freeze_points: list, o
     tmp_out_path.replace(out_path)  # atomik ko'chirish - endigina yakuniy video hisoblanadi
 
 
+def _interrupted_by_restart(video_id: str, e: Exception, what: str) -> bool:
+    """Server qayta ishga tushirilayotganda ffmpeg to'xtatilgan bo'lsa - xato deb
+    belgilanmaydi: holat 'jarayonda' qoladi, server yonganda recover_and_start
+    ishni qaytadan boshlaydi."""
+    if isinstance(e, transcription.FfmpegInterrupted):
+        log(video_id, f"{what}: server qayta ishga tushirilmoqda - ish to'xtatildi va server yonganda "
+                      f"avtomatik qaytadan boshlanadi.")
+        return True
+    return False
+
+
 async def render_video(video_id: str):
     video = db.fetchone("SELECT * FROM videos WHERE id = ?", (video_id,))
     if not video:
@@ -1680,6 +1691,8 @@ async def render_video(video_id: str):
                       final_video_path=str(out_path), message="Yakuniy video tayyor.", error=None)
         log(video_id, "Yakuniy video tayyor.")
     except Exception as e:
+        if _interrupted_by_restart(video_id, e, "Video yig'ish"):
+            return
         if tmp_out_path:
             tmp_out_path.unlink(missing_ok=True)
         _update_video(video_id, blocked_reason="error", final_video_status="error", error=str(e),
@@ -1924,6 +1937,8 @@ async def render_track_video(video_id: str, provider: str):
                    "updated_at = ? WHERE id = ?", (str(out_path), db.now(), track["id"]))
         log(video_id, f"[{label}] Qo'shimcha yakuniy video tayyor.")
     except Exception as e:
+        if _interrupted_by_restart(video_id, e, "Qo'shimcha trek videosi"):
+            return
         if tmp_out_path:
             tmp_out_path.unlink(missing_ok=True)
         db.execute("UPDATE audio_tracks SET final_video_status = 'error', error = ?, updated_at = ? WHERE id = ?",
@@ -2200,6 +2215,8 @@ async def render_learning_video(video_id: str):
         else:
             enqueue_learning_export(video_id)
     except Exception as e:
+        if _interrupted_by_restart(video_id, e, "Learning videosi"):
+            return
         if tmp_out_path:
             tmp_out_path.unlink(missing_ok=True)
         db.execute("UPDATE learning_tracks SET final_video_status = 'error', error = ?, updated_at = ? "
@@ -2312,8 +2329,13 @@ async def run_learning_export(video_id: str):
                    (str(out_path), 1 if intro_path else 0, warn, db.now(), track["id"]))
         log(video_id, f"[Ruscha o'rganish] Yuklab olinadigan Learning videosi tayyor: {method}.")
     except Exception as e:
+        if _interrupted_by_restart(video_id, e, "Yuklab olinadigan Learning videosi"):
+            return
+        msg = str(e)
+        if len(msg) > 1500:  # boshi (sabab) va oxiri (ffmpeg'ning oxirgi qatorlari) saqlanadi
+            msg = msg[:200] + " … " + msg[-1250:]
         db.execute("UPDATE learning_tracks SET export_status = 'error', export_error = ?, updated_at = ? "
-                   "WHERE id = ?", (str(e)[:1500], db.now(), track["id"]))
+                   "WHERE id = ?", (msg, db.now(), track["id"]))
         log(video_id, f"XATO (Learning eksport): {e}\n{traceback.format_exc()[-400:]}")
 
 
@@ -2355,6 +2377,8 @@ async def run_learning_intro(video_id: str):
                       f"{len(result['slides'])} ta ekran.")
         enqueue_learning_export(video_id)
     except Exception as e:
+        if _interrupted_by_restart(video_id, e, "Learning intro"):
+            return
         db.execute("UPDATE learning_tracks SET intro_status = 'error', intro_error = ?, intro_message = NULL, "
                    "updated_at = ? WHERE id = ?", (str(e)[:1500], db.now(), track["id"]))
         log(video_id, f"XATO (Learning intro): {e}\n{traceback.format_exc()[-400:]}")
@@ -2541,6 +2565,8 @@ async def burn_subtitles_job(video_id: str, provider: str = None):
                            subtitled_video_error=None)
         log(video_id, f"{label}Subtitrli video tayyor.")
     except Exception as e:
+        if _interrupted_by_restart(video_id, e, "Subtitr kuydirish"):
+            return
         if tmp_out_path:
             tmp_out_path.unlink(missing_ok=True)
         _fail(str(e))

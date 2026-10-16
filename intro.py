@@ -243,6 +243,7 @@ def _run(cmd: list, what: str, cwd: Path = None):
     proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="ignore",
                           timeout=transcription.FFMPEG_TIMEOUT, cwd=str(cwd) if cwd else None)
     if proc.returncode != 0:
+        transcription.raise_if_interrupted(proc.stdout, proc.returncode)
         raise RuntimeError(f"ffmpeg xatosi ({what}): {(proc.stdout or '')[-1200:]}")
 
 

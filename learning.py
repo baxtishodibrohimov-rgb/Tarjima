@@ -308,5 +308,6 @@ def build_export(clean_video: Path, out_path: Path, work_dir: Path, info: dict,
         raise RuntimeError(f"Learning videoni yig'ish {timeout // 60} daqiqadan ortiq davom etdi va to'xtatildi. "
                            f"Qayta urinib ko'ring.")
     if proc.returncode != 0 or not out_path.exists() or out_path.stat().st_size < 1024:
+        transcription.raise_if_interrupted(proc.stdout, proc.returncode)
         raise RuntimeError(f"ffmpeg xatosi (Learning eksport): {(proc.stdout or '')[-1500:]}")
     return method

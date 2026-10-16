@@ -53,3 +53,43 @@ def test_learning_export_keeps_shape_with_intro(tmp_path, kind):
     learning.build_export(src, out, tmp_path / "ew", info, ass, intro_path)
     got = T.video_display_info(out)
     assert (got["width"], got["height"]) == (expected["width"], expected["height"])
+
+
+def test_ffmpeg_stopped_by_server_restart_is_not_an_error(tmp_path):
+    import signal
+    import time
+    ff = T.ffmpeg_exe()
+    proc = subprocess.Popen([ff, "-y", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=600",
+                             "-c:v", "libx264", "-preset", "ultrafast", str(tmp_path / "x.mp4")],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    time.sleep(1.5)
+    proc.send_signal(signal.SIGTERM)
+    out, _ = proc.communicate()
+    with pytest.raises(T.FfmpegInterrupted):
+        T.raise_if_interrupted(out, proc.returncode)
+    T.raise_if_interrupted("Conversion failed!", 1)  # oddiy xato - FfmpegInterrupted emas
+
+
+def test_learning_export_stays_in_progress_when_server_restarts(tmp_path, monkeypatch):
+    import asyncio
+    import json
+    import database as db
+    import worker
+    db.init_db()
+    src = _make(tmp_path, "lx")
+    vid = db.new_id()
+    db.execute("INSERT INTO videos (id, original_name, status, created_at, updated_at) VALUES (?, 'lx.mp4', "
+               "'completed', ?, ?)", (vid, db.now(), db.now()))
+    words = [{"index": 1, "start": 0.2, "end": 1.5, "text": "x", "words": [{"kind": "yangi", "lemma": "зуб",
+                                                                           "meaning": "tish"}]}]
+    db.execute("INSERT INTO learning_tracks (id, video_id, srt_status, final_video_status, final_video_path, "
+               "export_status, words_json, created_at, updated_at) VALUES (?, ?, 'uploaded', 'ready', ?, "
+               "'generating', ?, ?, ?)", (db.new_id(), vid, str(src), json.dumps(words), db.now(), db.now()))
+
+    def stopped(*a, **k):
+        raise T.FfmpegInterrupted("server restart")
+
+    monkeypatch.setattr(learning, "build_export", stopped)
+    asyncio.run(worker.run_learning_export(vid))
+    track = db.fetchone("SELECT export_status, export_error FROM learning_tracks WHERE video_id = ?", (vid,))
+    assert track["export_status"] == "generating" and not track["export_error"]

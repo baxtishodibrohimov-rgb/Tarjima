@@ -33,6 +33,21 @@ FFMPEG_TIMEOUT = 1800  # haqiqiy ishlov berish (mux/encode) - 30 daqiqa
 ENCODE_TIMEOUT_FACTOR = 4
 
 
+class FfmpegInterrupted(RuntimeError):
+    """ffmpeg tashqaridan to'xtatildi (odatda server qayta ishga tushirilganda -
+    `systemctl restart` barcha jarayonlarga SIGTERM yuboradi). Bu ishning xatosi
+    emas: holat 'jarayonda' qoladi va server yonganda ish qaytadan boshlanadi."""
+
+
+_INTERRUPT_RE = re.compile(r"received signal (?:2|15)\b|Exiting normally, received signal")
+
+
+def raise_if_interrupted(output: str, returncode: int = None):
+    if (returncode is not None and returncode in (-2, -15)) or _INTERRUPT_RE.search(output or ""):
+        raise FfmpegInterrupted("Server qayta ishga tushirilgani uchun ffmpeg to'xtatildi - ish server "
+                                "yonganda avtomatik qaytadan boshlanadi.")
+
+
 def encode_timeout(duration_sec: float) -> int:
     """Qayta kodlash uchun ffmpeg vaqt chegarasi (soniya): kamida 30 daqiqa,
     uzun videoda - davomiylik x ENCODE_TIMEOUT_FACTOR."""
@@ -523,6 +538,7 @@ def mux_video_audio(video_path: Path, audio_path: Path, out_path: Path, target_d
             f"to'xtatildi. Qayta urinib ko'ring."
         )
     if proc.returncode != 0:
+        raise_if_interrupted(proc.stdout, proc.returncode)
         raise RuntimeError(f"ffmpeg xatosi (video+audio birlashtirish): {(proc.stdout or '')[-2000:]}")
     if not out_path.exists() or out_path.stat().st_size < 1024:
         raise RuntimeError("Yakuniy video fayli yaratilmadi yoki bo'sh.")
@@ -578,6 +594,7 @@ def burn_subtitles_into_video(video_path: Path, srt_path: Path, out_path: Path):
             f"Qayta urinib ko'ring."
         )
     if proc.returncode != 0:
+        raise_if_interrupted(proc.stdout, proc.returncode)
         raise RuntimeError(f"ffmpeg xatosi (subtitr kuydirish): {(proc.stdout or '')[-2000:]}")
     if not out_path.exists() or out_path.stat().st_size < 1024:
         raise RuntimeError("Subtitrli video fayli yaratilmadi yoki bo'sh.")
@@ -593,6 +610,7 @@ def _run_ffmpeg(cmd: list, description: str, timeout: int = FFMPEG_TIMEOUT):
             f"Qayta urinib ko'ring."
         )
     if proc.returncode != 0:
+        raise_if_interrupted(proc.stdout, proc.returncode)
         raise RuntimeError(f"ffmpeg xatosi ({description}): {(proc.stdout or '')[-1500:]}")
 
 
