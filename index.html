@@ -272,6 +272,8 @@
   @media (max-width:600px) { .reorder-row .rthumb, .reorder-row .rmeta { display:none; } }
   .vcard.status-done { background:var(--ok-bg); box-shadow:none; }
   .vcard.status-progress { background:var(--run-bg); box-shadow:none; }
+  /* Ruscha o'rganish videosi tayyor (o'zbekchasi hali emas) */
+  .vcard.status-learning { background:var(--accent-soft); box-shadow:none; }
   .vcard.status-upload { background:var(--panel); box-shadow:none; }
   .vcard.status-error { background:var(--err-bg); box-shadow:none; }
   .vcard .thumb { width:100%; aspect-ratio:16/9; border-radius:10px; background:var(--neutral-bg) center/cover no-repeat;
@@ -1150,6 +1152,51 @@ function toggleTheme() {
 })();
 
 let currentPageId = 'page-videos';
+/* ---- Sahifa holati manzilda (#...) - yangilanganda (refresh) o'sha joyda qoladi ---- */
+let navRestoring = false;
+
+function saveNavState() {
+  if (navRestoring) return;
+  const params = new URLSearchParams();
+  if (currentPageId === 'page-videos' && currentDetailVideoId) {
+    params.set('video', currentDetailVideoId);
+    if (currentDetailSection && currentDetailSection !== 'transcript') params.set('s', currentDetailSection);
+  } else if (currentPageId === 'page-videos' || !currentPageId) {
+    if (typeof currentFolderId !== 'undefined' && currentFolderId) params.set('folder', currentFolderId);
+  } else {
+    params.set('page', currentPageId);
+    if (currentPageId === 'page-bot' && typeof botFolderId !== 'undefined' && botFolderId) params.set('bf', botFolderId);
+  }
+  const hash = params.toString();
+  const url = location.pathname + location.search + (hash ? '#' + hash : '');
+  try { history.replaceState(null, '', url); } catch (e) { /* ixtiyoriy */ }
+}
+
+async function restoreNavState() {
+  const params = new URLSearchParams(location.hash.replace(/^#/, ''));
+  navRestoring = true;
+  try {
+    const videoId = params.get('video');
+    const page = params.get('page');
+    const folder = params.get('folder');
+    if (videoId) {
+      openVideoDetail(videoId, params.get('s') || 'transcript');
+    } else if (page && document.getElementById(page) && page !== 'page-videos') {
+      if (page === 'page-bot' && params.get('bf')) botFolderId = params.get('bf');
+      switchPage(page);
+    } else if (folder) {
+      currentFolderId = folder;
+      try { await loadFolders(); } catch (e) { /* papkalar keyin yuklanadi */ }
+      if (!allFoldersCache.some(f => f.id === folder)) currentFolderId = null;
+      renderFolderBar();
+      renderVideoGrid();
+    }
+  } finally {
+    navRestoring = false;
+    saveNavState();
+  }
+}
+
 function switchPage(pageId) {
   currentPageId = pageId;
   document.body.classList.toggle('on-bot-page', pageId === 'page-bot');
@@ -1179,6 +1226,7 @@ function switchPage(pageId) {
   if (pageId === 'page-videos' && typeof allFoldersCache !== 'undefined') renderFolderBar();
   if (pageId === 'page-translate') loadCloudInbox();
   if (pageId === 'page-bot') loadBotTree();
+  saveNavState();
 }
 
 function switchTab(group, tabId) {
@@ -1954,7 +2002,9 @@ const STATUS_FILTERS = [
 
 function matchesStatusFilter(v) {
   if (currentStatusFilter === 'all') return true;
-  return videoStatusInfo(v).cardCls === 'status-' + currentStatusFilter;
+  const cls = videoStatusInfo(v).cardCls;
+  if (currentStatusFilter === 'done') return cls === 'status-done' || cls === 'status-learning';
+  return cls === 'status-' + currentStatusFilter;
 }
 
 function renderStatusFilterBar() {
@@ -2257,6 +2307,7 @@ async function moveBotItemTo(itemId, folderId) {
 function openBotFolder(folderId) {
   botFolderId = folderId;
   renderBotPage();
+  saveNavState();
 }
 
 function openBotFolderManager(parentId = botFolderId) {
@@ -2741,6 +2792,7 @@ function selectFolder(folderId) {
   currentFolderId = folderId;
   renderFolderBar();
   renderVideoGrid();
+  saveNavState();
 }
 
 function openFolderManager() {
@@ -2932,8 +2984,9 @@ function renderVideoGrid() {
           <button class="rename-video-btn" onclick="event.stopPropagation(); openRenameVideoModal('${v.id}')" title="Video nomini o‘zgartirish" aria-label="Video nomini o‘zgartirish">✎</button>
         </div>
         <p class="vmeta">${fmtBytes(v.file_size)} ${v.duration ? '· ' + fmtMinSec(v.duration) : ''}</p>
-        <div class="card-foot">
+        <div class="card-foot" style="flex-wrap:wrap; gap:6px;">
           <span class="status-pill ${info.pillCls}">${info.icon} ${escapeHtml(label)}</span>
+          ${readyBadges(v)}
         </div>
         ${inFolder}
         ${folderSelectHtml(v)}
@@ -2975,8 +3028,23 @@ async function submitVideoRename() {
   }
 }
 
+/* Qaysi videolar tayyor: 🇺🇿 o'zbekcha, 🇷🇺 ruscha o'rganish. */
+function readyBadges(v) {
+  const out = [];
+  if (v.status === 'completed' && learningVideoReady(v)) out.push('<span class="status-pill ok" title="O\'zbekcha video tayyor">🇺🇿 ✓</span>');
+  if (learningVideoReady(v)) out.push('<span class="status-pill" style="background:var(--accent-chip); color:var(--accent);" title="Ruscha o\'rganish videosi tayyor">🇷🇺 Learning ✓</span>');
+  return out.join('');
+}
+
+function learningVideoReady(v) {
+  const t = v.learning_track;
+  return !!(t && t.final_video_status === 'ready');
+}
+
 function videoStatusInfo(v) {
   if (v.status === 'completed') return { cardCls: 'status-done', pillCls: 'ok', icon: '✓' };
+  // O'zbekcha video hali tayyor emas, lekin Ruscha o'rganish videosi tayyor.
+  if (learningVideoReady(v) && !v.blocked_reason) return { cardCls: 'status-learning', pillCls: '', icon: '✓' };
   if (v.blocked_reason || v.status === 'failed') return { cardCls: 'status-error', pillCls: 'err', icon: '⚠' };
   if (v.status === 'uploaded') return { cardCls: 'status-upload', pillCls: 'wait', icon: '⬆' };
   return { cardCls: 'status-progress', pillCls: 'run', icon: '⏳' };
@@ -2998,13 +3066,13 @@ let currentDetailSection = 'transcript';
 // yo'qolib-paydo bo'lib turadi).
 let currentDetailVideoBlockedReason = null;
 
-function openVideoDetail(id) {
+function openVideoDetail(id, section = 'transcript') {
   switchPage('page-videos');
   document.body.classList.add('video-detail-open');
   currentDetailVideoId = id;
   currentDetailVideoStatus = null;
   currentDetailVideoData = null;
-  currentDetailSection = 'transcript';
+  currentDetailSection = section;
   currentDetailVideoBlockedReason = null;
   document.getElementById('videosGridView').style.display = 'none';
   document.getElementById('videoDetailView').style.display = 'block';
@@ -3014,6 +3082,7 @@ function openVideoDetail(id) {
   document.getElementById('topbarVideoName').style.display = 'none';
   document.getElementById('folderBar').style.display = 'none';
   window.scrollTo(0, 0);
+  saveNavState();
   loadVideoDetail(id);
 }
 
@@ -3034,6 +3103,7 @@ function closeVideoDetail() {
   topbarVideoName.textContent = '';
   topbarVideoName.removeAttribute('title');
   topbarVideoName.style.display = 'none';
+  saveNavState();
   loadVideos();
 }
 
@@ -3142,6 +3212,10 @@ async function loadVideoDetail(id) {
     if (currentDetailVideoId !== id) return;
     applyVideoDetailSnapshot(v, true);
   } catch (e) {
+    if (/topilmadi|404/i.test(e.message || '')) {  // masalan o'chirilgan video manzili saqlanib qolgan
+      closeVideoDetail();
+      return;
+    }
     document.getElementById('videoDetailContent').innerHTML = `<p class="status err">Xato: ${escapeHtml(e.message)}</p>`;
   }
 }
@@ -3174,6 +3248,7 @@ function videoDetailHasActiveWork(v) {
 function showVideoSection(section) {
   if (!['transcript', 'translation', 'audio', 'learning', 'downloads'].includes(section)) return;
   currentDetailSection = section;
+  saveNavState();
   if (!currentDetailVideoData) return;
   document.getElementById('videoDetailContent').innerHTML = renderVideoDetail(currentDetailVideoData);
   if (currentDetailSection === 'audio' && currentDetailVideoData.status === 'completed') {
@@ -5856,6 +5931,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   loadGlossaryGroups();
   loadFolders();
   loadVideos();
+  restoreNavState();  // yangilangandan keyin oldingi sahifa/video/papkaga qaytish
   if (currentUser.is_superadmin) loadSplitVideos();
   loadTranscribeList();
   loadAudioList();
