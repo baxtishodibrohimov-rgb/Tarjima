@@ -1779,6 +1779,8 @@ async function handleUploadFile(file, kind) {
     initForm.append('original_name', file.name);
     initForm.append('total_size', String(file.size));
     initForm.append('kind', kind);
+    // Kompyuterdagi "Дата изменения" - Kutubxonada videolar shu sana bo'yicha tartiblanadi.
+    if (file.lastModified) initForm.append('last_modified', String(file.lastModified));
     if (kind === 'cloud') initForm.append('file_kind', cloudFileKind(file));
     const initResp = await apiFetch('/api/videos/upload/init', { method: 'POST', body: initForm, signal: state.controller.signal });
     if (initResp.duplicate_of) {
@@ -2567,7 +2569,8 @@ function renderFolderBar() {
   const breadcrumb = `<span class="folder-chip ${currentFolderId === null ? 'active' : ''}" onclick="selectFolder(null)" title="Papkaga joylanmagan videolar">Asosiy</span>` +
     path.map(f => `<span style="color:var(--muted); flex:none;">›</span><span class="folder-chip active" onclick="selectFolder('${f.id}')">${escapeHtml(f.name)} <span class="fcount">${f.video_count}</span></span>`).join('');
   const childChips = children.map(f => `<span class="folder-chip" onclick="selectFolder('${f.id}')">📁 ${escapeHtml(f.name)} <span class="fcount">${f.video_count}</span></span>`).join('');
-  const reorderChip = `<span class="folder-chip ${videoReorderMode ? 'active' : ''}" style="margin-left:auto;" onclick="toggleVideoReorder()" title="Videolar ketma-ketligini o'zgartirish">↕ ${videoReorderMode ? 'Tayyor' : 'Tartiblash'}</span>`;
+  const reorderChip = `<span class="folder-chip ${videoReorderMode ? 'active' : ''}" style="margin-left:auto;" onclick="toggleVideoReorder()" title="Videolar ketma-ketligini o'zgartirish">↕ ${videoReorderMode ? 'Tayyor' : 'Tartiblash'}</span>`
+    + (videoReorderMode ? `<span class="folder-chip" onclick="resetVideoOrderByDate()" title="Qo'lda tartibni bekor qilib, fayl sanasi bo'yicha (yangisi birinchi) tartiblash">📅 Sana bo'yicha</span>` : '');
   bar.innerHTML = breadcrumb + (children.length ? '<span style="color:var(--border); flex:none;">│</span>' + childChips : '') + reorderChip;
 }
 
@@ -2586,6 +2589,28 @@ function videosInCurrentFolder() {
   return allVideosCache.filter(v => currentFolderId === null
     ? !(v.folder_id && known.has(v.folder_id))
     : v.folder_id === currentFolderId);
+}
+
+function resetVideoOrderByDate() {
+  showConfirm("Bu bo'limdagi qo'lda qilingan tartib bekor qilinadi - videolar fayl sanasi bo'yicha (yangisi birinchi) joylanadi. Davom etilsinmi?", async () => {
+    try {
+      await apiFetch('/api/videos/reorder-by-date', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folder_id: currentFolderId }),
+      });
+      await loadVideos();
+    } catch (e) { alert('Xato: ' + e.message); }
+  });
+}
+
+/* Fayl sanasi (kompyuterdagi "Дата изменения", bo'lmasa yuklangan vaqt) - mahalliy vaqtda. */
+function videoFileDate(v) {
+  const raw = v.source_mtime || v.created_at;
+  if (!raw) return '';
+  const d = new Date(raw + 'Z');
+  if (isNaN(d)) return '';
+  const p = n => String(n).padStart(2, '0');
+  return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 async function moveVideoOrder(videoId, direction) {
@@ -2815,6 +2840,7 @@ function renderVideoGrid() {
     const label = v.blocked_reason ? BLOCKED_LABELS[v.blocked_reason] || v.status : (STATUS_LABELS[v.status] || v.status);
     const orderBtns = canReorder ? `<div class="row" style="margin:6px 0 0; gap:6px;" onclick="event.stopPropagation()">
         <span class="hint" style="margin:0;">${idx + 1}</span>
+        <span class="hint" style="margin:0; font-size:11px;" title="Fayl sanasi">📅 ${videoFileDate(v)}</span>
         <button class="small-btn" ${idx === 0 ? 'disabled' : ''} onclick="moveVideoOrder('${v.id}', 'up')" title="Oldinga">↑</button>
         <button class="small-btn" ${idx === videos.length - 1 ? 'disabled' : ''} onclick="moveVideoOrder('${v.id}', 'down')" title="Keyinga">↓</button>
       </div>` : '';

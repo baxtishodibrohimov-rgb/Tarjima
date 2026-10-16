@@ -528,9 +528,13 @@ _VIDEO_NEW_COLUMNS = {
     # Kutubxonada papka ichidagi qo'lda tartib (1, 2, 3 ...). 0 - tartiblanmagan
     # (yangi yoki endi ko'chirilgan video) - eng yuqorida, yangisi birinchi.
     "sort_order": "INTEGER DEFAULT 0",
+    # Faylning foydalanuvchi kompyuteridagi o'zgartirilgan sanasi (Explorer'dagi
+    # "Дата изменения") - tartiblanmagan videolar shu sana bo'yicha, yangisi birinchi.
+    "source_mtime": "TEXT",
 }
 _UPLOAD_NEW_COLUMNS = {
     "owner_id": "TEXT",
+    "source_mtime": "TEXT",
     "kind": "TEXT DEFAULT 'pipeline'",
     "file_kind": "TEXT DEFAULT 'video'",
 }

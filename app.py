@@ -479,6 +479,7 @@ def video_public(v: dict) -> dict:
         "has_thumbnail": bool(v["thumbnail_path"]),
         "flagged_issues_count": len(json.loads(v["flagged_issues"])) if v["flagged_issues"] else 0,
         "created_at": v["created_at"], "updated_at": v["updated_at"],
+        "source_mtime": v["source_mtime"],
         "primary_tts_provider": primary_tts_provider,
         # Video 'completed' bo'lgach ikkinchi provayder bilan yaratilgan
         # qo'shimcha audio/video track(lar) - odatda bo'sh ro'yxat.
@@ -536,7 +537,8 @@ async def list_videos():
     owner_id = auth.current_user_id()
     # Qo'lda belgilangan tartib (sort_order) bo'yicha; tartiblanmaganlar (0) - eng yuqorida, yangisi birinchi.
     rows = db.fetchall("SELECT * FROM videos WHERE owner_id = ? AND (kind = 'pipeline' OR kind IS NULL) "
-                       "ORDER BY COALESCE(sort_order, 0) ASC, created_at DESC", (owner_id,))
+                       "ORDER BY COALESCE(sort_order, 0) ASC, COALESCE(source_mtime, created_at) DESC, "
+                       "created_at DESC", (owner_id,))
     return [video_public(r) for r in rows]
 
 
@@ -554,6 +556,19 @@ async def reorder_videos(payload: dict):
         raise HTTPException(400, "Videolar shu papkaga tegishli emas - sahifani yangilab qayta urinib ko'ring.")
     for position, video_id in enumerate(ids, start=1):
         db.execute("UPDATE videos SET sort_order = ? WHERE id = ?", (position, video_id))
+    return {"ok": True}
+
+
+@app.post("/api/videos/reorder-by-date")
+async def reorder_videos_by_date(payload: dict):
+    """Papkadagi qo'lda tartibni bekor qiladi - videolar fayl sanasi bo'yicha (yangisi birinchi)."""
+    owner_id = auth.current_user_id()
+    folder_id = payload.get("folder_id") or None
+    if folder_id:
+        db.execute("UPDATE videos SET sort_order = 0 WHERE owner_id = ? AND folder_id = ?", (owner_id, folder_id))
+    else:
+        db.execute("UPDATE videos SET sort_order = 0 WHERE owner_id = ? AND (folder_id IS NULL OR folder_id NOT IN "
+                   "(SELECT id FROM folders WHERE owner_id = ?))", (owner_id, owner_id))
     return {"ok": True}
 
 
@@ -2446,7 +2461,7 @@ async def split_video_to_library_endpoint(video_id: str):
 
 @app.post("/api/videos/upload/init")
 async def upload_init(original_name: str = Form(...), total_size: int = Form(...), kind: str = Form("pipeline"),
-                       file_kind: str = Form("video")):
+                       file_kind: str = Form("video"), last_modified: int = Form(0)):
     user = auth.current_user()
     owner_id = user["id"]
     if user["role"] != "superadmin" and kind != "pipeline":
@@ -2478,10 +2493,13 @@ async def upload_init(original_name: str = Form(...), total_size: int = Form(...
     upload_id = db.new_id()
     tmp_path = UPLOADS_DIR / f"{upload_id}.part"
     tmp_path.touch()
+    # Brauzer beradigan File.lastModified (ms) - kompyuterdagi "Дата изменения".
+    source_mtime = (time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(last_modified / 1000))
+                    if 0 < last_modified < 4102444800000 else None)
     db.execute(
         """INSERT INTO uploads (id, original_name, total_size, received_size, tmp_path, status, kind, file_kind,
-           created_at, updated_at, owner_id) VALUES (?, ?, ?, 0, ?, 'uploading', ?, ?, ?, ?, ?)""",
-        (upload_id, name, total_size, str(tmp_path), kind, file_kind, db.now(), db.now(), owner_id),
+           created_at, updated_at, owner_id, source_mtime) VALUES (?, ?, ?, 0, ?, 'uploading', ?, ?, ?, ?, ?, ?)""",
+        (upload_id, name, total_size, str(tmp_path), kind, file_kind, db.now(), db.now(), owner_id, source_mtime),
     )
     return {"upload_id": upload_id, "received_size": 0, "resumed": False}
 
@@ -2600,9 +2618,9 @@ async def upload_complete(upload_id: str, request: Request):
     init_message = "Serverda saqlangan. Bo'laklarga avtomatik bo'linmoqda..." if kind == "pipeline" else "Yuklandi, botga yuborilmoqda..."
     db.execute(
         """INSERT INTO videos (id, original_name, filename, path, file_size, status, kind,
-           created_at, updated_at, message, owner_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           created_at, updated_at, message, owner_id, source_mtime) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (video_id, u["original_name"], dest_path.name, str(dest_path), u["total_size"], init_status, kind,
-         db.now(), db.now(), init_message, owner_id),
+         db.now(), db.now(), init_message, owner_id, u["source_mtime"]),
     )
     db.execute("UPDATE uploads SET status = 'completed', video_id = ? WHERE id = ?", (video_id, upload_id))
     db.log_line(video_id, "Video serverga to'liq yuklandi.")
