@@ -254,6 +254,21 @@
   .vcard { background:var(--surface); border-radius:16px; padding:14px; display:flex; flex-direction:column; gap:11px;
     cursor:pointer; transition:transform .15s; box-shadow:var(--shadow); }
   .vcard:hover { transform:translateY(-2px); }
+  /* Tartiblash rejimi: gorizontal qatorlar, ☰ ni ushlab suriladi */
+  .reorder-list { grid-column:1/-1; display:flex; flex-direction:column; gap:6px; }
+  .reorder-row { display:flex; align-items:center; gap:12px; background:var(--surface); border-radius:12px;
+    padding:6px 12px 6px 4px; box-shadow:var(--shadow); user-select:none; -webkit-user-select:none; }
+  .reorder-row.dragging { position:relative; z-index:5; box-shadow:0 8px 24px rgba(0,0,0,.18); opacity:.96; }
+  .reorder-handle { flex:none; width:44px; height:44px; display:flex; align-items:center; justify-content:center;
+    font-size:22px; color:var(--muted); cursor:grab; touch-action:none; border-radius:10px; }
+  .reorder-handle:active { cursor:grabbing; background:var(--neutral-bg); }
+  .reorder-row .rthumb { flex:none; width:96px; aspect-ratio:16/9; border-radius:8px;
+    background:var(--neutral-bg) center/cover no-repeat; }
+  .reorder-row .rnum { flex:none; width:26px; text-align:right; color:var(--faint); font-size:12px; }
+  .reorder-row .rname { flex:1; min-width:0; font-weight:600; font-size:14px; overflow:hidden; text-overflow:ellipsis;
+    white-space:nowrap; }
+  .reorder-row .rmeta { flex:none; color:var(--muted); font-size:12px; }
+  @media (max-width:600px) { .reorder-row .rthumb, .reorder-row .rmeta { display:none; } }
   .vcard.status-done { background:var(--ok-bg); box-shadow:none; }
   .vcard.status-progress { background:var(--run-bg); box-shadow:none; }
   .vcard.status-upload { background:var(--panel); box-shadow:none; }
@@ -2570,7 +2585,7 @@ function renderFolderBar() {
     path.map(f => `<span style="color:var(--muted); flex:none;">›</span><span class="folder-chip active" onclick="selectFolder('${f.id}')">${escapeHtml(f.name)} <span class="fcount">${f.video_count}</span></span>`).join('');
   const childChips = children.map(f => `<span class="folder-chip" onclick="selectFolder('${f.id}')">📁 ${escapeHtml(f.name)} <span class="fcount">${f.video_count}</span></span>`).join('');
   const reorderChip = `<span class="folder-chip ${videoReorderMode ? 'active' : ''}" style="margin-left:auto;" onclick="toggleVideoReorder()" title="Videolar ketma-ketligini o'zgartirish">↕ ${videoReorderMode ? 'Tayyor' : 'Tartiblash'}</span>`
-    + (videoReorderMode ? `<span class="folder-chip" onclick="resetVideoOrderByDate()" title="Qo'lda tartibni bekor qilib, fayl sanasi bo'yicha (yangisi birinchi) tartiblash">📅 Sana bo'yicha</span>` : '');
+;
   bar.innerHTML = breadcrumb + (children.length ? '<span style="color:var(--border); flex:none;">│</span>' + childChips : '') + reorderChip;
 }
 
@@ -2591,46 +2606,99 @@ function videosInCurrentFolder() {
     : v.folder_id === currentFolderId);
 }
 
-function resetVideoOrderByDate() {
-  showConfirm("Bu bo'limdagi qo'lda qilingan tartib bekor qilinadi - videolar fayl sanasi bo'yicha (yangisi birinchi) joylanadi. Davom etilsinmi?", async () => {
-    try {
-      await apiFetch('/api/videos/reorder-by-date', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ folder_id: currentFolderId }),
-      });
-      await loadVideos();
-    } catch (e) { alert('Xato: ' + e.message); }
-  });
+/* Tartiblash rejimi: har video bitta gorizontal qator, boshidagi ☰ ni ushlab
+   (sichqoncha yoki barmoq bilan) kerakli joyga suriladi. */
+function renderReorderList(videos) {
+  const rows = videos.map((v, idx) => {
+    const thumb = v.has_thumbnail ? `style="background-image:url('${API_BASE}/api/videos/${v.id}/thumbnail')"` : '';
+    return `<div class="reorder-row" data-id="${v.id}">
+      <div class="reorder-handle" onpointerdown="startVideoDrag(event, this)" title="Ushlab suring" aria-label="Ushlab suring">☰</div>
+      <span class="rnum">${idx + 1}</span>
+      <div class="rthumb" ${thumb}></div>
+      <div class="rname" title="${escapeHtml(v.original_name)}">${escapeHtml(v.original_name)}</div>
+      <span class="rmeta">${v.duration ? fmtMinSec(v.duration) : ''}</span>
+    </div>`;
+  }).join('');
+  return `<div class="reorder-list" id="reorderList">${rows}</div>`;
 }
 
-/* Fayl sanasi (kompyuterdagi "Дата изменения", bo'lmasa yuklangan vaqt) - mahalliy vaqtda. */
-function videoFileDate(v) {
-  const raw = v.source_mtime || v.created_at;
-  if (!raw) return '';
-  const d = new Date(raw + 'Z');
-  if (isNaN(d)) return '';
-  const p = n => String(n).padStart(2, '0');
-  return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+let videoDrag = null;
+
+function startVideoDrag(e, handle) {
+  const row = handle.closest('.reorder-row');
+  const list = document.getElementById('reorderList');
+  if (!row || !list || videoDrag) return;
+  e.preventDefault();
+  handle.setPointerCapture(e.pointerId);
+  const before = [...list.children].map(r => r.dataset.id);
+  videoDrag = { row, list, handle, pointerId: e.pointerId, startY: e.clientY, baseTop: row.offsetTop,
+                before, lastY: e.clientY, scrollTimer: null };
+  row.classList.add('dragging');
+  handle.addEventListener('pointermove', onVideoDragMove);
+  handle.addEventListener('pointerup', endVideoDrag);
+  handle.addEventListener('pointercancel', endVideoDrag);
+  videoDrag.scrollTimer = setInterval(autoScrollWhileDragging, 30);
 }
 
-async function moveVideoOrder(videoId, direction) {
-  const list = videosInCurrentFolder();
-  const i = list.findIndex(v => v.id === videoId);
-  const j = direction === 'up' ? i - 1 : i + 1;
-  if (i < 0 || j < 0 || j >= list.length) return;
-  [list[i], list[j]] = [list[j], list[i]];
-  // Darhol ko'rsatiladi, keyin serverga saqlanadi.
-  const order = new Map(list.map((v, k) => [v.id, k]));
-  const rest = allVideosCache.filter(v => !order.has(v.id));
-  allVideosCache = [...list, ...rest];
-  renderVideoGrid();
+function onVideoDragMove(e) {
+  const d = videoDrag;
+  if (!d || e.pointerId !== d.pointerId) return;
+  d.lastY = e.clientY;
+  placeDraggedRow();
+}
+
+function placeDraggedRow() {
+  const d = videoDrag;
+  const rows = [...d.list.children].filter(r => r !== d.row);
+  // Surilayotgan qator markazidan pastdagi birinchi qatorning oldiga qo'yiladi.
+  let target = null;
+  for (const r of rows) {
+    const rect = r.getBoundingClientRect();
+    if (d.lastY < rect.top + rect.height / 2) { target = r; break; }
+  }
+  if (target !== d.row.nextSibling) d.list.insertBefore(d.row, target);
+  // Qator barmoq ostida qolishi uchun siljish (DOM'dagi yangi joyiga nisbatan).
+  const offset = d.lastY - d.startY - (d.row.offsetTop - d.baseTop);
+  d.row.style.transform = `translateY(${offset}px)`;
+}
+
+function autoScrollWhileDragging() {
+  const d = videoDrag;
+  if (!d) return;
+  const edge = 70;
+  let dy = 0;
+  if (d.lastY < edge) dy = -12;
+  else if (d.lastY > window.innerHeight - edge) dy = 12;
+  if (dy) {
+    window.scrollBy(0, dy);
+    d.startY -= dy;  // sahifa siljigani uchun boshlang'ich nuqta ham siljiydi
+    placeDraggedRow();
+  }
+}
+
+async function endVideoDrag(e) {
+  const d = videoDrag;
+  if (!d || e.pointerId !== d.pointerId) return;
+  videoDrag = null;
+  clearInterval(d.scrollTimer);
+  d.handle.removeEventListener('pointermove', onVideoDragMove);
+  d.handle.removeEventListener('pointerup', endVideoDrag);
+  d.handle.removeEventListener('pointercancel', endVideoDrag);
+  d.row.classList.remove('dragging');
+  d.row.style.transform = '';
+  const ids = [...d.list.children].map(r => r.dataset.id);
+  [...d.list.children].forEach((r, i) => { const n = r.querySelector('.rnum'); if (n) n.textContent = i + 1; });
+  if (ids.join() === d.before.join()) return;
+  const byId = new Map(allVideosCache.map(v => [v.id, v]));
+  const moved = new Set(ids);
+  allVideosCache = [...ids.map(id => byId.get(id)), ...allVideosCache.filter(v => !moved.has(v.id))];
   try {
     await apiFetch('/api/videos/reorder', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ folder_id: currentFolderId, ids: list.map(v => v.id) }),
+      body: JSON.stringify({ folder_id: currentFolderId, ids }),
     });
-  } catch (e) {
-    alert('Xato: ' + e.message);
+  } catch (err) {
+    alert('Xato: ' + err.message);
     loadVideos();
   }
 }
@@ -2835,15 +2903,13 @@ function renderVideoGrid() {
     }
     return;
   }
+  if (canReorder) {
+    grid.innerHTML = renderReorderList(videos);
+    return;
+  }
   const folderName = id => (allFoldersCache.find(f => f.id === id) || {}).name;
   grid.innerHTML = reorderHint + videos.map((v, idx) => {
     const label = v.blocked_reason ? BLOCKED_LABELS[v.blocked_reason] || v.status : (STATUS_LABELS[v.status] || v.status);
-    const orderBtns = canReorder ? `<div class="row" style="margin:6px 0 0; gap:6px;" onclick="event.stopPropagation()">
-        <span class="hint" style="margin:0;">${idx + 1}</span>
-        <span class="hint" style="margin:0; font-size:11px;" title="Fayl sanasi">📅 ${videoFileDate(v)}</span>
-        <button class="small-btn" ${idx === 0 ? 'disabled' : ''} onclick="moveVideoOrder('${v.id}', 'up')" title="Oldinga">↑</button>
-        <button class="small-btn" ${idx === videos.length - 1 ? 'disabled' : ''} onclick="moveVideoOrder('${v.id}', 'down')" title="Keyinga">↓</button>
-      </div>` : '';
     const inFolder = query && v.folder_id && folderName(v.folder_id)
       ? `<p class="hint" style="margin:2px 0 0;">📁 ${escapeHtml(folderName(v.folder_id))}</p>` : '';
     const info = videoStatusInfo(v);
@@ -2864,7 +2930,6 @@ function renderVideoGrid() {
         </div>
         ${inFolder}
         ${folderSelectHtml(v)}
-        ${orderBtns}
       </div>
     </div>`;
   }).join('');
