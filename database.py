@@ -525,6 +525,9 @@ _VIDEO_NEW_COLUMNS = {
     "speaker_names": "TEXT",
     # Tarjima SRT'sini yuklashdagi ogohlantirishlar (JSON) - rad etilmaydi, faqat ko'rsatiladi.
     "translation_warnings": "TEXT",
+    # Kutubxonada papka ichidagi qo'lda tartib (1, 2, 3 ...). 0 - tartiblanmagan
+    # (yangi yoki endi ko'chirilgan video) - eng yuqorida, yangisi birinchi.
+    "sort_order": "INTEGER DEFAULT 0",
 }
 _UPLOAD_NEW_COLUMNS = {
     "owner_id": "TEXT",

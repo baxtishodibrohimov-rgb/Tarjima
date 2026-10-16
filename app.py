@@ -534,9 +534,27 @@ def chunk_detail(c: dict, transcript_segments: list = None) -> dict:
 @app.get("/api/videos")
 async def list_videos():
     owner_id = auth.current_user_id()
+    # Qo'lda belgilangan tartib (sort_order) bo'yicha; tartiblanmaganlar (0) - eng yuqorida, yangisi birinchi.
     rows = db.fetchall("SELECT * FROM videos WHERE owner_id = ? AND (kind = 'pipeline' OR kind IS NULL) "
-                       "ORDER BY created_at DESC", (owner_id,))
+                       "ORDER BY COALESCE(sort_order, 0) ASC, created_at DESC", (owner_id,))
     return [video_public(r) for r in rows]
+
+
+@app.post("/api/videos/reorder")
+async def reorder_videos(payload: dict):
+    """Bitta papka (yoki papkasiz bo'lim) ichidagi videolar tartibi: ids - yangi tartibda."""
+    owner_id = auth.current_user_id()
+    folder_id = payload.get("folder_id") or None
+    ids = [str(x) for x in payload.get("ids") or []]
+    if not ids or len(set(ids)) != len(ids):
+        raise HTTPException(400, "Videolar ro'yxati noto'g'ri.")
+    rows = db.fetchall(f"SELECT id, folder_id FROM videos WHERE owner_id = ? AND id IN ({','.join('?' * len(ids))})",
+                       (owner_id, *ids))
+    if len(rows) != len(ids) or any((r["folder_id"] or None) != folder_id for r in rows):
+        raise HTTPException(400, "Videolar shu papkaga tegishli emas - sahifani yangilab qayta urinib ko'ring.")
+    for position, video_id in enumerate(ids, start=1):
+        db.execute("UPDATE videos SET sort_order = ? WHERE id = ?", (position, video_id))
+    return {"ok": True}
 
 
 def split_video_public(v: dict) -> dict:
@@ -650,7 +668,8 @@ async def set_video_folder(video_id: str, folder_id: str = Form("")):
         f = db.fetchone("SELECT id FROM folders WHERE id = ? AND owner_id = ?", (folder_id, owner_id))
         if not f:
             raise HTTPException(404, "Papka topilmadi.")
-    db.execute("UPDATE videos SET folder_id = ? WHERE id = ?", (folder_id, video_id))
+    # Yangi papkada eng yuqorida turadi (keyin qo'lda tartiblash mumkin).
+    db.execute("UPDATE videos SET folder_id = ?, sort_order = 0 WHERE id = ?", (folder_id, video_id))
     return {"ok": True}
 
 

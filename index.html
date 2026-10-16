@@ -2564,10 +2564,50 @@ function renderFolderBar() {
   const path = folderPath(currentFolderId);
   const children = allFoldersCache.filter(f => (f.parent_id || null) === currentFolderId)
     .sort((a, b) => (a.sort_order - b.sort_order) || a.name.localeCompare(b.name));
-  const breadcrumb = `<span class="folder-chip ${currentFolderId === null ? 'active' : ''}" onclick="selectFolder(null)">Barchasi</span>` +
+  const breadcrumb = `<span class="folder-chip ${currentFolderId === null ? 'active' : ''}" onclick="selectFolder(null)" title="Papkaga joylanmagan videolar">Asosiy</span>` +
     path.map(f => `<span style="color:var(--muted); flex:none;">›</span><span class="folder-chip active" onclick="selectFolder('${f.id}')">${escapeHtml(f.name)} <span class="fcount">${f.video_count}</span></span>`).join('');
   const childChips = children.map(f => `<span class="folder-chip" onclick="selectFolder('${f.id}')">📁 ${escapeHtml(f.name)} <span class="fcount">${f.video_count}</span></span>`).join('');
-  bar.innerHTML = breadcrumb + (children.length ? '<span style="color:var(--border); flex:none;">│</span>' + childChips : '');
+  const reorderChip = `<span class="folder-chip ${videoReorderMode ? 'active' : ''}" style="margin-left:auto;" onclick="toggleVideoReorder()" title="Videolar ketma-ketligini o'zgartirish">↕ ${videoReorderMode ? 'Tayyor' : 'Tartiblash'}</span>`;
+  bar.innerHTML = breadcrumb + (children.length ? '<span style="color:var(--border); flex:none;">│</span>' + childChips : '') + reorderChip;
+}
+
+/* ---- Videolar tartibi (papka ichida yoki asosiy bo'limda) ---- */
+let videoReorderMode = false;
+
+function toggleVideoReorder() {
+  videoReorderMode = !videoReorderMode;
+  renderFolderBar();
+  renderVideoGrid();
+}
+
+/* Joriy bo'limdagi videolar (filtr va qidiruvsiz) - API bergan tartibda. */
+function videosInCurrentFolder() {
+  const known = new Set(allFoldersCache.map(f => f.id));
+  return allVideosCache.filter(v => currentFolderId === null
+    ? !(v.folder_id && known.has(v.folder_id))
+    : v.folder_id === currentFolderId);
+}
+
+async function moveVideoOrder(videoId, direction) {
+  const list = videosInCurrentFolder();
+  const i = list.findIndex(v => v.id === videoId);
+  const j = direction === 'up' ? i - 1 : i + 1;
+  if (i < 0 || j < 0 || j >= list.length) return;
+  [list[i], list[j]] = [list[j], list[i]];
+  // Darhol ko'rsatiladi, keyin serverga saqlanadi.
+  const order = new Map(list.map((v, k) => [v.id, k]));
+  const rest = allVideosCache.filter(v => !order.has(v.id));
+  allVideosCache = [...list, ...rest];
+  renderVideoGrid();
+  try {
+    await apiFetch('/api/videos/reorder', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ folder_id: currentFolderId, ids: list.map(v => v.id) }),
+    });
+  } catch (e) {
+    alert('Xato: ' + e.message);
+    loadVideos();
+  }
 }
 
 function folderPath(folderId) {
@@ -2749,23 +2789,37 @@ function folderSelectHtml(v) {
 function renderVideoGrid() {
   const grid = document.getElementById('videoGrid');
   if (!grid) return;
-  let videos = currentFolderId === null ? allVideosCache : allVideosCache.filter(v => v.folder_id === currentFolderId);
-  videos = videos.filter(matchesStatusFilter);
   const searchEl = document.getElementById('headerSearchInput');
   const query = searchEl ? searchEl.value.trim().toLowerCase() : '';
-  if (query) videos = videos.filter(v => (v.original_name || '').toLowerCase().includes(query));
+  // Asosiy bo'limda faqat papkaga joylanmagan videolar; qidiruv esa barcha papkalardan topadi.
+  let videos = query ? allVideosCache.filter(v => (v.original_name || '').toLowerCase().includes(query))
+    : videosInCurrentFolder();
+  videos = videos.filter(matchesStatusFilter);
+  const canReorder = videoReorderMode && !query && currentStatusFilter === 'all';
+  const reorderHint = videoReorderMode && !canReorder
+    ? '<p class="hint" style="grid-column:1/-1;">Tartiblash uchun qidiruvni tozalang va "Barchasi" filtrini tanlang.</p>' : '';
   if (videos.length === 0) {
     if (allVideosCache.length === 0) {
       grid.innerHTML = '<p class="hint">Hali video yuklanmagan.</p>';
-    } else if (currentFolderId !== null && currentStatusFilter === 'all') {
+    } else if (currentFolderId !== null && currentStatusFilter === 'all' && !query) {
       grid.innerHTML = '<p class="hint">Bu papkada video yo\'q.</p>';
+    } else if (currentFolderId === null && currentStatusFilter === 'all' && !query) {
+      grid.innerHTML = '<p class="hint">Hamma videolar papkalarda. Papkani tanlang.</p>';
     } else {
       grid.innerHTML = '<p class="hint">Bu filtrga mos video topilmadi.</p>';
     }
     return;
   }
-  grid.innerHTML = videos.map(v => {
+  const folderName = id => (allFoldersCache.find(f => f.id === id) || {}).name;
+  grid.innerHTML = reorderHint + videos.map((v, idx) => {
     const label = v.blocked_reason ? BLOCKED_LABELS[v.blocked_reason] || v.status : (STATUS_LABELS[v.status] || v.status);
+    const orderBtns = canReorder ? `<div class="row" style="margin:6px 0 0; gap:6px;" onclick="event.stopPropagation()">
+        <span class="hint" style="margin:0;">${idx + 1}</span>
+        <button class="small-btn" ${idx === 0 ? 'disabled' : ''} onclick="moveVideoOrder('${v.id}', 'up')" title="Oldinga">↑</button>
+        <button class="small-btn" ${idx === videos.length - 1 ? 'disabled' : ''} onclick="moveVideoOrder('${v.id}', 'down')" title="Keyinga">↓</button>
+      </div>` : '';
+    const inFolder = query && v.folder_id && folderName(v.folder_id)
+      ? `<p class="hint" style="margin:2px 0 0;">📁 ${escapeHtml(folderName(v.folder_id))}</p>` : '';
     const info = videoStatusInfo(v);
     const thumb = v.has_thumbnail
       ? `<div class="thumb" style="background-image:url('${API_BASE}/api/videos/${v.id}/thumbnail')"></div>`
@@ -2782,7 +2836,9 @@ function renderVideoGrid() {
         <div class="card-foot">
           <span class="status-pill ${info.pillCls}">${info.icon} ${escapeHtml(label)}</span>
         </div>
+        ${inFolder}
         ${folderSelectHtml(v)}
+        ${orderBtns}
       </div>
     </div>`;
   }).join('');
