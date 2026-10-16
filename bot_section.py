@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import traceback
+from contextlib import ExitStack
 from pathlib import Path
 from urllib.parse import quote
 
@@ -443,10 +444,20 @@ async def _upload_job(record_id, groups, title, folder_id, remove_from_library, 
                     ext = source.suffix or ".mp4"
                     filename = f"{base}_{i:02d}{ext}" if n_parts > 1 else f"{base}{ext}"
                     body = {"chat_id": chat_id, "caption": f"{label}\n📍 {location}"[:1000]}
+                    thumb = None
                     if g["kind"] == "video":
                         body["supports_streaming"] = "true"
-                    with open(part, "rb") as f:
-                        resp = await client.post(_bot_url(method), data=body, files={field: (filename, f, mime)})
+                        # O'lcham va thumbnail berilmasa Telegram videoni kvadrat ko'rsatadi.
+                        extra, thumb = await asyncio.get_event_loop().run_in_executor(
+                            None, transcription.telegram_video_fields, Path(part), transcription.TELEGRAM_THUMB_DIR)
+                        body.update(extra)
+                    with ExitStack() as stack:
+                        files = {field: (filename, stack.enter_context(open(part, "rb")), mime)}
+                        if thumb:
+                            files["thumbnail"] = ("thumb.jpg", stack.enter_context(open(thumb, "rb")), "image/jpeg")
+                        resp = await client.post(_bot_url(method), data=body, files=files)
+                    if thumb:
+                        thumb.unlink(missing_ok=True)
                     try:
                         data = resp.json()
                     except ValueError:

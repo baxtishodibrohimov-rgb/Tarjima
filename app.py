@@ -2144,12 +2144,20 @@ async def _send_parts_to_telegram(video_id: str, parts: list, title: str, start:
                 continue
             caption = title if total == 1 else f"{title}\n\nQism {i}/{total}"
             filename = Path(part).name if total == 1 else f"{safe_name(Path(title).stem)}_{i:02d}.mp4"
+            # O'lcham va thumbnail berilmasa Telegram videoni kvadrat ko'rsatadi.
+            extra, thumb = await asyncio.get_event_loop().run_in_executor(
+                None, transcription.telegram_video_fields, Path(part), transcription.TELEGRAM_THUMB_DIR)
             with open(part, "rb") as f:
+                files = {"video": (filename, f, "video/mp4")}
+                if thumb:
+                    files["thumbnail"] = ("thumb.jpg", thumb.read_bytes(), "image/jpeg")
                 resp = await client.post(
                     f"{LOCAL_BOT_API_URL.rstrip('/')}/bot{TELEGRAM_BOT_TOKEN}/sendVideo",
-                    data={"chat_id": TELEGRAM_CHAT_ID, "caption": caption, "supports_streaming": "true"},
-                    files={"video": (filename, f, "video/mp4")},
+                    data={"chat_id": TELEGRAM_CHAT_ID, "caption": caption, "supports_streaming": "true", **extra},
+                    files=files,
                 )
+            if thumb:
+                thumb.unlink(missing_ok=True)
             if resp.status_code >= 400:
                 raise RuntimeError(f"Telegram xatosi ({resp.status_code}, qism {i}/{total}): {resp.text[:400]}")
             db.execute("UPDATE videos SET split_parts_sent = ? WHERE id = ?", (i, video_id))

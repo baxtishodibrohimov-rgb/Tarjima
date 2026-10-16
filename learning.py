@@ -186,6 +186,17 @@ def probe_media(path: Path) -> dict:
     if not sm:
         raise RuntimeError(f"Video o'lchami aniqlanmadi: {path.name}")
     info["width"], info["height"] = int(sm.group(1)), int(sm.group(2))
+    # Ekrandagi o'lcham (SAR va telefon burilishi hisobga olingan). Farq qilsa -
+    # intro va so'zlar shu o'lchamda chiziladi, video esa unga keltiriladi
+    # (aks holda intro cho'zilib ketadi yoki burilgan videoda ulash xato beradi).
+    display = transcription.video_display_info(path)
+    if display["width"] and display["height"] and \
+            (display["width"], display["height"]) != (info["width"], info["height"]):
+        info["coded_width"], info["coded_height"] = info["width"], info["height"]
+        info["width"], info["height"] = display["width"], display["height"]
+        info["normalize"] = True
+    else:
+        info["normalize"] = False
     fm = re.search(r"([\d.]+) fps", vline) or re.search(r"([\d.]+) tbr", vline)
     fps = fm.group(1) if fm else "25"
     info["fps"] = _FPS_RATIONAL.get(fps, fps)
@@ -229,7 +240,7 @@ def ass_filter_available() -> bool:
 def params_match(a: dict, b: dict) -> bool:
     """Concat demuxer + -c copy uchun parametrlar to'liq mosmi."""
     keys = ("video_codec", "width", "height", "pix_fmt", "fps")
-    if any(a.get(k) != b.get(k) for k in keys):
+    if any(a.get(k) != b.get(k) for k in keys) or a.get("normalize") or b.get("normalize"):
         return False
     return [(x["codec"], x["sample_rate"], x["channels"]) for x in a["audio"]] == \
         [(x["codec"], x["sample_rate"], x["channels"]) for x in b["audio"]]
@@ -254,6 +265,10 @@ def build_export(clean_video: Path, out_path: Path, work_dir: Path, info: dict,
         ass_path = work_dir / "sozlar.ass"
         ass_path.write_text(ass_text, encoding="utf-8")
         vfilter = f"ass='{_filter_path(Path(ass_path.name))}':fontsdir='{_filter_path(FONTS_DIR)}'"
+    # Piksellari kvadrat bo'lmagan yoki burilgan video ekrandagi o'lchamiga keltiriladi.
+    normalize = f"scale={info['width']}:{info['height']},setsar=1" if info.get("normalize") else None
+    if normalize and intro_video is None:
+        vfilter = f"{normalize},{vfilter}" if vfilter else normalize
     n_audio = len(info["audio"])
     venc = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p"]
     aenc = ["-c:a", "aac", "-b:a", "192k"]
@@ -274,8 +289,10 @@ def build_export(clean_video: Path, out_path: Path, work_dir: Path, info: dict,
                    "-movflags", "+faststart", str(out_path)]
             method = "intro ulandi (concat demuxer, -c copy)"
         else:
-            ins = "".join(f"[{i}:v:0]" + "".join(f"[{i}:a:{k}]" for k in range(n_audio)) for i in (0, 1))
-            graph = f"{ins}concat=n=2:v=1:a={n_audio}[cv]" + "".join(f"[ca{k}]" for k in range(n_audio))
+            video_in = {0: "[0:v:0]", 1: "[vn]" if normalize else "[1:v:0]"}
+            ins = "".join(video_in[i] + "".join(f"[{i}:a:{k}]" for k in range(n_audio)) for i in (0, 1))
+            graph = (f"[1:v:0]{normalize}[vn];" if normalize else "")
+            graph += f"{ins}concat=n=2:v=1:a={n_audio}[cv]" + "".join(f"[ca{k}]" for k in range(n_audio))
             graph += f";[cv]{vfilter}[vout]" if vfilter else ";[cv]null[vout]"
             maps = ["-map", "[vout]"] + [x for k in range(n_audio) for x in ("-map", f"[ca{k}]")]
             cmd = [exe, "-y", "-i", str(intro_video), "-i", str(clean_video), "-filter_complex", graph, *maps,

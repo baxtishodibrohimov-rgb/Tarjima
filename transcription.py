@@ -10,6 +10,7 @@ import math
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import httpx
@@ -61,13 +62,80 @@ def get_duration_seconds(path: Path) -> float:
     return int(h) * 3600 + int(mnt) * 60 + float(s)
 
 
+# Kadr piksellari kvadrat bo'lmasa (SAR != 1, masalan 1440x1080 -> 16:9) avval
+# haqiqiy ko'rinish nisbatiga keltiriladi - aks holda rasm cho'zilib/qisilib chiqadi.
+_SQUARE_PIXELS = "scale=trunc(iw*sar/2)*2:ih,setsar=1"
+
+
+def video_display_info(path: Path) -> dict:
+    """Videoning EKRANDA ko'rinadigan o'lchami: piksel nisbati (SAR) va telefon
+    videolaridagi burilish (rotation 90/270) hisobga olinadi.
+    Qaytaradi: {"width", "height", "duration"} (topilmasa width/height = 0)."""
+    info = {"width": 0, "height": 0, "duration": get_duration_seconds(path)}
+    try:
+        proc = subprocess.run([ffmpeg_exe(), "-hide_banner", "-i", str(path)], stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True, errors="ignore", timeout=FFMPEG_PROBE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return info
+    out = proc.stdout or ""
+    vm = re.search(r"Stream #\S+.*?: Video: [^\n]*", out)
+    if not vm:
+        return info
+    sm = re.search(r", (\d{2,5})x(\d{2,5})", vm.group(0))
+    if not sm:
+        return info
+    width, height = int(sm.group(1)), int(sm.group(2))
+    sar = re.search(r"\[SAR (\d+):(\d+) DAR", vm.group(0))
+    if sar and int(sar.group(1)) > 0 and int(sar.group(2)) > 0:
+        width = int(round(width * int(sar.group(1)) / int(sar.group(2)) / 2)) * 2
+    rot = (re.search(r"rotation of (-?[\d.]+) degrees", out) or re.search(r"rotate\s*:\s*(-?\d+)", out))
+    if rot and int(round(abs(float(rot.group(1))))) % 180 == 90:
+        width, height = height, width
+    info["width"], info["height"] = width, height
+    return info
+
+
+def telegram_thumbnail(input_path: Path, out_path: Path, at: float = None) -> bool:
+    """Telegram uchun JPEG thumbnail (<= 320x320, haqiqiy nisbatda)."""
+    duration = get_duration_seconds(input_path)
+    at = at if at is not None else min(max(duration / 10, 0.5), 30.0)
+    cmd = [ffmpeg_exe(), "-y", "-ss", f"{at:.2f}", "-i", str(input_path), "-frames:v", "1",
+           "-vf", f"{_SQUARE_PIXELS},scale=320:320:force_original_aspect_ratio=decrease", "-q:v", "5",
+           str(out_path)]
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="ignore",
+                              timeout=FFMPEG_PROBE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return False
+    return proc.returncode == 0 and out_path.exists() and 0 < out_path.stat().st_size <= 200 * 1024
+
+
+# Telegram thumbnail'lari uchun vaqtinchalik joy (yuborilgach o'chiriladi).
+TELEGRAM_THUMB_DIR = Path(tempfile.gettempdir()) / "darslik_tg_thumbs"
+
+
+def telegram_video_fields(path: Path, work_dir: Path):
+    """sendVideo uchun width/height/duration va thumbnail. Lokal Bot API server
+    videoning o'lchamini o'zi aniqlamaydi - bularsiz Telegram videoni kvadrat
+    yoki noto'g'ri nisbatda ko'rsatadi. Qaytaradi: (data dict, thumbnail fayli yoki None)."""
+    info = video_display_info(path)
+    data = {}
+    if info["width"] and info["height"]:
+        data["width"], data["height"] = str(info["width"]), str(info["height"])
+    if info["duration"]:
+        data["duration"] = str(int(round(info["duration"])))
+    work_dir.mkdir(parents=True, exist_ok=True)
+    thumb = work_dir / f"{Path(path).stem[:60]}_tg_thumb.jpg"
+    return data, (thumb if telegram_thumbnail(path, thumb) else None)
+
+
 def generate_thumbnail(input_path: Path, out_path: Path) -> bool:
     """Video o'rtasidan bitta kadr olib, kichik JPEG thumbnail yaratadi."""
     duration = get_duration_seconds(input_path)
     mid = max(duration / 2, 0.5)
     cmd = [
         ffmpeg_exe(), "-y", "-ss", str(mid), "-i", str(input_path),
-        "-frames:v", "1", "-vf", "scale=320:-1", str(out_path),
+        "-frames:v", "1", "-vf", f"{_SQUARE_PIXELS},scale=320:-2", str(out_path),
     ]
     try:
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="ignore",
