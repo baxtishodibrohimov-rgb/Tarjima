@@ -117,7 +117,12 @@ async def download_to_cloud(client: httpx.AsyncClient, file_id: str, original_na
     resp = await client.post(
         f"{api_base}/bot{token}/getFile", data={"file_id": file_id}, timeout=GET_FILE_TIMEOUT
     )
-    resp.raise_for_status()
+    if resp.status_code >= 400:
+        try:
+            reason = resp.json().get("description") or resp.text[:200]
+        except ValueError:
+            reason = resp.text[:200]
+        raise RuntimeError(f"Telegram getFile xatosi ({resp.status_code}): {reason}")
     file_path = resp.json()["result"]["file_path"]
 
     name = safe_name(original_name or Path(file_path).name or "video.mp4")
@@ -125,6 +130,18 @@ async def download_to_cloud(client: httpx.AsyncClient, file_id: str, original_na
     dest_dir = CLOUD_DIR / cloud_id
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_path = dest_dir / name
+    try:
+        return await _save_downloaded(client, file_id, file_path, name, notify, api_base, token, kind,
+                                      cloud_id, dest_dir, dest_path)
+    except Exception:
+        # Yarim yuklangan fayl Bulut papkasida "yetim" bo'lib qolmasin (qayta urinishda yangisi yaratiladi).
+        if not db.fetchone("SELECT 1 FROM cloud_files WHERE id = ?", (cloud_id,)):
+            shutil.rmtree(dest_dir, ignore_errors=True)
+        raise
+
+
+async def _save_downloaded(client, file_id, file_path, name, notify, api_base, token, kind,
+                           cloud_id, dest_dir, dest_path):
 
     # --local rejimida getFile shu serverdagi tayyor faylning mutlaq yo'lini
     # qaytaradi. Uni HTTP orqali yana bir marta yuklab o'tirmay, disk ichida

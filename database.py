@@ -393,6 +393,21 @@ def init_db():
                 created_at TEXT,
                 updated_at TEXT
             );
+            -- "☁️ Webga yuklash": Telegram'dan Bulutga yuklash navbati (server qayta
+            -- ishga tushsa ham tugallanmaganlari davom ettiriladi).
+            CREATE TABLE IF NOT EXISTS idea_web_uploads (
+                id TEXT PRIMARY KEY,
+                chat_id INTEGER,
+                file_id TEXT NOT NULL,
+                file_name TEXT,
+                file_size INTEGER DEFAULT 0,
+                kind TEXT DEFAULT 'video',
+                status TEXT DEFAULT 'queued',
+                attempts INTEGER DEFAULT 0,
+                error TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            );
             CREATE TABLE IF NOT EXISTS idea_attachments (
                 id TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL,

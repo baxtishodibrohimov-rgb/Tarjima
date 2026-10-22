@@ -12,6 +12,7 @@ o'rniga har daqiqada ishlaydigan fon tsikli.
 """
 import asyncio
 import json
+import os
 import re
 import traceback
 from datetime import date, datetime, timedelta, timezone
@@ -621,10 +622,41 @@ def web_upload_video(msg):
     return video["file_id"], name, int(video.get("file_size") or 0), kind
 
 
-async def upload_to_web(chat_id, file_id, name, size, kind="video"):
+# Bir vaqtda nechta fayl yuklanadi. Hammasi birdaniga yuklansa, katta videolar
+# Telegram tezligini o'zaro bo'lib oladi va har biri juda sekinlashadi.
+WEB_UPLOAD_CONCURRENCY = max(int(os.environ.get("WEB_UPLOAD_CONCURRENCY", "2")), 1)
+WEB_UPLOAD_ATTEMPTS = 3
+WEB_UPLOAD_RETRY_SEC = 20
+_web_semaphores = {}
+
+
+def _web_semaphore() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    if loop not in _web_semaphores:
+        _web_semaphores.clear()
+        _web_semaphores[loop] = asyncio.Semaphore(WEB_UPLOAD_CONCURRENCY)
+    return _web_semaphores[loop]
+
+
+def _web_row_update(row_id, **fields):
+    fields["updated_at"] = db.now()
+    sets = ", ".join(f"{k} = ?" for k in fields)
+    db.execute(f"UPDATE idea_web_uploads SET {sets} WHERE id = ?", (*fields.values(), row_id))
+
+
+async def upload_to_web(chat_id, file_id, name, size, kind="video", row_id=None):
+    """Har fayl alohida yuklanadi (o'z vaqt chegarasi bilan), lekin bir vaqtda
+    ko'pi bilan WEB_UPLOAD_CONCURRENCY tasi - qolganlari navbatda kutadi.
+    Xato bo'lsa qayta uriniladi; navbat bazada saqlanadi (server qayta ishga
+    tushsa tugallanmaganlari davom etadi)."""
+    if row_id is None:
+        row_id = db.new_id()
+        db.execute("INSERT INTO idea_web_uploads (id, chat_id, file_id, file_name, file_size, kind, status, "
+                   "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
+                   (row_id, chat_id, file_id, name, size or 0, kind, db.now(), db.now()))
     status = None
     try:
-        status = await send_message(chat_id, f"⏳ <b>{escape_html(name)}</b> serverga yuklanmoqda...")
+        status = await send_message(chat_id, f"🕓 <b>{escape_html(name)}</b> navbatda...")
     except Exception:
         pass
 
@@ -632,20 +664,57 @@ async def upload_to_web(chat_id, file_id, name, size, kind="video"):
         await send_message(chat_id, "❌ " + escape_html(text))
 
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            saved = await telegram_bot.download_to_cloud(client, file_id, name, notify, size_hint=size,
-                                                         api_base=IDEA_BOT_API_URL, token=IDEA_BOT_TOKEN, kind=kind)
+        async with _web_semaphore():
+            _web_row_update(row_id, status="running")
+            if status and status.get("message_id"):
+                try:
+                    await edit_message_text(chat_id, status["message_id"],
+                                            f"⏳ <b>{escape_html(name)}</b> serverga yuklanmoqda...")
+                except Exception:
+                    pass
+            saved, last_error = None, None
+            for attempt in range(1, WEB_UPLOAD_ATTEMPTS + 1):
+                _web_row_update(row_id, attempts=attempt)
+                try:
+                    async with httpx.AsyncClient(timeout=60) as client:
+                        saved = await telegram_bot.download_to_cloud(
+                            client, file_id, name, notify, size_hint=size, api_base=IDEA_BOT_API_URL,
+                            token=IDEA_BOT_TOKEN, kind=kind)
+                    last_error = None
+                    break
+                except Exception as e:
+                    last_error = e
+                    print(f"[ideaflow_bot] Webga yuklashda xato ({name}, {attempt}-urinish):", flush=True)
+                    traceback.print_exc()
+                    if attempt < WEB_UPLOAD_ATTEMPTS:
+                        await asyncio.sleep(WEB_UPLOAD_RETRY_SEC * attempt)
+            if last_error is not None:
+                raise last_error
         if saved:
+            _web_row_update(row_id, status="done", error=None)
             await send_message(chat_id, f"✅ <b>{escape_html(saved)}</b> saytga yuklandi.\n"
                                         f"Saytdagi <b>Bulut</b> bo'limida turibdi.")
+        else:
+            _web_row_update(row_id, status="error", error="qabul qilinmadi")
     except Exception as e:
-        print(f"[ideaflow_bot] Webga yuklashda xato ({name}):", flush=True)
-        traceback.print_exc()
-        reason = telegram_bot.hide_token(str(e), IDEA_BOT_TOKEN)[:300]
-        await send_message(chat_id, f"❌ <b>{escape_html(name)}</b> yuklanmadi: {escape_html(reason)}")
+        reason = telegram_bot.hide_token(str(e), IDEA_BOT_TOKEN)[:300] or type(e).__name__
+        _web_row_update(row_id, status="error", error=reason)
+        await send_message(chat_id, f"❌ <b>{escape_html(name)}</b> yuklanmadi ({WEB_UPLOAD_ATTEMPTS} marta "
+                                    f"urinildi): {escape_html(reason)}")
     finally:
         if status and status.get("message_id"):
             await delete_message(chat_id, status["message_id"])
+
+
+async def resume_web_uploads():
+    """Server qayta ishga tushganda tugallanmagan yuklashlarni davom ettiradi."""
+    rows = db.fetchall("SELECT * FROM idea_web_uploads WHERE status IN ('queued', 'running') "
+                       "ORDER BY created_at ASC")
+    for r in rows:
+        _spawn(upload_to_web(r["chat_id"], r["file_id"], r["file_name"], r["file_size"], r["kind"],
+                             row_id=r["id"]))
+    if rows:
+        print(f"[ideaflow_bot] {len(rows)} ta tugallanmagan Webga yuklash davom ettirilmoqda.", flush=True)
 
 
 async def show_item_move_targets(p, chat_id, item_id, message_id, target_root="video_base", cur=None):
@@ -1318,3 +1387,4 @@ def start():
         return
     _spawn(_poll())
     _spawn(_scheduler())
+    _spawn(resume_web_uploads())

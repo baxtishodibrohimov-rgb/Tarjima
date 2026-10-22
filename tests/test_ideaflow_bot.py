@@ -152,3 +152,49 @@ def test_web_upload_mode_sends_videos_to_cloud(calls, monkeypatch):
     send(message("🌐 Tarjima"), message(video=dict(video)))
     assert len(downloads) == 4
 
+
+
+def test_web_uploads_queue_retry_and_resume(calls, monkeypatch):
+    db.execute("DELETE FROM idea_web_uploads")
+    monkeypatch.setattr(bot, "WEB_UPLOAD_RETRY_SEC", 0)
+    running, peak, attempts = [0], [0], {}
+
+    async def fake_download(client, file_id, name, notify, size_hint=0, api_base=None, token=None, kind="video"):
+        attempts[file_id] = attempts.get(file_id, 0) + 1
+        running[0] += 1
+        peak[0] = max(peak[0], running[0])
+        await asyncio.sleep(0.01)
+        running[0] -= 1
+        if file_id == "FLAKY" and attempts[file_id] == 1:
+            raise RuntimeError("timeout")
+        if file_id == "BAD":
+            raise RuntimeError("Telegram getFile xatosi (400): file is too big")
+        return name
+
+    monkeypatch.setattr(bot.telegram_bot, "download_to_cloud", fake_download)
+    send(message("/start"), message("☁️ Webga yuklash"))
+    calls.clear()
+    videos = [{"file_id": f"V{i}", "file_name": f"v{i}.mp4", "file_size": 1} for i in range(6)]
+    videos += [{"file_id": "FLAKY", "file_name": "flaky.mp4"}, {"file_id": "BAD", "file_name": "bad.mp4"}]
+    send(*[message(video=v) for v in videos])
+    texts = sent_texts(calls)
+    assert peak[0] <= bot.WEB_UPLOAD_CONCURRENCY
+    assert sum("saytga yuklandi" in t for t in texts) == 7  # 6 + qayta urinishda o'tgan FLAKY
+    assert attempts["FLAKY"] == 2 and attempts["BAD"] == bot.WEB_UPLOAD_ATTEMPTS
+    assert any("bad.mp4" in t and "yuklanmadi" in t and "file is too big" in t for t in texts)
+    statuses = {r["file_id"]: r["status"] for r in db.fetchall("SELECT file_id, status FROM idea_web_uploads")}
+    assert statuses["V0"] == "done" and statuses["BAD"] == "error"
+
+    # server qayta ishga tushdi: tugallanmagan yuklash davom ettiriladi
+    db.execute("INSERT INTO idea_web_uploads (id, chat_id, file_id, file_name, file_size, kind, status, created_at, "
+               "updated_at) VALUES ('w1', ?, 'LEFT', 'left.mp4', 5, 'video', 'running', ?, ?)",
+               (OWNER, db.now(), db.now()))
+    calls.clear()
+
+    async def run():
+        await bot.resume_web_uploads()
+        while bot._background:
+            await asyncio.gather(*list(bot._background))
+    asyncio.run(run())
+    assert attempts["LEFT"] == 1 and any("left.mp4" in t and "saytga yuklandi" in t for t in sent_texts(calls))
+    assert db.fetchone("SELECT status FROM idea_web_uploads WHERE id = 'w1'")["status"] == "done"
