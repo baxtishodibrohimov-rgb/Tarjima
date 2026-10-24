@@ -435,10 +435,12 @@ def _json_or_none(raw):
 
 def video_public(v: dict) -> dict:
     primary_tts_provider = None
+    primary_tts_voice = None
     tempo_stats = None
     if v["tts_job_id"]:
-        pj = db.fetchone("SELECT provider, tempo_stats FROM tts_jobs WHERE id = ?", (v["tts_job_id"],))
+        pj = db.fetchone("SELECT provider, voice, mood, tempo_stats FROM tts_jobs WHERE id = ?", (v["tts_job_id"],))
         primary_tts_provider = pj["provider"] if pj else None
+        primary_tts_voice = {"voice": pj["voice"] or "", "mood": pj["mood"] or ""} if pj else None
         tempo_stats = _json_or_none(pj["tempo_stats"]) if pj else None
     learning_track = db.fetchone(
         "SELECT srt_filename, srt_status, segment_count, provider, tts_job_id, audio_status, "
@@ -481,6 +483,9 @@ def video_public(v: dict) -> dict:
         "created_at": v["created_at"], "updated_at": v["updated_at"],
         "source_mtime": v["source_mtime"],
         "primary_tts_provider": primary_tts_provider,
+        # O'zbekcha audio qaysi ovoz bilan yaratilgan - Learning ham shu ovozni
+        # tanlasa, bir xil gaplar keshdan bepul olinadi.
+        "primary_tts_voice": primary_tts_voice,
         # Video 'completed' bo'lgach ikkinchi provayder bilan yaratilgan
         # qo'shimcha audio/video track(lar) - odatda bo'sh ro'yxat.
         "audio_tracks": [_track_public(r) for r in db.fetchall(
@@ -1831,6 +1836,36 @@ async def download_learning_audio(video_id: str, request: Request):
     if not path.exists():
         raise HTTPException(404, "Learning audio topilmadi.")
     return range_file_response(request, path, "audio/wav")
+
+
+@app.get("/api/videos/{video_id}/learning/tts-estimate")
+async def learning_tts_estimate(video_id: str, provider: str = "openai", voice: str = "", mood: str = "",
+                                voice_map: str = ""):
+    """Learning audiosi uchun oldindan hisob: nechta gap tayyor ovozdan (keshdan,
+    masalan o'zbekcha audiodan) bepul olinadi va nechtasi yangidan, pullik yaratiladi.
+    Kesh kaliti: provayder + gap matni + ovoz (OpenAI) / kayfiyat (Aisha)."""
+    import tts_plan
+    _ensure_video(video_id)
+    track, segments = _learning_segments(video_id)
+    vmap = _parse_voice_map(voice_map) or {}
+    units = [u for u in tts_plan.build_units(segments, provider) if not u["skipped"]]
+    cached = new = new_chars = 0
+    for u in units:
+        entry = vmap.get(str(u.get("speaker"))) if u.get("speaker") is not None else None
+        u_voice = (entry or {}).get("voice") or voice
+        u_mood = (entry or {}).get("mood") or mood
+        params = ({"mood": u_mood, "speed": tts.TTS_SPEED} if provider == "aisha"
+                  else {"voice": u_voice, "instructions": "", "speed": tts.TTS_SPEED})
+        if tts.cache_path(tts.cache_key_for(provider, u["text"], **params), "wav").exists():
+            cached += 1
+        else:
+            new += 1
+            new_chars += len(u["text"])
+    return {
+        "total": len(units), "cached": cached, "new": new, "new_chars": new_chars,
+        "est_usd": round(new_chars / 1000 * 0.015, 2) if provider != "aisha" else 0,
+        "est_som": round(new_chars * tts.AISHA_SOM_PER_CHAR) if provider == "aisha" else 0,
+    }
 
 
 @app.post("/api/videos/{video_id}/learning/audio")

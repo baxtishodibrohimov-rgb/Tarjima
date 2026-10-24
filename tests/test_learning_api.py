@@ -162,3 +162,24 @@ def test_learning_gets_timing_warnings_like_uzbek(client, video_id):
     reasons = [w["reason"] for w in client.get(f"/api/videos/{video_id}/learning/words").json()["warnings"]]
     assert any("sekinlashishi kerak" in r for r in reasons)
     assert any("O'zbekcha tarjimadagi blokdan farq: gap tugash belgisi" in r for r in reasons)
+
+
+def test_tts_estimate_counts_sentences_reused_from_cache(client, video_id):
+    """O'zbekcha audioda bor gap (bir xil provayder/ovoz/matn) Learning uchun keshdan bepul."""
+    import tts
+    import tts_plan
+    _upload(client, video_id, TAGGED)
+    _, segments = app_module._learning_segments(video_id)
+    texts = [u["text"] for u in tts_plan.build_units(segments, "openai") if not u["skipped"]]
+    assert len(texts) == 2
+    cached = tts.cache_path(tts.cache_key_for("openai", texts[1], voice="nova", instructions="",
+                                              speed=tts.TTS_SPEED), "wav")
+    cached.parent.mkdir(parents=True, exist_ok=True)
+    cached.write_bytes(b"RIFF")
+    try:
+        r = client.get(f"/api/videos/{video_id}/learning/tts-estimate?provider=openai&voice=nova").json()
+        assert (r["total"], r["cached"], r["new"], r["new_chars"]) == (2, 1, 1, len(texts[0]))
+        other = client.get(f"/api/videos/{video_id}/learning/tts-estimate?provider=openai&voice=alloy").json()
+        assert other["cached"] == 0 and other["new"] == 2
+    finally:
+        cached.unlink(missing_ok=True)

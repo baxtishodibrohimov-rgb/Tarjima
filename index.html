@@ -5090,12 +5090,45 @@ async function showLearningAudioForm(id) {
       </select>
     </div>
     <p class="status err" id="learningAishaWarn-${id}" style="display:none;">Aisha ruscha so'zlarni to'g'ri o'qimasligi mumkin — OpenAI tavsiya etiladi.</p>
+    <p class="hint" id="learningCostHint-${id}"></p>
     <div id="learningSpeakerVoices-${id}"></div>
     <div class="save-hint"><label><input type="checkbox" id="learningStretch-${id}" ${settings.default_stretch_to_fit !== 'false' ? 'checked' : ''}> Kerak bo'lgandagina siqish</label></div>
     <div class="row"><button class="action" onclick="submitLearningAudioJob('${id}')">Audio yaratish</button></div>
     <div class="status" id="learningAudioFormStatus-${id}"></div>`;
   document.getElementById('learningMood-' + id).value = settings.aisha_default_mood || 'Neutral';
+  // O'zbekcha audio OpenAI bilan qilingan bo'lsa - o'sha ovoz tanlanadi: bir xil gaplar
+  // keshdan bepul olinadi (pul faqat ruscha so'z qo'shilgan gaplar uchun ketadi).
+  const pv = currentDetailVideoData && currentDetailVideoData.primary_tts_voice;
+  if (currentDetailVideoData && currentDetailVideoData.primary_tts_provider === 'openai' && pv && pv.voice) {
+    document.getElementById('learningVoice-' + id).value = pv.voice;
+  } else if (currentDetailVideoData && currentDetailVideoData.primary_tts_provider === 'aisha' && pv && pv.mood) {
+    document.getElementById('learningMood-' + id).value = pv.mood;
+  }
+  for (const el of ['learningProvider-', 'learningVoice-', 'learningMood-']) {
+    const node = document.getElementById(el + id);
+    if (node) node.addEventListener('change', () => updateLearningCostHint(id));
+  }
   loadSpeakerVoices('learning', id, 'learning', () => document.getElementById('learningProvider-' + id).value);
+  updateLearningCostHint(id);
+}
+
+/* "N ta gapdan M tasi tayyor ovozdan bepul olinadi, K tasi yangi (~$X)". */
+async function updateLearningCostHint(id) {
+  const el = document.getElementById('learningCostHint-' + id);
+  if (!el) return;
+  const provider = document.getElementById('learningProvider-' + id).value;
+  const qs = new URLSearchParams({ provider,
+    voice: (document.getElementById('learningVoice-' + id) || {}).value || '',
+    mood: (document.getElementById('learningMood-' + id) || {}).value || '' });
+  const vm = collectVoiceMap('learning', id);
+  if (vm) qs.set('voice_map', vm);
+  try {
+    const r = await apiFetch(`/api/videos/${id}/learning/tts-estimate?${qs}`);
+    const price = provider === 'aisha' ? fmtSom(r.est_som) : '$' + Number(r.est_usd).toFixed(2);
+    el.innerHTML = `💰 ${r.total} ta gapdan <b>${r.cached} tasi tayyor ovozdan bepul</b> olinadi, `
+      + `${r.new} tasi yangidan yaratiladi (~${r.new_chars} belgi, taxminan ${escapeHtml(price)}).`
+      + (r.cached === 0 && r.total ? ` <span style="color:var(--muted);">O'zbekcha audio bilan bir xil provayder va ovozni tanlasangiz, bir xil gaplar bepul bo'ladi.</span>` : '');
+  } catch (e) { el.textContent = ''; }
 }
 
 function toggleLearningProviderFields(id) {
@@ -5107,6 +5140,7 @@ function toggleLearningProviderFields(id) {
   const warn = document.getElementById('learningAishaWarn-' + id);
   if (warn) warn.style.display = provider === 'aisha' && /[\u0400-\u04FF]/.test(text) ? 'block' : 'none';
   renderSpeakerVoices('learning', id);
+  updateLearningCostHint(id);
 }
 
 async function submitLearningAudioJob(id) {
