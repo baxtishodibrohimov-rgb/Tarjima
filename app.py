@@ -443,7 +443,7 @@ def video_public(v: dict) -> dict:
         primary_tts_voice = {"voice": pj["voice"] or "", "mood": pj["mood"] or ""} if pj else None
         tempo_stats = _json_or_none(pj["tempo_stats"]) if pj else None
     learning_track = db.fetchone(
-        "SELECT srt_filename, srt_status, segment_count, provider, tts_job_id, audio_status, "
+        "SELECT srt_filename, srt_status, segment_count, provider, voice, mood, tts_job_id, audio_status, "
         "final_video_status, error, updated_at, export_status, export_with_intro, export_error, "
         "intro_status, intro_progress, intro_message, intro_error, intro_duration, "
         "subtitled_video_status, subtitled_video_error "
@@ -1838,15 +1838,12 @@ async def download_learning_audio(video_id: str, request: Request):
     return range_file_response(request, path, "audio/wav")
 
 
-@app.get("/api/videos/{video_id}/learning/tts-estimate")
-async def learning_tts_estimate(video_id: str, provider: str = "openai", voice: str = "", mood: str = "",
-                                voice_map: str = ""):
-    """Learning audiosi uchun oldindan hisob: nechta gap tayyor ovozdan (keshdan,
-    masalan o'zbekcha audiodan) bepul olinadi va nechtasi yangidan, pullik yaratiladi.
-    Kesh kaliti: provayder + gap matni + ovoz (OpenAI) / kayfiyat (Aisha)."""
+def _tts_estimate(segments: list, provider: str, voice: str, mood: str, voice_map: str) -> dict:
+    """Audio yaratishdan oldin hisob: nechta gap tayyor ovozdan (keshdan) bepul
+    olinadi va nechtasi yangidan, pullik yaratiladi. Kesh kaliti: provayder +
+    gap matni + ovoz (OpenAI) / kayfiyat (Aisha) - o'zbekcha va Learning
+    audiolari uchun umumiy, qaysi biri birinchi qilinganidan qat'i nazar."""
     import tts_plan
-    _ensure_video(video_id)
-    track, segments = _learning_segments(video_id)
     vmap = _parse_voice_map(voice_map) or {}
     units = [u for u in tts_plan.build_units(segments, provider) if not u["skipped"]]
     cached = new = new_chars = 0
@@ -1866,6 +1863,21 @@ async def learning_tts_estimate(video_id: str, provider: str = "openai", voice: 
         "est_usd": round(new_chars / 1000 * 0.015, 2) if provider != "aisha" else 0,
         "est_som": round(new_chars * tts.AISHA_SOM_PER_CHAR) if provider == "aisha" else 0,
     }
+
+
+@app.get("/api/videos/{video_id}/tts-estimate")
+async def uzbek_tts_estimate(video_id: str, provider: str = "openai", voice: str = "", mood: str = "",
+                             voice_map: str = ""):
+    v = _ensure_video(video_id)
+    return _tts_estimate(_json_or_empty(v["translation_segments"]), provider, voice, mood, voice_map)
+
+
+@app.get("/api/videos/{video_id}/learning/tts-estimate")
+async def learning_tts_estimate(video_id: str, provider: str = "openai", voice: str = "", mood: str = "",
+                                voice_map: str = ""):
+    _ensure_video(video_id)
+    _, segments = _learning_segments(video_id)
+    return _tts_estimate(segments, provider, voice, mood, voice_map)
 
 
 @app.post("/api/videos/{video_id}/learning/audio")

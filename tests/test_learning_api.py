@@ -183,3 +183,24 @@ def test_tts_estimate_counts_sentences_reused_from_cache(client, video_id):
         assert other["cached"] == 0 and other["new"] == 2
     finally:
         cached.unlink(missing_ok=True)
+
+
+def test_tts_estimate_works_both_ways(client, video_id):
+    """Learning audiosi birinchi qilingan bo'lsa - o'zbekcha audio uchun ham bir xil gaplar bepul."""
+    import json
+    import tts
+    db.execute("UPDATE videos SET translation_segments = ? WHERE id = ?",
+               (json.dumps([{"start": 1, "end": 3, "text": "Pastki jag'ning bo'g'imi."},
+                            {"start": 4, "end": 6, "text": "Tegsiz blok."}]), video_id))
+    db.execute("INSERT INTO learning_tracks (video_id, provider, voice, mood, tts_job_id) VALUES (?, ?, ?, ?, ?)",
+               (video_id, "openai", "onyx", "", "job-x"))
+    cached = tts.cache_path(tts.cache_key_for("openai", "Tegsiz blok.", voice="onyx", instructions="",
+                                              speed=tts.TTS_SPEED), "wav")
+    cached.write_bytes(b"RIFF")
+    try:
+        r = client.get(f"/api/videos/{video_id}/tts-estimate?provider=openai&voice=onyx").json()
+        assert (r["total"], r["cached"], r["new"]) == (2, 1, 1)
+        lt = client.get(f"/api/videos/{video_id}").json()["learning_track"]
+        assert (lt["provider"], lt["voice"], lt["tts_job_id"]) == ("openai", "onyx", "job-x")
+    finally:
+        cached.unlink(missing_ok=True)

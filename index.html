@@ -4467,12 +4467,16 @@ async function showAudioForm(id) {
         <option value="onyx">onyx</option><option value="nova">nova</option><option value="shimmer">shimmer</option>
       </select>
     </div>
+    <p class="hint" id="audioCostHint-${id}"></p>
     <div id="audioSpeakerVoices-${id}"></div>
     <div class="save-hint"><label><input type="checkbox" id="audioStretch-${id}" ${settings.default_stretch_to_fit !== 'false' ? 'checked' : ''}> Kerak bo'lgandagina siqish</label></div>
     <div class="row"><button class="action" onclick="submitAudioJob('${id}')">Audio yaratish</button></div>
     <div class="status" id="audioFormStatus-${id}"></div>`;
   document.getElementById('audioMood-' + id).value = settings.aisha_default_mood || 'Neutral';
-  loadSpeakerVoices('audio', id, 'translation', () => document.getElementById('audioProvider-' + id).value);
+  applyOtherTrackVoice('audio', id);
+  el.addEventListener('change', () => updateCostHint('audio', id));
+  await loadSpeakerVoices('audio', id, 'translation', () => document.getElementById('audioProvider-' + id).value);
+  updateCostHint('audio', id);
 }
 
 /* ---- Har spikerga ovoz (spikerlar >= 2 bo'lsa) ---- */
@@ -5096,39 +5100,76 @@ async function showLearningAudioForm(id) {
     <div class="row"><button class="action" onclick="submitLearningAudioJob('${id}')">Audio yaratish</button></div>
     <div class="status" id="learningAudioFormStatus-${id}"></div>`;
   document.getElementById('learningMood-' + id).value = settings.aisha_default_mood || 'Neutral';
-  // O'zbekcha audio OpenAI bilan qilingan bo'lsa - o'sha ovoz tanlanadi: bir xil gaplar
-  // keshdan bepul olinadi (pul faqat ruscha so'z qo'shilgan gaplar uchun ketadi).
-  const pv = currentDetailVideoData && currentDetailVideoData.primary_tts_voice;
-  if (currentDetailVideoData && currentDetailVideoData.primary_tts_provider === 'openai' && pv && pv.voice) {
-    document.getElementById('learningVoice-' + id).value = pv.voice;
-  } else if (currentDetailVideoData && currentDetailVideoData.primary_tts_provider === 'aisha' && pv && pv.mood) {
-    document.getElementById('learningMood-' + id).value = pv.mood;
+  applyOtherTrackVoice('learning', id);
+  el.addEventListener('change', () => updateCostHint('learning', id));
+  await loadSpeakerVoices('learning', id, 'learning', () => document.getElementById('learningProvider-' + id).value);
+  updateCostHint('learning', id);
+}
+
+/* Tejash: o'zbekcha va Learning audiolari bir xil gaplarni keshdan bo'lishadi
+   (provayder + ovoz/kayfiyat + gap matni bir xil bo'lsa). Qaysi biri birinchi
+   qilinganidan qat'i nazar, ikkinchisi birinchisining ovozini oladi. */
+function otherTrackVoice(prefix) {
+  const v = currentDetailVideoData;
+  if (!v) return null;
+  if (prefix === 'audio') {
+    const t = v.learning_track;
+    return t && t.tts_job_id && t.provider
+      ? { label: "Ruscha o'rganish", provider: t.provider, voice: t.voice || '', mood: t.mood || '' } : null;
   }
-  for (const el of ['learningProvider-', 'learningVoice-', 'learningMood-']) {
-    const node = document.getElementById(el + id);
-    if (node) node.addEventListener('change', () => updateLearningCostHint(id));
+  const pv = v.primary_tts_voice;
+  return v.tts_job_id && v.primary_tts_provider && pv
+    ? { label: "O'zbekcha", provider: v.primary_tts_provider, voice: pv.voice, mood: pv.mood } : null;
+}
+
+function applyOtherTrackVoice(prefix, id) {
+  const other = otherTrackVoice(prefix);
+  if (!other) return;
+  // Learning'da Aisha tanlanmaydi - ruscha so'zlarni o'qiy olmaydi.
+  if (prefix === 'audio' && other.provider !== document.getElementById('audioProvider-' + id).value) {
+    document.getElementById('audioProvider-' + id).value = other.provider;
+    toggleAudioProviderUI(id);
   }
-  loadSpeakerVoices('learning', id, 'learning', () => document.getElementById('learningProvider-' + id).value);
-  updateLearningCostHint(id);
+  const field = document.getElementById(prefix + (other.provider === 'aisha' ? 'Mood-' : 'Voice-') + id);
+  const value = other.provider === 'aisha' ? other.mood : other.voice;
+  if (field && value) field.value = value;
 }
 
 /* "N ta gapdan M tasi tayyor ovozdan bepul olinadi, K tasi yangi (~$X)". */
-async function updateLearningCostHint(id) {
-  const el = document.getElementById('learningCostHint-' + id);
+async function updateCostHint(prefix, id) {
+  const el = document.getElementById(prefix + 'CostHint-' + id);
   if (!el) return;
-  const provider = document.getElementById('learningProvider-' + id).value;
-  const qs = new URLSearchParams({ provider,
-    voice: (document.getElementById('learningVoice-' + id) || {}).value || '',
-    mood: (document.getElementById('learningMood-' + id) || {}).value || '' });
-  const vm = collectVoiceMap('learning', id);
+  const provider = document.getElementById(prefix + 'Provider-' + id).value;
+  const voice = (document.getElementById(prefix + 'Voice-' + id) || {}).value || '';
+  const mood = (document.getElementById(prefix + 'Mood-' + id) || {}).value || '';
+  const qs = new URLSearchParams({ provider, voice, mood });
+  const vm = collectVoiceMap(prefix, id);
   if (vm) qs.set('voice_map', vm);
-  try {
-    const r = await apiFetch(`/api/videos/${id}/learning/tts-estimate?${qs}`);
-    const price = provider === 'aisha' ? fmtSom(r.est_som) : '$' + Number(r.est_usd).toFixed(2);
-    el.innerHTML = `💰 ${r.total} ta gapdan <b>${r.cached} tasi tayyor ovozdan bepul</b> olinadi, `
-      + `${r.new} tasi yangidan yaratiladi (~${r.new_chars} belgi, taxminan ${escapeHtml(price)}).`
-      + (r.cached === 0 && r.total ? ` <span style="color:var(--muted);">O'zbekcha audio bilan bir xil provayder va ovozni tanlasangiz, bir xil gaplar bepul bo'ladi.</span>` : '');
-  } catch (e) { el.textContent = ''; }
+  const url = prefix === 'audio' ? `/api/videos/${id}/tts-estimate` : `/api/videos/${id}/learning/tts-estimate`;
+  let r;
+  try { r = await apiFetch(`${url}?${qs}`); } catch (e) { el.textContent = ''; return; }
+  if (!r.total) { el.textContent = ''; return; }
+  const price = escapeHtml(provider === 'aisha' ? fmtSom(r.est_som) : '$' + Number(r.est_usd).toFixed(2));
+  let html = r.cached
+    ? `💰 ${r.total} ta gapdan <b>${r.cached} tasi tayyor ovozdan bepul</b> olinadi, ${r.new} tasi yangidan yaratiladi (~${r.new_chars} belgi, taxminan ${price}).`
+    : `💰 ${r.total} ta gap yangidan yaratiladi (~${r.new_chars} belgi, taxminan ${price}).`;
+  const other = otherTrackVoice(prefix);
+  const v = currentDetailVideoData || {};
+  let note = '';
+  if (other) {
+    const otherName = other.provider === 'aisha' ? `Aisha (${other.mood})` : `OpenAI (${other.voice})`;
+    const same = other.provider === provider && (provider === 'aisha' ? other.mood === mood : other.voice === voice);
+    if (prefix === 'learning' && other.provider === 'aisha') {
+      note = "O'zbekcha audio Aisha'da qilingan - ruscha so'zlar uchun OpenAI kerak, shuning uchun bu yerda tejash bo'lmaydi.";
+    } else if (!same) {
+      note = `${other.label} audiosi ${escapeHtml(otherName)} bilan qilingan - shuni tanlasangiz, bir xil gaplar bepul bo'ladi.`;
+    }
+  } else if (prefix === 'learning' || (v.learning_track && v.learning_track.srt_status === 'uploaded')) {
+    const next = prefix === 'learning' ? "o'zbekcha" : "ruscha o'rganish";
+    note = `Bu birinchi audio. Keyin ${next} audiosini ham shu provayder va ovozda qilsangiz, bir xil gaplar bepul bo'ladi.`;
+  }
+  if (note) html += ` <span style="color:var(--muted);">${note}</span>`;
+  el.innerHTML = html;
 }
 
 function toggleLearningProviderFields(id) {
@@ -5140,7 +5181,6 @@ function toggleLearningProviderFields(id) {
   const warn = document.getElementById('learningAishaWarn-' + id);
   if (warn) warn.style.display = provider === 'aisha' && /[\u0400-\u04FF]/.test(text) ? 'block' : 'none';
   renderSpeakerVoices('learning', id);
-  updateLearningCostHint(id);
 }
 
 async function submitLearningAudioJob(id) {
