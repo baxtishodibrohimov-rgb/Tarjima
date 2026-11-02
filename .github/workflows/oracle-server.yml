@@ -1,0 +1,131 @@
+# Oracle Free Tier'da ARM server joyi bo'shashini kutib, saqlangan diskdan
+# (boot volume) "tarjima" serverini avtomatik ochadi.
+#
+# Har 5 daqiqada bir marta urinadi ("Out of host capacity" - joy yo'q bo'lsa,
+# keyingi safar yana urinadi). Server ochilgach: IP bilan issue yaratadi
+# (GitHub emailga xabar yuboradi) va bu workflow'ni o'zi o'chiradi.
+#
+# Kerakli secrets (Settings -> Secrets and variables -> Actions):
+#   OCI_CONFIG      - Oracle "Add API key" oynasidagi "Configuration file preview" matni
+#   OCI_KEY         - yuklab olingan private key (.pem) faylining to'liq matni
+#   SSH_PUBLIC_KEY  - (ixtiyoriy) Cloud Shell'dagi ~/.ssh/tarjima.pub matni
+name: Oracle server
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  issues: write
+  contents: read
+
+concurrency:
+  group: oracle-server
+  cancel-in-progress: false
+
+env:
+  INSTANCE_NAME: tarjima
+  OCPUS: "2"
+  MEMORY_GB: "12"
+  OCI_CLI_SUPPRESS_FILE_PERMISSIONS_WARNING: "True"
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+
+jobs:
+  launch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: OCI CLI
+        run: pip install --quiet oci-cli
+
+      - name: Oracle kalitlari
+        env:
+          OCI_CONFIG: ${{ secrets.OCI_CONFIG }}
+          OCI_KEY: ${{ secrets.OCI_KEY }}
+          SSH_PUBLIC_KEY: ${{ secrets.SSH_PUBLIC_KEY }}
+        run: |
+          if [ -z "$OCI_CONFIG" ] || [ -z "$OCI_KEY" ]; then
+            # Secrets hali kiritilmagan - har 5 daqiqada xato xati kelmasligi uchun jim o'tkazamiz.
+            echo "::warning::OCI_CONFIG yoki OCI_KEY secret hali kiritilmagan."
+            echo "SKIP=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          mkdir -p ~/.oci
+          printf '%s\n' "$OCI_KEY" > ~/.oci/key.pem
+          printf '%s\n' "$OCI_CONFIG" | tr -d '\r' | grep -v '^key_file' > ~/.oci/config
+          grep -q '^\[' ~/.oci/config || sed -i '1i [DEFAULT]' ~/.oci/config
+          echo "key_file=$HOME/.oci/key.pem" >> ~/.oci/config
+          chmod 600 ~/.oci/config ~/.oci/key.pem
+          if [ -n "$SSH_PUBLIC_KEY" ]; then
+            printf '%s\n' "$SSH_PUBLIC_KEY" > ~/ssh_key.pub
+          fi
+
+      - name: Serverni ochish
+        if: env.SKIP != '1'
+        run: |
+          set -u
+          TENANCY=$(grep '^tenancy' ~/.oci/config | head -1 | cut -d= -f2 | tr -d ' ')
+
+          notify_and_stop() {
+            local id="$1"
+            oci compute instance get --instance-id "$id" --wait-for-state RUNNING \
+              --max-wait-seconds 900 --query 'data."lifecycle-state"' --raw-output || true
+            local ip
+            ip=$(oci compute instance list-vnics --instance-id "$id" \
+              --query 'data[0]."public-ip"' --raw-output 2>/dev/null || true)
+            echo "SERVER: $id"
+            echo "IP: $ip"
+            {
+              echo "## ✅ Server ochildi"
+              echo "- Nomi: \`$INSTANCE_NAME\`"
+              echo "- IP: \`$ip\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+            gh issue create --title "✅ Oracle server ochildi: $ip" \
+              --body "Server \`$INSTANCE_NAME\` ishga tushdi. Yangi IP: \`$ip\`. Avtomatik urinish to'xtatildi." || true
+            gh workflow disable oracle-server.yml || true
+          }
+
+          EXISTING=$(oci compute instance list --compartment-id "$TENANCY" --display-name "$INSTANCE_NAME" \
+            --query 'data[?"lifecycle-state"!=`TERMINATED` && "lifecycle-state"!=`TERMINATING`].id | [0]' \
+            --raw-output 2>/dev/null || true)
+          if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
+            echo "Server allaqachon bor."
+            notify_and_stop "$EXISTING"
+            exit 0
+          fi
+
+          BV=$(oci bv boot-volume list --compartment-id "$TENANCY" \
+            --query "data[?\"lifecycle-state\"=='AVAILABLE'].id | [0]" --raw-output)
+          AD=$(oci bv boot-volume get --boot-volume-id "$BV" --query 'data."availability-domain"' --raw-output)
+          SUBNET=$(oci network subnet list --compartment-id "$TENANCY" \
+            --query 'data[?"prohibit-public-ip-on-vnic"==`false`].id | [0]' --raw-output)
+          echo "DISK: $BV"; echo "AD: $AD"; echo "SUBNET: $SUBNET"
+
+          SSH_ARGS=()
+          [ -f ~/ssh_key.pub ] && SSH_ARGS=(--ssh-authorized-keys-file "$HOME/ssh_key.pub")
+
+          for FD in FAULT-DOMAIN-1 FAULT-DOMAIN-2 FAULT-DOMAIN-3; do
+            if ID=$(oci compute instance launch --compartment-id "$TENANCY" --availability-domain "$AD" \
+                --fault-domain "$FD" --display-name "$INSTANCE_NAME" --shape VM.Standard.A1.Flex \
+                --shape-config "{\"ocpus\":$OCPUS,\"memoryInGBs\":$MEMORY_GB}" \
+                --source-boot-volume-id "$BV" --subnet-id "$SUBNET" --assign-public-ip true \
+                "${SSH_ARGS[@]}" --query 'data.id' --raw-output 2>err.txt) && [ -n "$ID" ]; then
+              notify_and_stop "$ID"
+              exit 0
+            fi
+            MSG=$(grep -o '"message": "[^"]*"' err.txt | head -1)
+            echo "$FD: $MSG"
+            if ! grep -qiE 'Out of host capacity|TooManyRequests|InternalError' err.txt; then
+              # Joy yo'qligidan boshqa xato (kalit, limit ...) - har 5 daqiqada
+              # takrorlanmasin: xabar qoldirib, workflow'ni to'xtatamiz.
+              cat err.txt
+              gh issue create --title "⚠️ Oracle server ochilmadi" \
+                --body "Avtomatik urinish to'xtatildi. Xato: $MSG" || true
+              gh workflow disable oracle-server.yml || true
+              exit 1
+            fi
+          done
+          echo "Hozircha joy yo'q - 5 daqiqadan keyin yana urinadi."
