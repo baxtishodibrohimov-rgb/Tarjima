@@ -1,9 +1,10 @@
 # Oracle Free Tier'da ARM server joyi bo'shashini kutib, saqlangan diskdan
 # (boot volume) "tarjima" serverini avtomatik ochadi.
 #
-# Har 5 daqiqada bir marta urinadi ("Out of host capacity" - joy yo'q bo'lsa,
-# keyingi safar yana urinadi). Server ochilgach: IP bilan issue yaratadi
-# (GitHub emailga xabar yuboradi) va bu workflow'ni o'zi o'chiradi.
+# Bitta ish ~5.5 soat davomida har ~2 daqiqada urinadi ("Out of host capacity" -
+# joy yo'q), tugagach keyingi ishni o'zi ishga tushiradi (GitHub cron'i ishonchsiz,
+# soatlik cron faqat zaxira). Server ochilgach: IP bilan issue yaratadi (GitHub
+# emailga xabar yuboradi) va bu workflow'ni o'zi o'chiradi.
 #
 # Kerakli secrets (Settings -> Secrets and variables -> Actions):
 #   OCI_CONFIG      - Oracle "Add API key" oynasidagi "Configuration file preview" matni
@@ -13,7 +14,7 @@ name: Oracle server
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "17 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -36,7 +37,7 @@ env:
 jobs:
   launch:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 350
     steps:
       - name: OCI CLI
         run: pip install --quiet oci-cli
@@ -88,9 +89,13 @@ jobs:
             gh workflow disable oracle-server.yml || true
           }
 
-          EXISTING=$(oci compute instance list --compartment-id "$TENANCY" --display-name "$INSTANCE_NAME" \
-            --query 'data[?"lifecycle-state"!=`TERMINATED` && "lifecycle-state"!=`TERMINATING`].id | [0]' \
-            --raw-output 2>/dev/null || true)
+          existing() {
+            oci compute instance list --compartment-id "$TENANCY" --display-name "$INSTANCE_NAME" \
+              --query 'data[?"lifecycle-state"!=`TERMINATED` && "lifecycle-state"!=`TERMINATING`].id | [0]' \
+              --raw-output 2>/dev/null || true
+          }
+
+          EXISTING=$(existing)
           if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
             echo "Server allaqachon bor."
             notify_and_stop "$EXISTING"
@@ -107,25 +112,38 @@ jobs:
           SSH_ARGS=()
           [ -f ~/ssh_key.pub ] && SSH_ARGS=(--ssh-authorized-keys-file "$HOME/ssh_key.pub")
 
-          for FD in FAULT-DOMAIN-1 FAULT-DOMAIN-2 FAULT-DOMAIN-3; do
-            if ID=$(oci compute instance launch --compartment-id "$TENANCY" --availability-domain "$AD" \
-                --fault-domain "$FD" --display-name "$INSTANCE_NAME" --shape VM.Standard.A1.Flex \
-                --shape-config "{\"ocpus\":$OCPUS,\"memoryInGBs\":$MEMORY_GB}" \
-                --source-boot-volume-id "$BV" --subnet-id "$SUBNET" --assign-public-ip true \
-                "${SSH_ARGS[@]}" --query 'data.id' --raw-output 2>err.txt) && [ -n "$ID" ]; then
-              notify_and_stop "$ID"
-              exit 0
-            fi
-            MSG=$(grep -o '"message": "[^"]*"' err.txt | head -1)
-            echo "$FD: $MSG"
-            if ! grep -qiE 'Out of host capacity|TooManyRequests|InternalError' err.txt; then
-              # Joy yo'qligidan boshqa xato (kalit, limit ...) - har 5 daqiqada
-              # takrorlanmasin: xabar qoldirib, workflow'ni to'xtatamiz.
-              cat err.txt
-              gh issue create --title "⚠️ Oracle server ochilmadi" \
-                --body "Avtomatik urinish to'xtatildi. Xato: $MSG" || true
-              gh workflow disable oracle-server.yml || true
-              exit 1
-            fi
+          DEADLINE=$(( $(date +%s) + ${LOOP_MINUTES:-330} * 60 ))
+          ROUND=0
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            ROUND=$((ROUND + 1))
+            for FD in FAULT-DOMAIN-1 FAULT-DOMAIN-2 FAULT-DOMAIN-3; do
+              if ID=$(oci compute instance launch --compartment-id "$TENANCY" --availability-domain "$AD" \
+                  --fault-domain "$FD" --display-name "$INSTANCE_NAME" --shape VM.Standard.A1.Flex \
+                  --shape-config "{\"ocpus\":$OCPUS,\"memoryInGBs\":$MEMORY_GB}" \
+                  --source-boot-volume-id "$BV" --subnet-id "$SUBNET" --assign-public-ip true \
+                  "${SSH_ARGS[@]}" --query 'data.id' --raw-output 2>err.txt) && [ -n "$ID" ]; then
+                notify_and_stop "$ID"
+                exit 0
+              fi
+              MSG=$(grep -o '"message": "[^"]*"' err.txt | head -1)
+              echo "$(date -u +%H:%M) urinish $ROUND $FD: $MSG"
+              if ! grep -qiE 'Out of host capacity|TooManyRequests|InternalError' err.txt; then
+                # Boshqa server (masalan Cloud Shell'dan) shu diskni olgan bo'lsa - o'sha serverni xabar qilamiz.
+                EXISTING=$(existing)
+                if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
+                  notify_and_stop "$EXISTING"
+                  exit 0
+                fi
+                # Joy yo'qligidan boshqa xato (kalit, limit ...) - cheksiz takrorlanmasin:
+                # xabar qoldirib, workflow'ni to'xtatamiz.
+                cat err.txt
+                gh issue create --title "⚠️ Oracle server ochilmadi" \
+                  --body "Avtomatik urinish to'xtatildi. Xato: $MSG" || true
+                gh workflow disable oracle-server.yml || true
+                exit 1
+              fi
+            done
+            sleep 60
           done
-          echo "Hozircha joy yo'q - 5 daqiqadan keyin yana urinadi."
+          echo "Bu ishning vaqti tugadi - keyingi ishni ishga tushiramiz."
+          gh workflow run oracle-server.yml --ref "$GITHUB_REF_NAME" || true
