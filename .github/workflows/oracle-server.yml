@@ -114,6 +114,7 @@ jobs:
 
           DEADLINE=$(( $(date +%s) + ${LOOP_MINUTES:-330} * 60 ))
           ROUND=0
+          LIMIT_HITS=0
           while [ "$(date +%s)" -lt "$DEADLINE" ]; do
             ROUND=$((ROUND + 1))
             for SHAPE in $SHAPES; do
@@ -129,12 +130,22 @@ jobs:
               fi
               MSG=$(grep -o '"message": "[^"]*"' err.txt | head -1)
               echo "$(date -u +%H:%M) urinish $ROUND ${OCPUS}cpu/${MEMORY_GB}GB $FD: $MSG"
-              if ! grep -qiE 'Out of host capacity|TooManyRequests|InternalError' err.txt; then
+              if grep -qiE 'Out of host capacity|TooManyRequests|Too many requests|InternalError' err.txt; then
+                LIMIT_HITS=0
+              else
                 # Boshqa server (masalan Cloud Shell'dan) shu diskni olgan bo'lsa - o'sha serverni xabar qilamiz.
                 EXISTING=$(existing)
                 if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
                   notify_and_stop "$EXISTING"
                   exit 0
+                fi
+                # LimitExceeded server yo'q paytida ham bir lahza chiqadi (joy topilmay bekor
+                # qilingan server limitni biroz ushlab turadi) - ketma-ket ko'p bo'lsagina to'xtaymiz.
+                if grep -q 'LimitExceeded' err.txt; then
+                  LIMIT_HITS=$((LIMIT_HITS + 1))
+                  if [ "$LIMIT_HITS" -lt 30 ]; then
+                    continue
+                  fi
                 fi
                 # Joy yo'qligidan boshqa xato (kalit, limit ...) - cheksiz takrorlanmasin:
                 # xabar qoldirib, workflow'ni to'xtatamiz.
