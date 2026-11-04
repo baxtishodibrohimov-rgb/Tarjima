@@ -28,8 +28,8 @@ concurrency:
 
 env:
   INSTANCE_NAME: tarjima
-  OCPUS: "2"
-  MEMORY_GB: "12"
+  # "OCPU:GB" - avval kattasi; joy yo'q bo'lsa kichigi (kichik serverga joy osonroq topiladi).
+  SHAPES: "2:12 1:6"
   OCI_CLI_SUPPRESS_FILE_PERMISSIONS_WARNING: "True"
   GH_TOKEN: ${{ github.token }}
   GH_REPO: ${{ github.repository }}
@@ -116,8 +116,10 @@ jobs:
           ROUND=0
           while [ "$(date +%s)" -lt "$DEADLINE" ]; do
             ROUND=$((ROUND + 1))
+            for SHAPE in $SHAPES; do
+            OCPUS=${SHAPE%%:*}; MEMORY_GB=${SHAPE##*:}
             for FD in FAULT-DOMAIN-1 FAULT-DOMAIN-2 FAULT-DOMAIN-3; do
-              if ID=$(oci compute instance launch --compartment-id "$TENANCY" --availability-domain "$AD" \
+              if ID=$(oci compute instance launch --no-retry --compartment-id "$TENANCY" --availability-domain "$AD" \
                   --fault-domain "$FD" --display-name "$INSTANCE_NAME" --shape VM.Standard.A1.Flex \
                   --shape-config "{\"ocpus\":$OCPUS,\"memoryInGBs\":$MEMORY_GB}" \
                   --source-boot-volume-id "$BV" --subnet-id "$SUBNET" --assign-public-ip true \
@@ -126,7 +128,7 @@ jobs:
                 exit 0
               fi
               MSG=$(grep -o '"message": "[^"]*"' err.txt | head -1)
-              echo "$(date -u +%H:%M) urinish $ROUND $FD: $MSG"
+              echo "$(date -u +%H:%M) urinish $ROUND ${OCPUS}cpu/${MEMORY_GB}GB $FD: $MSG"
               if ! grep -qiE 'Out of host capacity|TooManyRequests|InternalError' err.txt; then
                 # Boshqa server (masalan Cloud Shell'dan) shu diskni olgan bo'lsa - o'sha serverni xabar qilamiz.
                 EXISTING=$(existing)
@@ -142,6 +144,7 @@ jobs:
                 gh workflow disable oracle-server.yml || true
                 exit 1
               fi
+            done
             done
             sleep 60
           done
