@@ -139,15 +139,14 @@ jobs:
                   notify_and_stop "$EXISTING"
                   exit 0
                 fi
-                # LimitExceeded server yo'q paytida ham bir lahza chiqadi (joy topilmay bekor
-                # qilingan server limitni biroz ushlab turadi) - ketma-ket ko'p bo'lsagina to'xtaymiz.
-                if grep -q 'LimitExceeded' err.txt; then
-                  LIMIT_HITS=$((LIMIT_HITS + 1))
-                  if [ "$LIMIT_HITS" -lt 30 ]; then
-                    continue
-                  fi
+                # Oracle ba'zan bir martalik xato qaytaradi (LimitExceeded - joy topilmay bekor
+                # qilingan server limitni biroz ushlab turadi; NotAuthenticated - kalitlar to'g'ri
+                # bo'lsa ham). Shuning uchun faqat ketma-ket 30 marta takrorlansa to'xtaymiz.
+                LIMIT_HITS=$((LIMIT_HITS + 1))
+                if [ "$LIMIT_HITS" -lt 30 ]; then
+                  continue
                 fi
-                # Joy yo'qligidan boshqa xato (kalit, limit ...) - cheksiz takrorlanmasin:
+                # Doimiy xato (kalit, limit ...) - cheksiz takrorlanmasin:
                 # xabar qoldirib, workflow'ni to'xtatamiz.
                 cat err.txt
                 gh issue create --title "⚠️ Oracle server ochilmadi" \
