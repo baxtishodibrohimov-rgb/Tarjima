@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Foizlar{% endblock %}
+{% block content %}
+<h1>Shifokor foizlari</h1>
+<p class="muted">Cliniccards API foiz sozlamalarini bermaydi, shuning uchun ular shu yerda bir marta kiritiladi.
+Cliniccards'dagi (Настройки → Зарплата) foiz bilan bir xil bo'lishi kerak.</p>
+{% if saved %}<p class="ok">Saqlandi.</p>{% endif %}
+<form method="post" class="card">
+  <table>
+    <thead><tr><th>Xodim</th><th>Rol</th><th>ID</th><th class="n">Foiz, %</th></tr></thead>
+    <tbody>
+    {% for s in staff %}
+      <tr><td>{{ s.lastname }} {{ s.firstname }}</td><td class="muted">{{ s.role }}</td><td class="muted">{{ s.doctor_id }}</td>
+        <td class="n"><input type="number" step="0.01" min="0" max="100" name="foiz_{{ s.doctor_id }}"
+             value="{{ percents.get(s.doctor_id|string, '') }}" style="width:100px"></td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p>Foizi kiritilmagan xodimlar uchun: <input type="number" step="0.01" min="0" max="100" name="default" value="{{ default }}" style="width:100px"> %</p>
+  <button class="primary" type="submit">Saqlash</button>
+</form>
+{% endblock %}

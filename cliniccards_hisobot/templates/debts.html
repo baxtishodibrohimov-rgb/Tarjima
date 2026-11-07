@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Qarzdorlar{% endblock %}
+{% block content %}
+<h1>Qarzdorlar va kutilayotgan to'lovlar</h1>
+<div class="toolbar"><button type="button" onclick="window.print()">Chop etish</button></div>
+{% for doc_id, name, items in groups %}
+<div class="card">
+  <h2>{{ name }} — qoldiq: {{ items|sum(attribute="left")|pul }}</h2>
+  <table>
+    <thead><tr><th>Bemor</th><th>Ish</th><th>Ish sanasi</th><th class="n">Narx</th><th class="n">To'langan</th><th class="n">Qoldiq</th></tr></thead>
+    <tbody>
+    {% for x in items %}
+      <tr><td>{{ x.patient }}</td><td>{{ x.work }}</td><td>{{ x.done_date }}</td>
+        <td class="n">{{ x.price|pul }}</td><td class="n">{{ x.paid|pul }}</td><td class="n">{{ x.left|pul }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="card muted">Qarz topilmadi.</div>
+{% endfor %}
+{% endblock %}

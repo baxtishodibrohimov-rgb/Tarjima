@@ -1,0 +1,13 @@
+# /etc/systemd/system/cliniccards-hisobot.service
+[Unit]
+Description=Cliniccards maosh hisoboti
+After=network-online.target
+
+[Service]
+User=hisobot
+WorkingDirectory=/opt/cliniccards_hisobot
+ExecStart=/opt/cliniccards_hisobot/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 8090
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

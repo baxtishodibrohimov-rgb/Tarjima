@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Maosh hisoboti{% endblock %}</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1d2430; --muted:#667085; --line:#e4e7ec; --accent:#2f5d8a; --warn:#b54708; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:var(--text); }
+  header { background:var(--accent); color:#fff; padding:12px 16px; display:flex; gap:16px; align-items:center; flex-wrap:wrap; }
+  header a { color:#fff; text-decoration:none; opacity:.9; }
+  header a:hover { opacity:1; text-decoration:underline; }
+  header strong { margin-right:auto; }
+  main { max-width:1200px; margin:0 auto; padding:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; overflow-x:auto; }
+  h1 { font-size:22px; margin:0 0 12px; }
+  h2 { font-size:18px; margin:0 0 10px; }
+  table { border-collapse:collapse; width:100%; }
+  th, td { padding:7px 10px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+  th { background:#f0f3f7; font-weight:600; font-size:13px; }
+  td.n, th.n { text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums; }
+  tfoot td { font-weight:700; border-top:2px solid var(--text); }
+  .muted { color:var(--muted); }
+  .warn { color:var(--warn); }
+  .toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:12px; }
+  .btn, button, input[type=month], input[type=number] { font:inherit; padding:6px 12px; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--text); text-decoration:none; cursor:pointer; }
+  .btn.primary, button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .stats { display:flex; gap:12px; flex-wrap:wrap; }
+  .stat { flex:1 1 180px; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 16px; }
+  .stat b { display:block; font-size:22px; font-variant-numeric:tabular-nums; }
+  .ok { color:#067647; }
+  @media print {
+    header, .toolbar, .noprint { display:none !important; }
+    body { background:#fff; font-size:12px; }
+    main { padding:0; max-width:none; }
+    .card { border:none; padding:0; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <strong>Maosh hisoboti</strong>
+  <a href="/?oy={{ oy }}">Shifokorlar</a>
+  <a href="/qarzdorlar">Qarzdorlar</a>
+  <a href="/sozlamalar">Foizlar</a>
+</header>
+<main>
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

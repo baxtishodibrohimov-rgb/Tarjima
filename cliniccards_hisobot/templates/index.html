@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Maosh — {{ oy }}{% endblock %}
+{% block content %}
+<h1>{{ oy }}: shu oy tushgan pul bo'yicha</h1>
+<form class="toolbar" method="get" action="/">
+  <input type="month" name="oy" value="{{ oy }}">
+  <button class="primary" type="submit">Ko'rsatish</button>
+  <a class="btn" href="/excel?oy={{ oy }}">Excel</a>
+  <button type="button" onclick="window.print()">Chop etish</button>
+  <button type="submit" formmethod="post" formaction="/yangilash">Ma'lumotni yangilash</button>
+</form>
+
+<div class="stats" style="margin-bottom:16px">
+  <div class="stat"><span class="muted">Ishlar bo'yicha tushgan</span><b>{{ rep.total|pul }}</b></div>
+  <div class="stat"><span class="muted">Jami maosh</span><b>{{ rep.salary|pul }}</b></div>
+  <div class="stat"><span class="muted">Kassa (barcha to'lovlar)</span><b>{{ rep.kassa_total|pul }}</b></div>
+  <div class="stat"><span class="muted">Farq</span>
+    <b class="{{ 'ok' if rep.difference == 0 else 'warn' }}">{{ rep.difference|pul }}</b></div>
+</div>
+
+<div class="card">
+<table>
+  <thead><tr><th>Shifokor</th><th class="n">Bemorlar</th><th class="n">Shu oy tushgan</th><th class="n">Foiz</th><th class="n">Maosh</th></tr></thead>
+  <tbody>
+  {% for d in rep.doctors %}
+    <tr>
+      <td>{% if d.doctor_id != "0" %}<a href="/shifokor/{{ d.doctor_id }}?oy={{ oy }}">{{ d.name }}</a>{% else %}<span class="warn">{{ d.name }}</span>{% endif %}
+        {% if d.doctor_id != "0" and d.percent == 0 %}<span class="warn"> · foiz qo'yilmagan</span>{% endif %}</td>
+      <td class="n">{{ d.patients }}</td>
+      <td class="n">{{ d.total|pul }}</td>
+      <td class="n">{{ d.percent|pul }}%</td>
+      <td class="n">{{ d.salary|pul }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="5" class="muted">Bu oyda ishlarga bog'langan to'lov topilmadi.</td></tr>
+  {% endfor %}
+  </tbody>
+  <tfoot><tr><td>Jami</td><td></td><td class="n">{{ rep.total|pul }}</td><td></td><td class="n">{{ rep.salary|pul }}</td></tr></tfoot>
+</table>
+</div>
+<p class="muted noprint">«Farq» — kassaga tushgan, lekin hali birorta bajarilgan ishga bog'lanmagan pul (avans, depozit, rejalashtirilgan ish uchun to'lov) yoki boshqa valyutadagi kassa.
+Ish qachon qilinganidan qat'i nazar, faqat shu oyda tushgan to'lovlar hisoblanadi.</p>
+{% endblock %}

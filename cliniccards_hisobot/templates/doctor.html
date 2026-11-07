@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}{{ d.name if d else doctor_id }} — {{ oy }}{% endblock %}
+{% block content %}
+<form class="toolbar" method="get" action="/shifokor/{{ doctor_id }}">
+  <a class="btn" href="/?oy={{ oy }}">← Barcha shifokorlar</a>
+  <input type="month" name="oy" value="{{ oy }}">
+  <button class="primary" type="submit">Ko'rsatish</button>
+  {% if d %}<a class="btn" href="/excel?oy={{ oy }}&shifokor={{ doctor_id }}">Excel</a>{% endif %}
+  <button type="button" onclick="window.print()">Chop etish</button>
+</form>
+{% if not d %}
+  <div class="card muted">Bu shifokorga {{ oy }} oyida pul tushmagan.</div>
+{% else %}
+<h1>{{ d.name }} — {{ oy }}</h1>
+<div class="stats" style="margin-bottom:16px">
+  <div class="stat"><span class="muted">Shu oy tushgan</span><b>{{ d.total|pul }}</b></div>
+  <div class="stat"><span class="muted">Foiz</span><b>{{ d.percent|pul }}%</b></div>
+  <div class="stat"><span class="muted">Maosh</span><b>{{ d.salary|pul }}</b></div>
+  <div class="stat"><span class="muted">Bemorlar</span><b>{{ d.patients }}</b></div>
+</div>
+<div class="card">
+<table>
+  <thead><tr><th>Bemor</th><th>Ish</th><th>Ish sanasi</th><th class="n">Narx</th><th class="n">Jami to'langan</th><th class="n">Shu oy tushgan</th><th>To'lov sanasi</th><th class="n">Ulush</th></tr></thead>
+  <tbody>
+  {% for r in d.rows %}
+    <tr><td>{{ r.patient }}</td><td>{{ r.work }}</td><td>{{ r.done_date }}</td>
+      <td class="n">{{ r.price|pul }}</td><td class="n">{{ r.paid_total|pul }}</td>
+      <td class="n">{{ r.month_paid|pul }}</td><td>{{ r.payment_dates|join(", ") }}</td><td class="n">{{ r.share|pul }}</td></tr>
+  {% endfor %}
+  </tbody>
+  <tfoot><tr><td colspan="5">Jami</td><td class="n">{{ d.total|pul }}</td><td></td><td class="n">{{ d.salary|pul }}</td></tr></tfoot>
+</table>
+</div>
+{% endif %}
+{% endblock %}

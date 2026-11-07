@@ -1,0 +1,5 @@
+.env
+foizlar.json
+foizlar.tmp
+__pycache__/
+.venv/
