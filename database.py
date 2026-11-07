@@ -641,6 +641,12 @@ _TTS_SEGMENT_NEW_COLUMNS = {
     "tempo": "REAL",
     # Ovozning 1.0 tezlikdagi haqiqiy davomiyligi (D_i).
     "audio_duration": "REAL",
+    # `attempts` faqat segmentning bazada xato bilan yakunlangan alohida
+    # sikllari soni. Provider ichidagi qisqa retrylar alohida saqlanadi.
+    "last_api_attempts": "INTEGER DEFAULT 0",
+    "error_stage": "TEXT",
+    "error_type": "TEXT",
+    "error_category": "TEXT",
 }
 _CHUNK_NEW_COLUMNS = {
     # NULL = bo'lak uchun alohida til belgilanmagan (videoning umumiy tilidan foydalaniladi),
@@ -663,6 +669,9 @@ _LEARNING_TRACK_NEW_COLUMNS = {
     # Learning SRT vaqt qatoridagi [yangi:..]/[takror:..] teglari (translation.parse_learning_srt)
     "words_json": "TEXT",
     "warnings_json": "TEXT",
+    # Noyob yangi/takror lemmalar va ularning uchrash soni faqat Learning SRTga
+    # bog'liq. Har video GETida qayta sanamaslik uchun SRT bilan birga yangilanadi.
+    "word_lists_json": "TEXT",
     # So'zlar kadrga kuydirilgan (ixtiyoriy intro bilan) yuklab olinadigan Learning videosi.
     # final_video_path (intro'siz, toza) o'zgarmaydi - pleyer shuni ishlatadi.
     "export_status": "TEXT DEFAULT 'none'",

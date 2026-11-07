@@ -451,12 +451,21 @@ def video_public(v: dict) -> dict:
     learning_public = dict(learning_track) if learning_track else None
     if learning_public and learning_track["tts_job_id"]:
         learning_job = db.fetchone(
-            "SELECT status, total_segments, completed_segments FROM tts_jobs WHERE id = ?",
+            "SELECT status, total_segments, completed_segments, error FROM tts_jobs WHERE id = ?",
             (learning_track["tts_job_id"],))
         if learning_job:
             learning_public["job_status"] = learning_job["status"]
             learning_public["total_segments"] = learning_job["total_segments"] or 0
             learning_public["completed_segments"] = learning_job["completed_segments"] or 0
+            learning_public["job_error"] = learning_job["error"] or ""
+            learning_public["error_segment_count"] = db.fetchone(
+                "SELECT COUNT(*) c FROM tts_segments WHERE job_id = ? AND status = 'error'",
+                (learning_track["tts_job_id"],))["c"]
+            learning_public["error_segments"] = db.fetchall(
+                "SELECT seg_index, start_sec, end_sec, status, error, attempts, last_api_attempts, "
+                "error_stage, error_type, error_category FROM tts_segments "
+                "WHERE job_id = ? AND status = 'error' ORDER BY seg_index ASC LIMIT 200",
+                (learning_track["tts_job_id"],))
     return {
         "id": v["id"], "original_name": v["original_name"], "file_size": v["file_size"],
         "duration": v["duration"], "status": v["status"], "blocked_reason": v["blocked_reason"],
@@ -1953,12 +1962,20 @@ def _attachment(response, filename: str):
 
 
 def _learning_words_payload(video_id: str):
-    track = db.fetchone("SELECT words_json, warnings_json, intro_slides_json FROM learning_tracks "
+    track = db.fetchone("SELECT words_json, warnings_json, word_lists_json, intro_slides_json FROM learning_tracks "
                         "WHERE video_id = ? AND srt_status = 'uploaded'", (video_id,))
     if not track:
         return None
     blocks = worker.learning_blocks(track)
-    lists = translation.learning_word_lists(blocks)
+    lists = _json_or_none(track["word_lists_json"])
+    if not isinstance(lists, dict) or not isinstance(lists.get("new"), list) \
+            or not isinstance(lists.get("repeat"), list):
+        # Eski loyihalar uchun bir martalik backfill. Keyingi video GETlari tayyor
+        # qiymatni oladi; SRT yuklash/tahrirlash/almashtirish esa worker ichida
+        # keshni darhol yangilaydi.
+        lists = translation.learning_word_lists(blocks)
+        db.execute("UPDATE learning_tracks SET word_lists_json = ? WHERE video_id = ?",
+                   (json.dumps(lists, ensure_ascii=False), video_id))
     warnings = _json_or_empty(track["warnings_json"])
     video = db.fetchone("SELECT transcript_segments, transcript_words, translation_segments, duration "
                         "FROM videos WHERE id = ?", (video_id,))
@@ -3356,13 +3373,23 @@ async def tts_pause(job_id: str):
 
 @app.post("/api/tts/jobs/{job_id}/resume")
 async def tts_resume(job_id: str):
-    tts.resume_job(job_id)
+    try:
+        started = tts.resume_job(job_id)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    if not started:
+        raise HTTPException(409, "Audio ish allaqachon navbatda yoki ishlayapti.")
     return {"ok": True}
 
 
 @app.post("/api/tts/jobs/{job_id}/retry")
 async def tts_retry(job_id: str):
-    tts.retry_job(job_id)
+    try:
+        started = tts.retry_job(job_id)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    if not started:
+        raise HTTPException(409, "Audio ish allaqachon navbatda yoki ishlayapti.")
     return {"ok": True}
 
 

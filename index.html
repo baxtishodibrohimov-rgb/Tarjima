@@ -1500,6 +1500,7 @@ async function saveAyshaSettings() {
 async function loadGeneralSettings() {
   try {
     const s = await apiFetch('/api/settings');
+    learningAudioSettingsCache = s;
     document.getElementById('settingsOpenaiVoice').value = s.openai_default_voice || 'alloy';
     document.getElementById('settingsOpenaiInstructions').value = s.openai_default_instructions || '';
     document.getElementById('settingsStretchDefault').checked = (s.default_stretch_to_fit !== 'false');
@@ -1516,6 +1517,12 @@ async function saveGeneralSettings() {
         default_stretch_to_fit: String(document.getElementById('settingsStretchDefault').checked),
       }),
     });
+    learningAudioSettingsCache = {
+      ...(learningAudioSettingsCache || {}),
+      openai_default_voice: document.getElementById('settingsOpenaiVoice').value,
+      openai_default_instructions: document.getElementById('settingsOpenaiInstructions').value,
+      default_stretch_to_fit: String(document.getElementById('settingsStretchDefault').checked),
+    };
     setStatus('generalSettingsStatus', 'Saqlandi.', 'ok');
   } catch (e) {
     setStatus('generalSettingsStatus', 'Xato: ' + e.message, 'err');
@@ -3057,6 +3064,7 @@ let currentDetailVideoId = null;
 let currentDetailVideoStatus = null;
 let currentDetailVideoData = null;
 let currentDetailSection = 'transcript';
+let currentDetailLoadGeneration = 0;
 // Video 'band' (blocked_reason mavjud) bo'lsa - fon jarayoni FAOL EMAS,
 // foydalanuvchi harakatini kutmoqda (masalan "Video yig'ishda xato").
 // Shunday holatda 4 soniyalik avtomatik yangilanishni to'xtatamiz (xuddi
@@ -3074,6 +3082,7 @@ function openVideoDetail(id, section = 'transcript') {
   currentDetailVideoData = null;
   currentDetailSection = section;
   currentDetailVideoBlockedReason = null;
+  currentDetailLoadGeneration += 1;
   document.getElementById('videosGridView').style.display = 'none';
   document.getElementById('videoDetailView').style.display = 'block';
   document.getElementById('videosFab').style.display = 'none';
@@ -3081,6 +3090,13 @@ function openVideoDetail(id, section = 'transcript') {
   document.getElementById('headerFolderButton').style.display = 'none';
   document.getElementById('topbarVideoName').style.display = 'none';
   document.getElementById('folderBar').style.display = 'none';
+  // Oldingi video pleyeri/transkripti yangi so'rov tugaguncha ekranda qolmaydi.
+  // <video>/<audio> elementlarini DOMdan olish brauzerdagi eski playbackni ham to'xtatadi.
+  document.getElementById('videoDetailContent').innerHTML = '<p class="hint">Yuklanmoqda…</p>';
+  const topbarVideoName = document.getElementById('topbarVideoName');
+  topbarVideoName.textContent = '';
+  topbarVideoName.removeAttribute('title');
+  topbarVideoName.style.display = 'none';
   window.scrollTo(0, 0);
   saveNavState();
   loadVideoDetail(id);
@@ -3093,6 +3109,7 @@ function closeVideoDetail() {
   currentDetailVideoData = null;
   currentDetailSection = 'transcript';
   currentDetailVideoBlockedReason = null;
+  currentDetailLoadGeneration += 1;
   document.getElementById('videoDetailView').style.display = 'none';
   document.getElementById('videosGridView').style.display = 'block';
   document.getElementById('videosFab').style.display = 'flex';
@@ -3126,6 +3143,7 @@ function videoDetailLayoutKey(v) {
     learning: {
       srt_status: learning.srt_status || null,
       audio_status: learning.audio_status || null,
+      job_status: learning.job_status || null,
       final_video_status: learning.final_video_status || null,
       subtitled_video_status: learning.subtitled_video_status || null,
       error: learning.error || null,
@@ -3176,7 +3194,9 @@ function updateLiveVideoDetail(v) {
     : 0;
   root.querySelectorAll('[data-live-progress="learning"]').forEach(el => { el.style.width = `${learningPercent}%`; });
   root.querySelectorAll('[data-live-counter="learning"]').forEach(el => {
-    el.textContent = `⏳ Learning audio yaratilmoqda: ${learning.completed_segments || 0}/${learning.total_segments || 0}`;
+    el.textContent = learning.job_status === 'queued'
+      ? 'Server ishni qabul qildi — navbatda.'
+      : `⏳ Learning audio yaratilmoqda: ${learning.completed_segments || 0}/${learning.total_segments || 0}`;
   });
   root.querySelectorAll('[data-live-progress="intro"]').forEach(el => {
     el.style.width = `${Math.max(0, Math.min(100, Number(learning.intro_progress) || 0))}%`;
@@ -3207,23 +3227,34 @@ function applyVideoDetailSnapshot(v, forceRender = false) {
 }
 
 async function loadVideoDetail(id) {
+  const requestGeneration = currentDetailLoadGeneration;
   try {
     const v = await apiFetch(`/api/videos/${id}`);
-    if (currentDetailVideoId !== id) return;
+    if (currentDetailVideoId !== id || currentDetailLoadGeneration !== requestGeneration) return;
     applyVideoDetailSnapshot(v, true);
   } catch (e) {
+    if (currentDetailVideoId !== id || currentDetailLoadGeneration !== requestGeneration) return;
     if (/topilmadi|404/i.test(e.message || '')) {  // masalan o'chirilgan video manzili saqlanib qolgan
       closeVideoDetail();
       return;
     }
-    document.getElementById('videoDetailContent').innerHTML = `<p class="status err">Xato: ${escapeHtml(e.message)}</p>`;
+    document.getElementById('videoDetailContent').innerHTML = `
+      <p class="status err">Videoni yuklab bo'lmadi: ${escapeHtml(e.message)}</p>
+      <div class="row"><button class="secondary" onclick="retryVideoDetailLoad('${escapeHtml(id)}')">Qayta urinish</button></div>`;
   }
 }
 
+function retryVideoDetailLoad(id) {
+  if (currentDetailVideoId !== id) return;
+  document.getElementById('videoDetailContent').innerHTML = '<p class="hint">Yuklanmoqda…</p>';
+  loadVideoDetail(id);
+}
+
 async function pollVideoDetail(id) {
+  const requestGeneration = currentDetailLoadGeneration;
   try {
     const v = await apiFetch(`/api/videos/${id}`);
-    if (currentDetailVideoId !== id) return;
+    if (currentDetailVideoId !== id || currentDetailLoadGeneration !== requestGeneration) return;
     applyVideoDetailSnapshot(v, false);
   } catch (e) {
     // Vaqtinchalik polling xatosida mavjud sahifani buzmaymiz. Keyingi 4 soniyada
@@ -4484,12 +4515,14 @@ const OPENAI_VOICES = ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'];
 const AISHA_MOODS = ['Neutral', 'Cheerful', 'Happy', 'Sad'];
 const speakerVoiceState = {}; // `${prefix}-${id}` -> { speakers, saved, getProvider }
 
-async function loadSpeakerVoices(prefix, id, source, getProvider) {
+async function loadSpeakerVoices(prefix, id, source, getProvider, isCurrent = () => true) {
   const key = `${prefix}-${id}`;
   try {
     const r = await apiFetch(`/api/videos/${id}/speakers?source=${source}`);
+    if (!isCurrent()) return;
     speakerVoiceState[key] = { speakers: r.speakers || [], saved: r.voice_map || {}, getProvider };
   } catch (e) {
+    if (!isCurrent()) return;
     speakerVoiceState[key] = { speakers: [], saved: {}, getProvider };
   }
   renderSpeakerVoices(prefix, id);
@@ -4891,10 +4924,11 @@ function renderLearningStage(v) {
     audioBody = `<p class="hint">Avval “Matn → Tarjima” bo‘limida Ruscha o‘rganish matnini tayyorlang.</p>
       <div class="row"><button class="secondary" onclick="showVideoSection('translation')">Matn → Tarjima bo‘limiga o‘tish</button></div>`;
   } else if (t.audio_status === 'generating') {
-    audioBadge = stageStatusBadge('Yaratilmoqda...', 'active');
+    const queued = t.job_status === 'queued';
+    audioBadge = stageStatusBadge(queued ? 'Navbatda' : 'Yaratilmoqda...', 'active');
     const pct = t.total_segments ? Math.round((t.completed_segments || 0) / t.total_segments * 100) : 0;
     audioBody = `<div class="progress-wrap"><div class="progress-bar" data-live-progress="learning" style="width:${pct}%;"></div></div>
-      <p class="hint" data-live-counter="learning">${t.completed_segments || 0}/${t.total_segments || 0} segment tayyor.</p>`;
+      <p class="hint" data-live-counter="learning">${queued ? 'Server ishni qabul qildi — navbatda.' : `${t.completed_segments || 0}/${t.total_segments || 0} segment tayyor.`}</p>`;
   } else if (audioReady) {
     audioBadge = stageStatusBadge('✅ Tayyor', 'done');
     audioBody = `<audio controls src="${API_BASE}/api/videos/${v.id}/learning/audio-download"></audio>
@@ -4906,7 +4940,9 @@ function renderLearningStage(v) {
   } else {
     if (t.audio_status === 'error') {
       audioBadge = stageStatusBadge('Xato', 'error');
-      audioBody = `<p class="status err">${escapeHtml(t.error || 'Audio yaratishda xato yuz berdi.')}</p>`;
+      audioBody = `<p class="status err">${escapeHtml(t.error || t.job_error || 'Audio yaratishda xato yuz berdi.')}</p>
+        ${t.tts_job_id ? `<div class="row"><button class="action" onclick="retryLearningAudioErrors('${v.id}', '${t.tts_job_id}', this)">Faqat xatoli bo‘laklarni qayta urinish</button></div>
+        <div class="status" id="learningRetryStatus-${v.id}"></div>` : ''}`;
     } else {
       audioBody = '';
     }
@@ -5062,12 +5098,59 @@ async function retryLearningRender(id, btnEl) {
   });
 }
 
-async function showLearningAudioForm(id) {
+let learningAudioFormSerial = 0;
+let learningAudioSettingsCache = null;
+const learningAudioFormSessions = {};
+
+function learningAudioFormIsCurrent(id, token) {
+  const el = document.getElementById('learning-audio-form-' + id);
+  return !!el && currentDetailVideoId === id && learningAudioFormSessions[id]?.token === token &&
+    el.dataset.sessionToken === String(token) && !!el.innerHTML;
+}
+
+async function retryLearningAudioErrors(videoId, ttsJobId, btnEl) {
+  if (!btnEl || btnEl.disabled) return;
+  const original = btnEl.textContent;
+  btnEl.disabled = true;
+  btnEl.textContent = 'Navbatga qo‘yilmoqda…';
+  setStatus('learningRetryStatus-' + videoId, '', '');
+  try {
+    await apiFetch(`/api/tts/jobs/${ttsJobId}/retry`, { method: 'POST' });
+    btnEl.textContent = 'Navbatda';
+    setStatus('learningRetryStatus-' + videoId, 'Faqat xatoli bo‘laklar navbatga qo‘yildi.', 'ok');
+    if (currentDetailVideoId === videoId) loadVideoDetail(videoId);
+  } catch (e) {
+    setStatus('learningRetryStatus-' + videoId, 'Qayta urinishni boshlashda xato: ' + e.message, 'err');
+    btnEl.disabled = false;
+    btnEl.textContent = original;
+  }
+}
+
+function applyLearningAudioSettings(id, token, settings) {
+  const session = learningAudioFormSessions[id];
+  if (!learningAudioFormIsCurrent(id, token) || !session || session.dirty) return;
+  const voice = document.getElementById('learningVoice-' + id);
+  const mood = document.getElementById('learningMood-' + id);
+  const stretch = document.getElementById('learningStretch-' + id);
+  if (voice && settings.openai_default_voice) voice.value = settings.openai_default_voice;
+  if (mood) mood.value = settings.aisha_default_mood || 'Neutral';
+  if (stretch) stretch.checked = settings.default_stretch_to_fit !== 'false';
+  applyOtherTrackVoice('learning', id);
+}
+
+function showLearningAudioForm(id) {
   const el = document.getElementById('learning-audio-form-' + id);
   if (!el) return;
-  if (el.innerHTML) { el.innerHTML = ''; return; }
-  let settings = {};
-  try { settings = await apiFetch('/api/settings'); } catch (e) {}
+  if (el.innerHTML) {
+    el.innerHTML = '';
+    delete learningAudioFormSessions[id];
+    delete speakerVoiceState[`learning-${id}`];
+    return;
+  }
+  const token = ++learningAudioFormSerial;
+  const settings = learningAudioSettingsCache || {};
+  learningAudioFormSessions[id] = { token, dirty: false, submitting: false };
+  el.dataset.sessionToken = String(token);
   const savedAishaKey = localStorage.getItem(aishaStorageKey()) || '';
   el.innerHTML = `
     <div class="row" style="margin-top:10px;">
@@ -5089,20 +5172,39 @@ async function showLearningAudioForm(id) {
     <div id="learningOpenaiFields-${id}">
       <label class="field">Ovoz</label>
       <select id="learningVoice-${id}">
-        <option value="alloy">alloy</option><option value="echo">echo</option><option value="fable">fable</option>
-        <option value="onyx">onyx</option><option value="nova">nova</option><option value="shimmer">shimmer</option>
+        ${OPENAI_VOICES.map(v => `<option value="${v}" ${v === (settings.openai_default_voice || 'alloy') ? 'selected' : ''}>${v}</option>`).join('')}
       </select>
     </div>
     <p class="status err" id="learningAishaWarn-${id}" style="display:none;">Aisha ruscha so'zlarni to'g'ri o'qimasligi mumkin — OpenAI tavsiya etiladi.</p>
     <p class="hint" id="learningCostHint-${id}"></p>
     <div id="learningSpeakerVoices-${id}"></div>
     <div class="save-hint"><label><input type="checkbox" id="learningStretch-${id}" ${settings.default_stretch_to_fit !== 'false' ? 'checked' : ''}> Kerak bo'lgandagina siqish</label></div>
-    <div class="row"><button class="action" onclick="submitLearningAudioJob('${id}')">Audio yaratish</button></div>
+    <p class="hint" id="learningAudioLoadStatus-${id}">Sozlamalar, spiker ovozlari va xarajat fonda yuklanmoqda…</p>
+    <div class="row"><button class="action" id="learningAudioSubmit-${id}" onclick="submitLearningAudioJob('${id}')">Audio yaratish</button></div>
     <div class="status" id="learningAudioFormStatus-${id}"></div>`;
   document.getElementById('learningMood-' + id).value = settings.aisha_default_mood || 'Neutral';
   applyOtherTrackVoice('learning', id);
-  el.addEventListener('change', () => updateCostHint('learning', id));
-  await loadSpeakerVoices('learning', id, 'learning', () => document.getElementById('learningProvider-' + id).value);
+  const markDirty = () => {
+    const session = learningAudioFormSessions[id];
+    if (session && session.token === token) session.dirty = true;
+  };
+  el.addEventListener('input', markDirty);
+  el.addEventListener('change', () => { markDirty(); updateCostHint('learning', id); });
+
+  const settingsPromise = apiFetch('/api/settings').then(fresh => {
+    learningAudioSettingsCache = fresh;
+    applyLearningAudioSettings(id, token, fresh);
+  });
+  const speakersPromise = loadSpeakerVoices(
+    'learning', id, 'learning',
+    () => (document.getElementById('learningProvider-' + id) || {}).value || 'openai',
+    () => learningAudioFormIsCurrent(id, token));
+  Promise.allSettled([settingsPromise, speakersPromise]).then(() => {
+    if (!learningAudioFormIsCurrent(id, token)) return;
+    const loading = document.getElementById('learningAudioLoadStatus-' + id);
+    if (loading) loading.textContent = '';
+    updateCostHint('learning', id);
+  });
   updateCostHint('learning', id);
 }
 
@@ -5135,6 +5237,8 @@ function applyOtherTrackVoice(prefix, id) {
   if (field && value) field.value = value;
 }
 
+const costHintRequestSerial = {};
+
 /* "N ta gapdan M tasi tayyor ovozdan bepul olinadi, K tasi yangi (~$X)". */
 async function updateCostHint(prefix, id) {
   const el = document.getElementById(prefix + 'CostHint-' + id);
@@ -5145,9 +5249,25 @@ async function updateCostHint(prefix, id) {
   const qs = new URLSearchParams({ provider, voice, mood });
   const vm = collectVoiceMap(prefix, id);
   if (vm) qs.set('voice_map', vm);
+  const requestKey = `${prefix}-${id}`;
+  const requestSerial = (costHintRequestSerial[requestKey] || 0) + 1;
+  costHintRequestSerial[requestKey] = requestSerial;
+  const selection = `${provider}|${voice}|${mood}|${vm}`;
+  el.textContent = 'Xarajat hisoblanmoqda…';
   const url = prefix === 'audio' ? `/api/videos/${id}/tts-estimate` : `/api/videos/${id}/learning/tts-estimate`;
   let r;
-  try { r = await apiFetch(`${url}?${qs}`); } catch (e) { el.textContent = ''; return; }
+  try { r = await apiFetch(`${url}?${qs}`); } catch (e) {
+    if (costHintRequestSerial[requestKey] === requestSerial && document.getElementById(prefix + 'CostHint-' + id))
+      el.textContent = 'Xarajat hisobini yuklab bo‘lmadi.';
+    return;
+  }
+  const currentProvider = (document.getElementById(prefix + 'Provider-' + id) || {}).value || '';
+  const currentVoice = (document.getElementById(prefix + 'Voice-' + id) || {}).value || '';
+  const currentMood = (document.getElementById(prefix + 'Mood-' + id) || {}).value || '';
+  const currentMap = collectVoiceMap(prefix, id);
+  if (costHintRequestSerial[requestKey] !== requestSerial ||
+      selection !== `${currentProvider}|${currentVoice}|${currentMood}|${currentMap}` ||
+      !document.getElementById(prefix + 'CostHint-' + id)) return;
   if (!r.total) { el.textContent = ''; return; }
   const price = escapeHtml(provider === 'aisha' ? fmtSom(r.est_som) : '$' + Number(r.est_usd).toFixed(2));
   let html = r.cached
@@ -5184,6 +5304,9 @@ function toggleLearningProviderFields(id) {
 }
 
 async function submitLearningAudioJob(id) {
+  const btn = document.getElementById('learningAudioSubmit-' + id);
+  const session = learningAudioFormSessions[id];
+  if (!btn || btn.disabled || !session || session.submitting) return;
   const provider = document.getElementById('learningProvider-' + id).value;
   const stretch = document.getElementById('learningStretch-' + id).checked;
   const form = new FormData();
@@ -5200,12 +5323,22 @@ async function submitLearningAudioJob(id) {
   }
   const voiceMap = collectVoiceMap('learning', id);
   if (voiceMap) form.append('voice_map', voiceMap);
+  session.submitting = true;
+  btn.disabled = true;
+  btn.textContent = 'So‘rov yuborilmoqda…';
+  setStatus('learningAudioFormStatus-' + id, 'So‘rov yuborilmoqda…', '');
   try {
     await apiFetch(`/api/videos/${id}/learning/audio`, { method: 'POST', body: form });
-    setStatus('learningAudioFormStatus-' + id, 'Learning audio yaratish boshlandi.', 'ok');
+    setStatus('learningAudioFormStatus-' + id, 'Navbatda', 'ok');
+    btn.textContent = 'Navbatda';
     if (currentDetailVideoId === id) loadVideoDetail(id);
   } catch (e) {
-    setStatus('learningAudioFormStatus-' + id, 'Xato: ' + e.message, 'err');
+    if (document.getElementById('learningAudioFormStatus-' + id)) {
+      setStatus('learningAudioFormStatus-' + id, 'Audio so‘rovini yuborib bo‘lmadi: ' + e.message, 'err');
+      btn.disabled = false;
+      btn.textContent = 'Audio yaratish';
+      session.submitting = false;
+    }
   }
 }
 
@@ -5444,7 +5577,26 @@ function renderFilesAndLog(v) {
     ? `<a class="small-btn" style="text-decoration:none;" href="${API_BASE}/api/videos/${v.id}/learning/srt-download">Learning SRT'ni yuklab olish</a>` : '';
   const learningAudio = v.learning_track && v.learning_track.audio_status === 'ready'
     ? `<a class="small-btn" style="text-decoration:none;" href="${API_BASE}/api/videos/${v.id}/learning/audio-download">Learning audioni yuklab olish</a>` : '';
-  const logs = (v.logs || []).map(l => `${l.ts}  ${l.message}`).join('\n');
+  const normalLogs = (v.logs || []).map(l => `${l.ts}  ${l.message}`);
+  const learningTrack = v.learning_track || {};
+  const learningFailures = learningTrack.error_segments || [];
+  const learningErrorLines = [];
+  if (learningTrack.error_segment_count) {
+    learningErrorLines.push(
+      `Learning audio: ${learningTrack.error_segment_count} ta segment xato bilan yakunlangan.`);
+    for (const seg of learningFailures) {
+      const finalFailures = Number(seg.attempts) || 0;
+      const providerAttempts = Number(seg.last_api_attempts) || 0;
+      learningErrorLines.push(
+        `  #${Number(seg.seg_index) + 1}: ${seg.error || `${seg.error_type || 'Error'} (${seg.error_stage || 'noma’lum bosqich'})`} ` +
+        `[yakuniy muvaffaqiyatsiz sikl: ${finalFailures}; oxirgi sikldagi provider urinishlari: ${providerAttempts}]`);
+    }
+    if (learningTrack.error_segment_count > learningFailures.length)
+      learningErrorLines.push(`  ... yana ${learningTrack.error_segment_count - learningFailures.length} ta xatoli segment.`);
+  }
+  if (learningTrack.job_error && !learningErrorLines.some(line => line.includes(learningTrack.job_error)))
+    learningErrorLines.push(`Learning audio umumiy xatosi: ${learningTrack.job_error}`);
+  const logs = normalLogs.concat(learningErrorLines.length ? ['', ...learningErrorLines] : []).join('\n');
   return `<div class="stage">
     <div class="stage-head"><h3>Ma'lumotlar</h3></div>
     <p class="hint">${fmtBytes(v.file_size)}${v.duration ? ' · ' + fmtMinSec(v.duration) : ''}${v.message ? ' · ' + escapeHtml(v.message) : ''}</p>

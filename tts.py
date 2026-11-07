@@ -13,6 +13,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import subprocess
 import traceback
 import wave
@@ -75,6 +76,63 @@ def estimate_speech_duration(text: str, chars_per_second: float = UZBEK_CHARS_PE
 # (tts_plan.compute_tempos + _apply_tempo). Eski [speed:fast]/[speed:slow]
 # teglari o'qiladi, lekin e'tiborsiz qoldiriladi.
 TTS_SPEED = 1.0
+
+
+_SECRET_PATTERNS = (
+    re.compile(r"\bsk-[A-Za-z0-9_-]{6,}\b"),
+    re.compile(r"(?i)(bearer\s+)[^\s,;]+"),
+    re.compile(r"(?i)((?:api[-_ ]?key|authorization|token)\s*[:=]\s*)[^\s,;]+"),
+)
+
+
+def safe_error_text(error: BaseException) -> str:
+    """Log/bazaga yoziladigan, maxfiy tokenlari olib tashlangan xato matni.
+
+    Ba'zi SDK exceptionlari ``str(e) == ''`` qaytaradi. Bunday holatda ham
+    exception turi ko'rinishi shart.
+    """
+    text = str(error).strip()
+    for pattern in _SECRET_PATTERNS:
+        text = pattern.sub(lambda m: (m.group(1) if m.lastindex else "") + "[REDACTED]", text)
+    return (text or type(error).__name__)[:500]
+
+
+def _error_category(error: BaseException, stage: str) -> str:
+    text = safe_error_text(error).lower()
+    name = type(error).__name__.lower()
+    if "ffmpeg" in text or "ffprobe" in text or "subprocess" in name:
+        return "ffmpeg"
+    if stage in ("cache_write", "segment_write", "audio_write"):
+        return "file_write"
+    if "insufficient_quota" in text or "billing" in text or "credit" in text or "quota" in text:
+        return "credit_or_quota"
+    if "rate limit" in text or "too many requests" in text or "http 429" in text or "ratelimit" in name:
+        return "rate_limit"
+    if isinstance(error, (asyncio.TimeoutError, TimeoutError)) or "timeout" in name or "timed out" in text:
+        return "timeout"
+    network_types = tuple(t for t in (getattr(httpx, "NetworkError", None),
+                                      getattr(httpx, "TransportError", None)) if isinstance(t, type))
+    if (network_types and isinstance(error, network_types)) or "network" in name or "connection" in text:
+        return "network"
+    return "provider_or_processing"
+
+
+def _clock(value) -> str:
+    value = max(0.0, float(value or 0))
+    hours, rem = divmod(value, 3600)
+    minutes, seconds = divmod(rem, 60)
+    return f"{int(hours):02d}:{int(minutes):02d}:{seconds:06.3f}"
+
+
+def segment_error_details(seg: dict, stage: str, error: BaseException, api_attempts: int = 0) -> dict:
+    error_type = type(error).__name__
+    category = _error_category(error, stage)
+    safe_text = safe_error_text(error)
+    index = int(seg["seg_index"] or 0)
+    message = (f"Segment {index + 1} (indeks {index}), {_clock(seg['start_sec'])}–{_clock(seg['end_sec'])}; "
+               f"bosqich={stage}; tur={error_type}; toifa={category}; sabab={safe_text}")
+    return {"message": message[:1000], "stage": stage, "type": error_type,
+            "category": category, "api_attempts": int(api_attempts or 0)}
 
 
 # ---------------------------------------------------------------------------
@@ -257,15 +315,28 @@ def rebuild_job_units(job_id: str, blocks: list, changed_blocks: list) -> int:
 
 
 def resume_job(job_id: str):
-    db.execute("UPDATE tts_segments SET status = 'pending' WHERE job_id = ? AND status = 'error'", (job_id,))
-    _update_job(job_id, status="queued", error=None)
+    # Holat tekshiruvi va queued'ga o'tkazish bitta DB lock ichida: ikki tez
+    # bosish bir ishni ikki marta queue'ga qo'ya olmaydi. Faqat xatoli segmentlar
+    # pending bo'ladi; tayyor/skipped segmentlar o'z joyida qoladi.
+    with db.tx() as conn:
+        job = conn.execute("SELECT status FROM tts_jobs WHERE id = ?", (job_id,)).fetchone()
+        if not job:
+            raise ValueError("Audio ishi topilmadi.")
+        if job["status"] in ("queued", "running"):
+            return False
+        conn.execute(
+            "UPDATE tts_segments SET status = 'pending', error = NULL, last_api_attempts = 0, "
+            "error_stage = NULL, error_type = NULL, error_category = NULL "
+            "WHERE job_id = ? AND status = 'error'", (job_id,))
+        conn.execute("UPDATE tts_jobs SET status = 'queued', error = NULL WHERE id = ?", (job_id,))
     PAUSE_FLAGS.pop(job_id, None)
     CANCEL_FLAGS.pop(job_id, None)
     TTS_QUEUE.put_nowait(job_id)
+    return True
 
 
 def retry_job(job_id: str):
-    resume_job(job_id)
+    return resume_job(job_id)
 
 
 def pause_job(job_id: str):
@@ -310,9 +381,13 @@ async def _process_segment(client, job, seg, lock, ctx, out_dir):
     if CANCEL_FLAGS.get(job["id"]) or PAUSE_FLAGS.get(job["id"]) or ctx["stop"]:
         return
     if not (seg["text"] or "").strip():
-        db.execute("UPDATE tts_segments SET status = 'error', error = ? WHERE id = ?",
-                   ("Tarjima matni bo'sh - 'Tahrirlash va audio' bo'limida shu bo'lak uchun matn kiriting.",
-                    seg["id"]))
+        details = segment_error_details(
+            seg, "validation",
+            ValueError("Tarjima matni bo'sh - 'Tahrirlash va audio' bo'limida shu bo'lak uchun matn kiriting."))
+        db.execute("UPDATE tts_segments SET status = 'error', error = ?, attempts = attempts + 1, "
+                   "last_api_attempts = 0, error_stage = ?, error_type = ?, error_category = ? WHERE id = ?",
+                   (details["message"], details["stage"], details["type"], details["category"], seg["id"]))
+        db.log_line(job["id"], "XATO: " + details["message"])
         return
     provider = job["provider"]
     voice, mood = voice_for_speaker(job, seg["speaker"] if "speaker" in seg.keys() else None)
@@ -344,6 +419,8 @@ async def _process_segment(client, job, seg, lock, ctx, out_dir):
     cpath = cache_path(key, ext)
 
     db.execute("UPDATE tts_segments SET status = 'running' WHERE id = ?", (seg["id"],))
+    stage = "cache_read"
+    api_attempts = 0
     try:
         if cpath.exists():
             audio_bytes = cpath.read_bytes()
@@ -356,6 +433,8 @@ async def _process_segment(client, job, seg, lock, ctx, out_dir):
             # bosishiga to'g'ri kelardi).
             last_err = None
             for attempt in range(3):
+                api_attempts = attempt + 1
+                stage = f"{provider}_request"
                 try:
                     if provider == "aisha":
                         audio_bytes = await aisha_generate_one(client, seg["text"], mood, TTS_SPEED, raw)
@@ -370,16 +449,19 @@ async def _process_segment(client, job, seg, lock, ctx, out_dir):
                         await asyncio.sleep(2 * (attempt + 1))
             if last_err:
                 raise last_err
+            stage = "cache_write"
             cpath.write_bytes(audio_bytes)
             from_cache = False
         # Fayl nomi birlik id'si bilan - tahrirdan keyin birliklar qayta raqamlansa
         # ham saqlab qolingan boshqa birlikning faylini bosib ketmaydi.
         seg_path = out_dir / f"seg_{seg['id']}.{ext}"
+        stage = "segment_write"
         seg_path.write_bytes(audio_bytes)
 
         async with lock:
             db.execute("UPDATE tts_segments SET status = 'completed', audio_path = ?, cache_key = ?, "
-                       "applied_speed = ?, duration_overflow = 0 WHERE id = ?",
+                       "applied_speed = ?, duration_overflow = 0, error = NULL, last_api_attempts = 0, "
+                       "error_stage = NULL, error_type = NULL, error_category = NULL WHERE id = ?",
                        (str(seg_path), key, TTS_SPEED, seg["id"]))
             done = db.fetchone(
                 "SELECT COUNT(*) c FROM tts_segments WHERE job_id = ? AND status IN ('completed', 'skipped')",
@@ -402,16 +484,19 @@ async def _process_segment(client, job, seg, lock, ctx, out_dir):
         if provider != "aisha":
             keys_manager.mark_result(kid, True)
     except Exception as e:
+        details = segment_error_details(seg, stage, e, api_attempts)
         async with lock:
-            db.execute("UPDATE tts_segments SET status = 'error', error = ?, attempts = attempts + 1 WHERE id = ?",
-                       (str(e)[:500], seg["id"]))
-            db.log_line(job["id"], f"XATO (segment {seg['seg_index']+1}): {e}")
+            db.execute("UPDATE tts_segments SET status = 'error', error = ?, attempts = attempts + 1, "
+                       "last_api_attempts = ?, error_stage = ?, error_type = ?, error_category = ? WHERE id = ?",
+                       (details["message"], details["api_attempts"], details["stage"], details["type"],
+                        details["category"], seg["id"]))
+            db.log_line(job["id"], "XATO: " + details["message"])
         # MUHIM: kalit muvaffaqiyatsizligini QAYD ETAMIZ - aks holda
         # get_next_active_key() bu kalitni "muammoli" deb bilmaydi va
         # keyingi segmentlar ham xuddi shu (masalan "rate limit"ga uchragan)
         # kalitga yuborilishda davom etadi, xatolar zanjirini kuchaytiradi.
         if provider != "aisha":
-            keys_manager.mark_result(kid, False, str(e)[:500])
+            keys_manager.mark_result(kid, False, safe_error_text(e))
 
 
 async def run_tts_job(job_id: str):
@@ -533,8 +618,16 @@ async def merge_job(job_id: str):
                              f"asosiy {stats['base']:.2f}, {stats['engine']})."
                              f"{' Videoda: ' + timeline_text + '.' if timeline_text else ''}")
     except Exception as e:
-        _update_job(job_id, status="error", error=f"Birlashtirishda xato: {e}")
-        db.log_line(job_id, f"XATO (merge): {e}\n{traceback.format_exc()[-400:]}")
+        safe_text = safe_error_text(e)
+        category = _error_category(e, "audio_write" if isinstance(e, OSError) else "audio_merge")
+        error_type = type(e).__name__
+        message = f"Birlashtirishda xato: tur={error_type}; toifa={category}; sabab={safe_text}"
+        _update_job(job_id, status="error", error=message)
+        # Traceback faqat kod joylashuvini ko'rsatish uchun; exception matni
+        # alohida sanitizatsiya qilingan. Provider javobining maxfiy body-si logga kirmaydi.
+        trace_lines = traceback.format_exc().splitlines()
+        safe_trace = "\n".join(line for line in trace_lines if "File " in line or line.lstrip().startswith("line "))[-400:]
+        db.log_line(job_id, f"XATO (merge): {message}{chr(10) + safe_trace if safe_trace else ''}")
     _notify_video(job_id)
 
 
@@ -842,8 +935,14 @@ async def tts_consumer():
         try:
             await run_tts_job(job_id)
         except Exception as e:
-            db.log_line(job_id, f"XATO (tts consumer): {e}\n{traceback.format_exc()[-400:]}")
-            _update_job(job_id, status="error", error=str(e))
+            safe_text = safe_error_text(e)
+            error_type = type(e).__name__
+            category = _error_category(e, "tts_consumer")
+            message = f"TTS ishida xato: tur={error_type}; toifa={category}; sabab={safe_text}"
+            # Provider exceptionining xom traceback matnida token yoki javob body-si
+            # bo'lishi mumkin, shuning uchun logga faqat sanitizatsiyalangan xulosa yoziladi.
+            db.log_line(job_id, "XATO (tts consumer): " + message)
+            _update_job(job_id, status="error", error=message)
         finally:
             TTS_QUEUE.task_done()
 

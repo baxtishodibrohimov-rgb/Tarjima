@@ -424,7 +424,7 @@ def lemma_occurrence_count(lemma: str, texts: list[str]) -> int:
     return total
 
 
-def learning_srt_warnings(blocks: list) -> list:
+def learning_srt_warnings(blocks: list, word_lists: dict | None = None) -> list:
     """Yuklashni to'xtatmaydigan ogohlantirishlar: [{"block": N|None, "reason": ..}]."""
     warnings = []
     meanings, kinds, first_lemma = {}, {}, {}
@@ -447,7 +447,7 @@ def learning_srt_warnings(blocks: list) -> list:
             warnings.append({"block": None,
                              "reason": f"«{first_lemma[key]}» {ks['yangi']}-blokda yangi, "
                                        f"{ks['takror']}-blokda takror deb belgilangan."})
-    new_count = len(learning_word_lists(blocks)["new"])
+    new_count = len((word_lists or learning_word_lists(blocks))["new"])
     if new_count > LEARNING_MAX_NEW_WORDS:
         warnings.append({"block": None,
                          "reason": f"Yangi so'zlar soni {new_count} ta - {LEARNING_MAX_NEW_WORDS} tadan ko'p."})
@@ -458,16 +458,52 @@ def learning_word_lists(blocks: list) -> dict:
     """Noyob yangi va takror lemmalar, birinchi uchragan tartib va matndagi soni."""
     result = {"new": [], "repeat": []}
     seen = {"yangi": set(), "takror": set()}
-    texts = [b.get("text", "") for b in blocks]
+    ordered = []
     for b in blocks:
         for w in b["words"]:
             key = learning_norm(w["lemma"])
             if key in seen[w["kind"]]:
                 continue
             seen[w["kind"]].add(key)
-            target = result["new"] if w["kind"] == "yangi" else result["repeat"]
-            target.append({"lemma": w["lemma"], "meaning": w["meaning"], "block": b["index"],
-                           "occurrences": lemma_occurrence_count(w["lemma"], texts)})
+            ordered.append((w["kind"], key, w["lemma"], w["meaning"], b["index"]))
+
+    # Eski kod har bir noyob lemma uchun barcha blok matnlarini qayta tokenlardi
+    # (U * N). Matnlarni bir marta tokenlab, bitta so'zli lemmalarni bitta o'tishda
+    # sanaymiz. Ko'p so'zli terminlar kam uchraydi; ular ham tayyor tokenlar ustida
+    # avvalgi aynan shu ketma-ket-prefix qoidasi bilan hisoblanadi.
+    tokens_by_text = [re.findall(r"\w+", learning_norm(b.get("text", ""))) for b in blocks]
+    specs = {}
+    for _, key, lemma, _, _ in ordered:
+        if key not in specs:
+            parts = re.findall(r"\w+", key)
+            specs[key] = tuple(_lemma_stem(part) for part in parts)
+
+    counts = {key: 0 for key in specs}
+    single_by_initial = {}
+    multi = []
+    for key, stems in specs.items():
+        if len(stems) == 1:
+            single_by_initial.setdefault(stems[0][:1], []).append((key, stems[0]))
+        elif stems:
+            multi.append((key, stems))
+
+    for tokens in tokens_by_text:
+        for token in tokens:
+            for key, stem in single_by_initial.get(token[:1], ()):
+                if token.startswith(stem):
+                    counts[key] += 1
+        for key, stems in multi:
+            width = len(stems)
+            counts[key] += sum(
+                1 for start in range(max(0, len(tokens) - width + 1))
+                if all(tokens[start + offset].startswith(stem)
+                       for offset, stem in enumerate(stems))
+            )
+
+    for kind, key, lemma, meaning, block_index in ordered:
+        target = result["new"] if kind == "yangi" else result["repeat"]
+        target.append({"lemma": lemma, "meaning": meaning, "block": block_index,
+                       "occurrences": counts.get(key, 0)})
     return result
 
 

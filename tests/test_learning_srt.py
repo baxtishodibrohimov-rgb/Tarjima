@@ -116,6 +116,23 @@ def test_occurrence_count_handles_stress_case_inflection_and_phrases():
     assert translation.lemma_occurrence_count("katta oziq tish", texts) == 1
 
 
+def test_word_lists_keep_exact_single_and_multiword_counting_rules():
+    blocks = [
+        {"index": 1, "text": "Большая нижняя челюсть и сустав.", "words": [
+            {"kind": "yangi", "lemma": "ни́жняя че́люсть", "meaning": "pastki jag‘"},
+            {"kind": "takror", "lemma": "суста́в", "meaning": "bo‘g‘im"},
+        ]},
+        {"index": 2, "text": "Нижней челюсти, суставы и суставной диск.", "words": [
+            {"kind": "yangi", "lemma": "ни́жняя че́люсть", "meaning": "pastki jag‘"},
+            {"kind": "takror", "lemma": "суста́в", "meaning": "bo‘g‘im"},
+        ]},
+    ]
+    lists = translation.learning_word_lists(blocks)
+    texts = [block["text"] for block in blocks]
+    assert lists["new"][0]["occurrences"] == translation.lemma_occurrence_count("ни́жняя че́люсть", texts)
+    assert lists["repeat"][0]["occurrences"] == translation.lemma_occurrence_count("суста́в", texts)
+
+
 def test_parse_srt_direct_unchanged_on_tagged_srt():
     segs = translation.parse_srt_direct(SAMPLE)
     assert [s["text"] for s in segs] == [b["text"] for b in translation.parse_learning_srt(SAMPLE)]

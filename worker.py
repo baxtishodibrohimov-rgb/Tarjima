@@ -2015,7 +2015,8 @@ def apply_learning_srt(video_id: str, srt_text: str, filename: str, segment_coun
     blocks = translation.parse_learning_srt(srt_text)
     # Teg ogohlantirishlari saqlanadi; vaqt/gap tekshiruvlari (srt_checks.learning_warnings)
     # har safar joriy holatdan hisoblanadi - eski Learning SRT'larda ham ko'rinadi.
-    warnings = translation.learning_srt_warnings(blocks)
+    lists = translation.learning_word_lists(blocks)
+    warnings = translation.learning_srt_warnings(blocks, lists)
     existing = db.fetchone("SELECT * FROM learning_tracks WHERE video_id = ?", (video_id,))
     if existing and existing["tts_job_id"]:
         old_job = db.fetchone("SELECT status FROM tts_jobs WHERE id = ?", (existing["tts_job_id"],))
@@ -2035,25 +2036,27 @@ def apply_learning_srt(video_id: str, srt_text: str, filename: str, segment_coun
     now = db.now()
     words_json = json.dumps(blocks, ensure_ascii=False)
     warnings_json = json.dumps(warnings, ensure_ascii=False)
+    word_lists_json = json.dumps(lists, ensure_ascii=False)
     existing = db.fetchone("SELECT id FROM learning_tracks WHERE video_id = ?", (video_id,))
     if existing:
         db.execute(
             "UPDATE learning_tracks SET srt_filename = ?, srt_path = ?, srt_status = 'uploaded', "
             "segment_count = ?, tts_job_id = NULL, audio_path = NULL, audio_status = 'none', "
             "freeze_points = NULL, final_video_path = NULL, final_video_status = 'none', error = NULL, "
-            "words_json = ?, warnings_json = ?, export_status = 'none', export_video_path = NULL, "
+            "words_json = ?, warnings_json = ?, word_lists_json = ?, export_status = 'none', export_video_path = NULL, "
             "export_with_intro = 0, export_error = NULL, intro_status = 'none', intro_progress = 0, "
             "intro_message = NULL, intro_error = NULL, intro_duration = 0, intro_video_path = NULL, "
             "intro_slides_json = NULL, subtitled_video_status = 'none', subtitled_video_path = NULL, "
             "subtitled_video_error = NULL, updated_at = ? WHERE id = ?",
-            (filename, str(srt_path), segment_count, words_json, warnings_json, now, existing["id"]))
+            (filename, str(srt_path), segment_count, words_json, warnings_json, word_lists_json,
+             now, existing["id"]))
     else:
         db.execute(
             "INSERT INTO learning_tracks (id, video_id, srt_filename, srt_path, srt_status, segment_count, "
-            "audio_status, final_video_status, words_json, warnings_json, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, 'uploaded', ?, 'none', 'none', ?, ?, ?, ?)",
-            (db.new_id(), video_id, filename, str(srt_path), segment_count, words_json, warnings_json, now, now))
-    lists = translation.learning_word_lists(blocks)
+            "audio_status, final_video_status, words_json, warnings_json, word_lists_json, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, 'uploaded', ?, 'none', 'none', ?, ?, ?, ?, ?)",
+            (db.new_id(), video_id, filename, str(srt_path), segment_count, words_json, warnings_json,
+             word_lists_json, now, now))
     log(video_id, f"Learning SRT yuklandi: {filename} ({segment_count} ta bo'lak, {len(lists['new'])} ta yangi, "
                   f"{len(lists['repeat'])} ta takror so'z, {len(warnings)} ta ogohlantirish).")
 

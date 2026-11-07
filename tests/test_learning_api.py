@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 
 import app as app_module
 import database as db
+import tts
 
 TAGGED = """1
 00:00:01,000 --> 00:00:03,000 [yangi:че́люсть=jag‘] [takror:суста́в=bo‘g‘im]
@@ -58,6 +59,7 @@ def test_upload_parses_words_and_serves_track(client, video_id):
     assert detail["learning_words"]["new"][0]["lemma"] == "че́люсть"
     assert detail["learning_words"]["new"][0]["occurrences"] == 1
     assert detail["learning_words"]["repeat"][0]["occurrences"] == 1
+    assert db.fetchone("SELECT word_lists_json FROM learning_tracks WHERE video_id = ?", (video_id,))["word_lists_json"]
     subs = client.get(f"/api/videos/{video_id}/learning/subtitles.vtt").text
     assert "Pastki челюстьning суставi." in subs and "[" not in subs
 
@@ -96,6 +98,63 @@ def test_block_editor_keeps_tags(client, video_id):
     assert words["new_count"] == 1 and words["warnings"] == []
     blocks = client.get(f"/api/videos/{video_id}/learning/blocks").json()
     assert [b["text"] for b in blocks] == ["Yangi челюсть суставi", "Ikkinchi"]
+
+
+def test_old_learning_project_backfills_word_cache_once_and_keeps_dynamic_warnings(
+        client, video_id, monkeypatch):
+    assert _upload(client, video_id, TAGGED).status_code == 200
+    db.execute("UPDATE learning_tracks SET word_lists_json = NULL WHERE video_id = ?", (video_id,))
+    original = app_module.translation.learning_word_lists
+    calls = []
+
+    def counted(blocks):
+        calls.append(len(blocks))
+        return original(blocks)
+
+    monkeypatch.setattr(app_module.translation, "learning_word_lists", counted)
+    first = client.get(f"/api/videos/{video_id}").json()
+    second = client.get(f"/api/videos/{video_id}").json()
+    assert first["learning_words"]["new"] == second["learning_words"]["new"]
+    assert calls == [2]
+
+    # Word cache Learning SRTga bog'liq; bu dinamik warning esa original/tarjima/
+    # duration o'zgarsa ham joriy video holatidan qayta hisoblanishi kerak.
+    db.execute("UPDATE videos SET translation_segments = ?, duration = 10 WHERE id = ?",
+               ('[{"start":9,"end":10,"text":"Mos emas"}]', video_id))
+    reasons = [w["reason"] for w in client.get(f"/api/videos/{video_id}").json()["learning_words"]["warnings"]]
+    assert any("Bloklar soni o'zbekcha tarjimadan farq qiladi" in reason for reason in reasons)
+
+
+def test_learning_audio_acceptance_and_synthesis_states_are_distinct(
+        client, video_id, tmp_path, monkeypatch):
+    assert _upload(client, video_id, TAGGED).status_code == 200
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"fake video for queue-state test")
+    db.execute("UPDATE videos SET path = ? WHERE id = ?", (str(source), video_id))
+
+    class FakeQueue:
+        def __init__(self):
+            self.items = []
+
+        def put_nowait(self, item):
+            self.items.append(item)
+
+    queue = FakeQueue()
+    monkeypatch.setattr(tts, "TTS_QUEUE", queue)
+    accepted = client.post(f"/api/videos/{video_id}/learning/audio", data={
+        "provider": "aisha", "mood": "Neutral", "aisha_key": "fake-test-key",
+    })
+    assert accepted.status_code == 200, accepted.text
+    job_id = accepted.json()["tts_job_id"]
+    assert queue.items == [job_id]
+    queued = client.get(f"/api/videos/{video_id}").json()["learning_track"]
+    assert queued["audio_status"] == "generating" and queued["job_status"] == "queued"
+
+    # Consumer ishni olganda API alohida `running` holatini beradi; UI buni
+    # “Yaratilmoqda” deb, qabul qilingan `queued` holatini esa “Navbatda” deb ko'rsatadi.
+    db.execute("UPDATE tts_jobs SET status = 'running' WHERE id = ?", (job_id,))
+    running = client.get(f"/api/videos/{video_id}").json()["learning_track"]
+    assert running["job_status"] == "running"
 
 
 def test_intro_requires_learning_video(client, video_id):
