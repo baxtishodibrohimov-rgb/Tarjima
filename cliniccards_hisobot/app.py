@@ -83,6 +83,11 @@ def api_error(request: Request, exc: CliniccardsError):
     return templates.TemplateResponse(request, "error.html", {"error": str(exc)}, status_code=502)
 
 
+@app.get("/health")
+def health():
+    return {"ok": True}
+
+
 @app.get("/")
 def index(request: Request, oy: str | None = None, _=Depends(auth)):
     oy = check_month(oy)

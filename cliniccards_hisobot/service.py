@@ -40,6 +40,7 @@ class Percents:
         return {str(k): float(v) for k, v in (data.get("doctors") or {}).items()}, float(data.get("default") or 0)
 
     def save(self, doctors: dict[str, float], default: float = 0.0) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps({"default": default, "doctors": doctors}, ensure_ascii=False, indent=2),
                        encoding="utf-8")

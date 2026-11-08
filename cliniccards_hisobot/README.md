@@ -41,7 +41,20 @@ python sinov.py --oy 2026-11 --shifokor madina --foiz 25
 Kutilgan natija: madina, noyabr 2026: tushgan **500 000**, maosh **125 000**.
 Bu Cliniccards'dagi «Начисления» bilan mos kelishi kerak.
 
-## 2-qadam: serverga o'rnatish (Contabo VPS)
+## 2-qadam: Railway'ga joylash
+
+1. Railway → **New Project → Deploy from GitHub repo** → shu repozitoriyani tanlang.
+2. **Variables** bo'limiga qo'shing:
+   - `CLINICCARDS_TOKEN` — Cliniccards API kalit
+   - `HISOBOT_LOGIN` — masalan `admin`
+   - `HISOBOT_PAROL` — sahifaga kirish paroli
+   - `FOIZLAR_FAYL` = `/data/foizlar.json`
+3. **Volume** qo'shing va uni `/data` ga ulang. Usiz shifokor foizlari har deploy'da o'chib ketadi.
+4. **Settings → Networking → Generate Domain**: `https://...up.railway.app` manzili chiqadi, HTTPS avtomatik.
+
+Ishga tushirish buyrug'i va `/health` tekshiruvi `railway.json` da berilgan.
+
+## Muqobil: o'z serveringizga o'rnatish (Contabo VPS)
 
 ```bash
 sudo useradd -r -m -d /opt/cliniccards_hisobot hisobot
